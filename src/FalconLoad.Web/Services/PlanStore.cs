@@ -63,6 +63,26 @@ public sealed class PlanStore
         return copy.Clone();
     }
 
+    /// <summary>Saves several plans with one write to disk and one change notification, e.g. for an import.</summary>
+    public IReadOnlyList<LoadTestPlan> SaveAll(IEnumerable<LoadTestPlan> plans)
+    {
+        var copies = plans.Select(p => p.Clone()).ToList();
+        lock (_gate)
+        {
+            foreach (var copy in copies)
+            {
+                copy.UpdatedAt = DateTimeOffset.UtcNow;
+                _plans.RemoveAll(p => p.Id == copy.Id);
+                _plans.Add(copy);
+            }
+
+            Persist();
+        }
+
+        Changed?.Invoke();
+        return copies.Select(p => p.Clone()).ToList();
+    }
+
     public bool Delete(Guid id)
     {
         bool removed;

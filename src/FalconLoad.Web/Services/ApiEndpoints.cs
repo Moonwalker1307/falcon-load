@@ -28,6 +28,25 @@ public static class ApiEndpoints
             return Results.Created($"/api/plans/{saved.Id}", saved);
         });
 
+        // Export and import use the PlanFile format, so a test can be shared between machines.
+        api.MapGet("/plans/export", (PlanStore store) =>
+            PlanDownload(store.GetAll(), $"falcon-load-tests-{DateTime.Now:yyyyMMdd-HHmmss}.json"));
+
+        api.MapGet("/plans/{id:guid}/export", (Guid id, PlanStore store) =>
+            store.Get(id) is { } plan ? PlanDownload([plan], $"falcon-load-{Slug(plan.Name)}.json") : Results.NotFound());
+
+        api.MapPost("/plans/import", async (HttpRequest request, PlanStore store) =>
+        {
+            using var reader = new StreamReader(request.Body);
+            var import = PlanFile.Read(await reader.ReadToEndAsync(request.HttpContext.RequestAborted));
+            if (!import.Succeeded)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["plan"] = [.. import.Problems] });
+            }
+
+            return Results.Ok(store.SaveAll(import.Plans));
+        });
+
         api.MapDelete("/plans/{id:guid}", (Guid id, PlanStore store) =>
             store.Delete(id) ? Results.NoContent() : Results.NotFound());
 
@@ -75,6 +94,9 @@ public static class ApiEndpoints
         return Results.Accepted($"/api/runs/{run.Id}", Summarize(run));
     }
 
+    private static IResult PlanDownload(IEnumerable<LoadTestPlan> plans, string fileName) =>
+        Results.Text(PlanFile.Write(plans), "application/json").WithDownloadName(fileName);
+
     private static object Summarize(LoadTestRun run) => new
     {
         run.Id,
@@ -99,7 +121,8 @@ public static class ApiEndpoints
 
     private static string Slug(string name)
     {
-        var chars = name.ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray();
+        // ASCII only: Kestrel refuses non-ASCII header values, and the slug ends up in Content-Disposition.
+        var chars = name.ToLowerInvariant().Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-').ToArray();
         var slug = string.Join('-', new string(chars).Split('-', StringSplitOptions.RemoveEmptyEntries));
         return slug.Length == 0 ? "run" : slug;
     }
