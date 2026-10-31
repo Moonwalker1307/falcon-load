@@ -443,6 +443,13 @@ label.btn-primary { color: #1b1300; font-weight: 650; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: .45rem; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
+/* Import page */
+.operation-actions { margin-bottom: var(--space-3); }
+.operation-list { max-height: 24rem; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
+.operation-group { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; margin: var(--space-3) 0 var(--space-1); }
+.operation-group:first-child { margin-top: var(--space-1); }
+.check.operation { align-items: baseline; flex-wrap: wrap; margin-bottom: var(--space-1); }
+.operation-path { overflow-wrap: anywhere; }
 /* Environments and secret variables */
 .variable-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) auto auto; gap: var(--space-2); align-items: start; margin-bottom: var(--space-2); }
 .variable-row .check { margin: 0; height: var(--control-height); align-items: center; }

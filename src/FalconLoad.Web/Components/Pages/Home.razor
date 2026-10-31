@@ -17,6 +17,7 @@
             <Icon Name="upload" />Import…
             <InputFile accept=".json,application/json" OnChange="Import" />
         </label>
+        <a class="btn" href="import" title="Create a test from a curl command, a Postman collection or an OpenAPI spec"><Icon Name="plus" />From curl, Postman or OpenAPI…</a>
         @if (_plans.Count > 0)
         {
             <a class="btn" href="api/plans/export" download title="Download every saved test as one file"><Icon Name="download" />Export all</a>
@@ -71,7 +72,7 @@
         <div class="actions actions-center">
             <a class="btn btn-primary" href="plans/new"><Icon Name="plus" />Create a test</a>
         </div>
-        <p class="hint">Got a file from another machine? Use <strong>Import…</strong> above.</p>
+        <p class="hint">Already have the requests? <a href="import">Import them from curl, Postman or OpenAPI</a>. Got a file from another machine? Use <strong>Import…</strong> above.</p>
     </section>
 }
 else
