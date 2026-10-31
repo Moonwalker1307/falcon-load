@@ -1,0 +1,318 @@
+@page "/plans/{PlanId:guid}/history"
+@implements IDisposable
+@inject PlanStore PlanStore
+@inject RunHistoryStore History
+@inject RunManager RunManager
+@inject EnvironmentStore EnvironmentStore
+@inject RegressionThresholds Thresholds
+@inject NavigationManager Nav
+
+<PageTitle>History · @(_plan?.Name ?? "Test") · falcon-load</PageTitle>
+
+@if (_plan is null)
+{
+    <div class="card empty">
+        <h1 tabindex="-1">Test not found</h1>
+        <p>The test may have been deleted, and its history with it.</p>
+        <a class="btn" href="/">Back to dashboard</a>
+    </div>
+    return;
+}
+
+<div class="page-header">
+    <div>
+        <div class="eyebrow">History</div>
+        <h1 tabindex="-1">@_plan.Name</h1>
+        <div class="subtitle">The last @RunHistoryStore.MaxRunsPerPlan finished runs of this test are kept on disk, plus its baseline. Mark a run as the baseline to see how every other run compares with it.</div>
+    </div>
+    <div class="actions">
+        <a class="btn btn-ghost" href="plans/@_plan.Id"><Icon Name="edit" />Edit test</a>
+        <button class="btn-primary" @onclick="Run"><Icon Name="play" />Run</button>
+    </div>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert"><Icon Name="alert" /><div>@_error</div></div>
+}
+
+@if (_runs.Count == 0)
+{
+    <section class="card empty">
+        <h2>No finished runs yet</h2>
+        <p>Run the test and its results are stored here when it finishes, ready to compare with later runs.</p>
+    </section>
+    return;
+}
+
+@if (_baseline is { } baseline)
+{
+    var b = baseline.Results;
+    <section class="card baseline-card" aria-labelledby="baseline-title">
+        <div class="card-header">
+            <h2 id="baseline-title"><Icon Name="flag" />Baseline</h2>
+            <div class="btn-group">
+                <a class="btn btn-sm" href="runs/@baseline.RunId">View run</a>
+                <button class="btn-sm btn-ghost" @onclick="ClearBaseline">Clear baseline</button>
+            </div>
+        </div>
+        <div class="meta">
+            <span>Started @baseline.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</span>
+            <span>@Format.Rate(b.RequestsPerSecond) req/s</span>
+            <span>p95 @Format.Ms(b.Latency.P95Ms)</span>
+            <span>@Format.Percent(b.ErrorRate) errors</span>
+            <span>@b.TotalRequests.ToString("#,0") requests</span>
+        </div>
+        <p class="hint">A run counts as a regression when @Format.Thresholds(Thresholds).</p>
+    </section>
+}
+else
+{
+    <div class="alert alert-info"><Icon Name="info" /><div>No baseline yet. Pick a good run below and press <strong>Set as baseline</strong>; later runs are then compared with it.</div></div>
+}
+
+@if (_runs.Count > 1)
+{
+    var ordered = _runs.AsEnumerable().Reverse().ToList();
+    <div class="grid-2">
+        <section class="card" aria-labelledby="trend-lat-title">
+            <div class="card-header"><h2 id="trend-lat-title">p95 latency</h2><span class="hint">per run, oldest first</span></div>
+            <LineChart AriaLabel="p95 latency of each run" FormatValue="Format.Ms" FormatX="i => RunLabel(ordered, i)" Series="TrendSeries(ordered, r => r.Results.Latency.P95Ms, b => b.Latency.P95Ms)" />
+        </section>
+        <section class="card" aria-labelledby="trend-tp-title">
+            <div class="card-header"><h2 id="trend-tp-title">Throughput</h2><span class="hint">per run, oldest first</span></div>
+            <LineChart AriaLabel="Average requests per second of each run" FormatX="i => RunLabel(ordered, i)" Series="TrendSeries(ordered, r => r.Results.RequestsPerSecond, b => b.RequestsPerSecond)" />
+        </section>
+    </div>
+}
+
+<section class="card card-flush" aria-labelledby="runs-title">
+    <div class="card-header">
+        <h2 id="runs-title">Runs</h2>
+        <div class="btn-group">
+            <span class="small muted" role="status">@SelectionHint()</span>
+            <button class="btn-sm" disabled="@(_selected.Count != 2)" @onclick="CompareSelected"><Icon Name="compare" />Compare selected</button>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table class="table-hover stack-sm history-table">
+            <thead>
+                <tr>
+                    <th scope="col"><span class="sr-only">Select</span></th>
+                    <th scope="col">Started</th>
+                    <th scope="col">State</th>
+                    <th scope="col" class="num">Req/s</th>
+                    <th scope="col" class="num">p95</th>
+                    <th scope="col" class="num">Errors</th>
+                    <th scope="col">vs baseline</th>
+                    <th scope="col"><span class="sr-only">Actions</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var run in _runs)
+                {
+                    var s = run.Results;
+                    var isBaseline = run.RunId == _baseline?.RunId;
+                    var c = _baseline is null || isBaseline ? null : RunComparer.Compare(_baseline.Results, s, Thresholds);
+                    <tr class="@(isBaseline ? "is-baseline" : "") @(c?.HasRegression == true ? "is-regressed" : "")">
+                        <td>
+                            <input type="checkbox" checked="@_selected.Contains(run.RunId)" @onchange="e => Toggle(run.RunId, e.Value is true)"
+                                   aria-label="Select the run started @run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")" />
+                        </td>
+                        <td class="nowrap"><a class="row-title" href="runs/@run.RunId">@run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</a></td>
+                        <td><RunStateBadge State="s.State" /></td>
+                        <td class="num">
+                            <span class="cell-label">Req/s</span>@Format.Rate(s.RequestsPerSecond)
+                            @if (c is not null)
+                            {
+                                <div class="small"><DeltaBadge Change='Metric(c, "requestsPerSecond")' /></div>
+                            }
+                        </td>
+                        <td class="num">
+                            <span class="cell-label">p95</span>@Format.Ms(s.Latency.P95Ms)
+                            @if (c is not null)
+                            {
+                                <div class="small"><DeltaBadge Change='Metric(c, "p95Ms")' /></div>
+                            }
+                        </td>
+                        <td class="num @(s.FailedRequests > 0 ? "status-err" : "")">
+                            <span class="cell-label">Errors</span>@Format.Percent(s.ErrorRate)
+                            @if (c is not null)
+                            {
+                                <div class="small"><DeltaBadge Change='Metric(c, "errorRate")' /></div>
+                            }
+                        </td>
+                        <td>
+                            @if (isBaseline)
+                            {
+                                <span class="badge badge-baseline">Baseline</span>
+                            }
+                            else if (c is not null)
+                            {
+                                <a href="@CompareUrl(_baseline!.RunId, run.RunId)" title="Compare with the baseline">
+                                    <BaselineVerdict Comparison="c" />
+                                </a>
+                            }
+                            else
+                            {
+                                <span class="muted small">No baseline</span>
+                            }
+                        </td>
+                        <td class="actions">
+                            @if (_confirmDelete == run.RunId)
+                            {
+                                <div class="btn-group" role="group" aria-label="Confirm delete">
+                                    <span class="small muted">Delete this run?</span>
+                                    <button class="btn-sm btn-danger-solid" @onclick="() => Delete(run.RunId)">Delete</button>
+                                    <button class="btn-sm" @onclick="() => _confirmDelete = null">Keep</button>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="btn-group">
+                                    @if (!isBaseline)
+                                    {
+                                        <button class="btn-sm" @onclick="() => SetBaseline(run.RunId)"><Icon Name="flag" />Set as baseline</button>
+                                    }
+                                    <a class="btn btn-sm btn-ghost btn-icon" href="api/runs/@run.RunId/export" download title="Export to a file" aria-label="Export this run"><Icon Name="download" /></a>
+                                    <button class="btn-sm btn-ghost btn-icon btn-danger" @onclick="() => _confirmDelete = run.RunId" title="Delete" aria-label="Delete this run"><Icon Name="trash" /></button>
+                                </div>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+@code {
+    private LoadTestPlan? _plan;
+    private IReadOnlyList<RunHistoryEntry> _runs = [];
+    private RunHistoryEntry? _baseline;
+    private readonly List<Guid> _selected = [];
+    private Guid? _confirmDelete;
+    private string? _error;
+
+    [Parameter] public Guid PlanId { get; set; }
+
+    protected override void OnInitialized()
+    {
+        History.Changed += OnChanged;
+        PlanStore.Changed += OnChanged;
+    }
+
+    protected override void OnParametersSet() => Load();
+
+    private void Load()
+    {
+        _plan = PlanStore.Get(PlanId);
+        _runs = History.GetForPlan(PlanId);
+        _baseline = History.GetBaseline(PlanId);
+        _selected.RemoveAll(id => _runs.All(r => r.RunId != id));
+    }
+
+    private void OnChanged() => _ = InvokeAsync(() =>
+    {
+        Load();
+        StateHasChanged();
+    });
+
+    private static MetricChange Metric(RunComparison c, string key) => c.Overall.First(m => m.Key == key);
+
+    private void Toggle(Guid runId, bool selected)
+    {
+        _selected.Remove(runId);
+        if (selected)
+        {
+            _selected.Add(runId);
+            // Keep the two most recently ticked runs, so ticking a third one just moves the selection.
+            if (_selected.Count > 2)
+            {
+                _selected.RemoveAt(0);
+            }
+        }
+    }
+
+    private string SelectionHint() => _selected.Count switch
+    {
+        0 => "Select two runs to compare them",
+        1 => "Select one more run",
+        _ => "",
+    };
+
+    private void CompareSelected()
+    {
+        if (_selected.Count != 2)
+        {
+            return;
+        }
+
+        // The older run is the "before" side, unless the other one is the baseline.
+        var pair = _runs.Where(r => _selected.Contains(r.RunId)).OrderBy(r => r.StartedAt).ToList();
+        var (before, after) = pair[1].RunId == _baseline?.RunId ? (pair[1], pair[0]) : (pair[0], pair[1]);
+        Nav.NavigateTo(CompareUrl(before.RunId, after.RunId));
+    }
+
+    private static string CompareUrl(Guid baseline, Guid run) => $"compare?baseline={baseline}&run={run}";
+
+    private void SetBaseline(Guid runId) => History.SetBaseline(PlanId, runId);
+
+    private void ClearBaseline() => History.ClearBaseline(PlanId);
+
+    private void Delete(Guid runId)
+    {
+        _confirmDelete = null;
+        History.Delete(runId);
+    }
+
+    private void Run()
+    {
+        if (_plan is null)
+        {
+            return;
+        }
+
+        // Runs with the test's own environment, like the dashboard does by default.
+        _error = null;
+        if (!EnvironmentStore.TryResolve(_plan.Environment, out var environment, out var missing))
+        {
+            _error = missing;
+            return;
+        }
+
+        try
+        {
+            var run = RunManager.Start(_plan, environment);
+            Nav.NavigateTo($"runs/{run.Id}");
+        }
+        catch (ArgumentException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private static string RunLabel(IReadOnlyList<RunHistoryEntry> ordered, int index) =>
+        index < ordered.Count ? ordered[index].StartedAt.ToLocalTime().ToString("MM-dd HH:mm") : "";
+
+    private IReadOnlyList<ChartSeries> TrendSeries(
+        IReadOnlyList<RunHistoryEntry> ordered,
+        Func<RunHistoryEntry, double> value,
+        Func<LoadTestSnapshot, double> baselineValue)
+    {
+        var series = new List<ChartSeries> { new("Run", "var(--series-1)", ordered.Select(value).ToList()) };
+        if (_baseline is not null)
+        {
+            var line = baselineValue(_baseline.Results);
+            series.Add(new ChartSeries("Baseline", "var(--series-2)", ordered.Select(_ => line).ToList()));
+        }
+
+        return series;
+    }
+
+    public void Dispose()
+    {
+        History.Changed -= OnChanged;
+        PlanStore.Changed -= OnChanged;
+    }
+}

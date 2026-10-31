@@ -176,6 +176,73 @@ public static class ApiEndpoints
                     .WithDownloadName($"falcon-load-{Slug(run.Plan.Name)}-{run.StartedAt:yyyyMMdd-HHmmss}.json")
                 : Results.NotFound());
 
+        // A saved test's stored runs and its baseline, so CI can fail a build when a run regresses.
+        api.MapGet("/plans/{id:guid}/history", (Guid id, PlanStore store, RunHistoryStore history) =>
+            store.Get(id) is null
+                ? Results.NotFound()
+                : Results.Ok(new { BaselineRunId = history.GetBaselineId(id), Runs = history.GetForPlan(id) }));
+
+        api.MapPut("/plans/{id:guid}/baseline", (Guid id, BaselineRequest body, PlanStore store, RunHistoryStore history) =>
+        {
+            if (store.Get(id) is null)
+            {
+                return Results.NotFound();
+            }
+
+            return history.SetBaseline(id, body.RunId)
+                ? Results.Ok(new { BaselineRunId = body.RunId })
+                : Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["runId"] = ["The run isn't in this test's history. Only finished runs of the saved test can be the baseline."],
+                });
+        });
+
+        api.MapDelete("/plans/{id:guid}/baseline", (Guid id, RunHistoryStore history) =>
+            history.ClearBaseline(id) ? Results.NoContent() : Results.NotFound());
+
+        api.MapGet("/runs/{id:guid}/compare", (
+            Guid id,
+            Guid? baseline,
+            double? latencyPercent,
+            double? minLatencyChangeMs,
+            double? throughputPercent,
+            double? errorRatePoints,
+            RunManager runs,
+            RunHistoryStore history,
+            RegressionThresholds defaults) =>
+        {
+            if (runs.Get(id) is not { } run)
+            {
+                return Results.NotFound();
+            }
+
+            var thresholds = defaults with
+            {
+                LatencyPercent = latencyPercent ?? defaults.LatencyPercent,
+                MinLatencyChangeMs = minLatencyChangeMs ?? defaults.MinLatencyChangeMs,
+                ThroughputPercent = throughputPercent ?? defaults.ThroughputPercent,
+                ErrorRatePoints = errorRatePoints ?? defaults.ErrorRatePoints,
+            };
+            var problems = thresholds.Validate();
+            if (problems.Count > 0)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["thresholds"] = [.. problems] });
+            }
+
+            var baselineId = baseline ?? history.GetBaselineId(run.Plan.Id);
+            if (baselineId is null)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["baseline"] = ["This test has no baseline. Set one, or pass ?baseline={runId}."],
+                });
+            }
+
+            return runs.Get(baselineId.Value) is { } before
+                ? Results.Ok(RunComparer.Compare(before.ToExport(), run.ToExport(), thresholds))
+                : Results.ValidationProblem(new Dictionary<string, string[]> { ["baseline"] = ["The baseline run is no longer available."] });
+        });
+
         api.MapPost("/runs/{id:guid}/stop", (Guid id, RunManager runs) =>
         {
             if (runs.Get(id) is not { } run)
@@ -424,6 +491,8 @@ public static class ApiEndpoints
         return slug.Length == 0 ? "run" : slug;
     }
 }
+
+public sealed record BaselineRequest(Guid RunId);
 
 file static class ResultExtensions
 {

@@ -1,4 +1,4 @@
-@* Dependency-free SVG line chart for per-second timelines. *@
+@* Dependency-free SVG line chart for per-second timelines, or any other evenly spaced series. *@
 <div class="chart">
     @if (Series.Count == 0 || Series.All(s => s.Values.Count == 0))
     {
@@ -45,6 +45,9 @@
 
     [Parameter] public string AriaLabel { get; set; } = "Chart";
 
+    /// <summary>The label under the point at a zero-based index; seconds of a run by default.</summary>
+    [Parameter] public Func<int, string> FormatX { get; set; } = i => $"{i + 1}s";
+
     protected override void OnParametersSet()
     {
         _count = Series.Count == 0 ? 0 : Series.Max(s => s.Values.Count);
@@ -73,7 +76,7 @@
             var index = ticks == 1 ? 0 : (int)Math.Round((double)(_count - 1) * t / (ticks - 1));
             if (seen.Add(index))
             {
-                yield return (index, $"{index + 1}s");
+                yield return (index, FormatX(index));
             }
         }
     }
@@ -91,7 +94,7 @@
 
         foreach (var (tick, label) in XTicks())
         {
-            sb.Append($"<text class=\"axis-label\" x=\"{F(X(tick))}\" y=\"{Height - 6}\" text-anchor=\"middle\">{label}</text>");
+            sb.Append($"<text class=\"axis-label\" x=\"{F(X(tick))}\" y=\"{Height - 6}\" text-anchor=\"middle\">{System.Net.WebUtility.HtmlEncode(label)}</text>");
         }
 
         return new MarkupString(sb.ToString());

@@ -11,15 +11,27 @@ public sealed class LoadTestRun
     private readonly CancellationTokenSource _cancel = new();
     private LoadTestRunner? _runner;
     private (LoadTestSnapshot Snapshot, ResultHistograms Histograms)? _final;
+    private readonly RunExport? _stored;
 
     internal LoadTestRun(LoadTestRunner runner)
     {
         _runner = runner;
+        Id = Guid.NewGuid();
         Plan = runner.Plan;
         Snapshot = runner.GetSnapshot();
     }
 
-    public Guid Id { get; } = Guid.NewGuid();
+    /// <summary>A finished run read back from the run history, e.g. after a restart.</summary>
+    internal LoadTestRun(RunExport stored)
+    {
+        _stored = stored;
+        Id = stored.Id;
+        Plan = stored.Plan;
+        StartedAt = stored.StartedAt;
+        Snapshot = stored.Results;
+    }
+
+    public Guid Id { get; }
 
     public LoadTestPlan Plan { get; }
 
@@ -49,6 +61,11 @@ public sealed class LoadTestRun
     /// </summary>
     public RunExport ToExport()
     {
+        if (_stored is not null)
+        {
+            return _stored;
+        }
+
         // A finished run keeps its final results and their histograms; a live one is read from the runner in one go
         // so the two agree.
         var (snapshot, histograms) = _final is { } final ? final : _runner?.GetResults() ?? _final!.Value;
@@ -86,8 +103,11 @@ public sealed class LoadTestRun
     }
 }
 
-/// <summary>Starts load tests in the background and keeps a bounded history of recent runs in memory.</summary>
-public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
+/// <summary>
+/// Starts load tests in the background and keeps a bounded list of recent runs in memory. Finished runs of saved tests
+/// also go into the <see cref="RunHistoryStore"/>, which outlives a restart.
+/// </summary>
+public sealed class RunManager(RunHistoryStore history, ILogger<RunManager> logger) : IDisposable
 {
     private const int MaxHistory = 50;
 
@@ -98,7 +118,9 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
 
     public IReadOnlyList<LoadTestRun> GetAll() => _runs.Values.OrderByDescending(r => r.StartedAt).ToList();
 
-    public LoadTestRun? Get(Guid id) => _runs.GetValueOrDefault(id);
+    /// <summary>A run in memory, or else one read back from the run history.</summary>
+    public LoadTestRun? Get(Guid id) =>
+        _runs.GetValueOrDefault(id) ?? (history.Load(id) is { } stored ? new LoadTestRun(stored) : null);
 
     /// <summary>How far ahead a controller may schedule a start; later than this is most likely a clock that is off.</summary>
     public static readonly TimeSpan MaxStartDelay = TimeSpan.FromMinutes(1);
@@ -132,6 +154,7 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
                     logger.LogInformation("Starting load test {RunId} '{Name}' (environment: {Environment})", run.Id, plan.Name, environment?.Name ?? "none");
                     var final = await runner.RunAsync(run.Publish, TimeSpan.FromMilliseconds(500), run.CancellationToken);
                     run.Finish(runner);
+                    Store(run);
                     logger.LogInformation(
                         "Load test {RunId} {State}: {Requests} requests, {Rps:F1} req/s, {Errors} errors",
                         run.Id, final.State, final.TotalRequests, final.RequestsPerSecond, final.FailedRequests);
@@ -154,6 +177,18 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
 
         RunsChanged?.Invoke();
         return run;
+    }
+
+    private void Store(LoadTestRun run)
+    {
+        try
+        {
+            history.Add(run.ToExport());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogError(ex, "Could not store load test {RunId} in the run history", run.Id);
+        }
     }
 
     public bool Remove(Guid id)

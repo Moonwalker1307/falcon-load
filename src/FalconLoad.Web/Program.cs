@@ -15,6 +15,8 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 builder.Services.AddSingleton<PlanStore>();
 builder.Services.AddSingleton<EnvironmentStore>();
+builder.Services.AddSingleton<RunHistoryStore>();
+builder.Services.AddSingleton(RegressionSettings.Read(builder.Configuration));
 builder.Services.AddSingleton<RunManager>();
 
 // Agents: this machine can be one (AgentMode, with the token from configuration) and can drive others (the registry,

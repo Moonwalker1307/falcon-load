@@ -147,6 +147,7 @@ else
                                             <button class="btn-sm" @onclick="() => RunOnAgents(plan)" title="Run on the @_agentCount enabled @(_agentCount == 1 ? "agent" : "agents")" aria-label="Run @plan.Name on agents"><Icon Name="agents" />Agents</button>
                                         }
                                         <a class="btn btn-sm" href="plans/@plan.Id" aria-label="Edit @plan.Name"><Icon Name="edit" />Edit</a>
+                                        <a class="btn btn-sm btn-ghost btn-icon" href="plans/@plan.Id/history" title="History and baseline" aria-label="History of @plan.Name"><Icon Name="history" /></a>
                                         <button class="btn-sm btn-ghost btn-icon" @onclick="() => Duplicate(plan)" title="Duplicate" aria-label="Duplicate @plan.Name"><Icon Name="copy" /></button>
                                         <a class="btn btn-sm btn-ghost btn-icon" href="api/plans/@plan.Id/export" download title="Export to a file" aria-label="Export @plan.Name"><Icon Name="download" /></a>
                                         <button class="btn-sm btn-ghost btn-icon btn-danger" @onclick="() => _confirmDelete = plan.Id" title="Delete" aria-label="Delete @plan.Name"><Icon Name="trash" /></button>

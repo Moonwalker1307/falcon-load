@@ -250,6 +250,7 @@ td.actions .btn-group { justify-content: flex-end; }
 .badge-unsaved { background: var(--accent-soft); color: var(--accent); }
 .badge-saved { background: var(--ok-soft); color: var(--ok); }
 .badge-once { background: var(--info-soft); color: var(--text); font-weight: 500; }
+.badge-baseline { background: var(--accent-soft); color: var(--accent); }
 @keyframes pulse { 50% { opacity: .3; } }
 .method { display: inline-block; min-width: 3.4em; font-family: var(--mono); font-weight: 700; font-size: .76rem; color: var(--accent); }
 .method-get { color: var(--ok); }
@@ -305,6 +306,12 @@ td.actions .btn-group { justify-content: flex-end; }
 }
 @keyframes falcon-bob { 0% { translate: 0 0; } 25% { translate: 0 -2px; } 50% { translate: 0 -3px; } 75% { translate: 0 -1px; } }
 @keyframes falcon-wind { from { background-position: 0 0, 0 8px, 0 16px; } to { background-position: 72px 0, 72px 8px, 72px 16px; } }
+@media (max-width: 640px) {
+    .history-table td.num { display: inline-block; margin: var(--space-2) var(--space-5) 0 0; text-align: left; vertical-align: top; }
+    .history-table .cell-label { display: block; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+    .history-table td:first-child { float: right; }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .flight-bird { transition: none; }
     .flying .flight-bird img, .flying .flight-bird::before { animation: none; }
@@ -509,3 +516,30 @@ label.btn-primary { color: #1b1300; font-weight: 650; }
 @media (max-width: 640px) {
     .topbar nav a { padding: .4rem .5rem; font-size: .88rem; }
 }
+
+/* Run history and comparison. A change is coloured only when it goes beyond the regression thresholds, so the
+   colour always means something; small changes stay muted. */
+.delta { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-weight: 600; }
+.delta-bad { color: var(--bad); }
+.delta-good { color: var(--ok); }
+.baseline-card h2, .baseline-strip h2 { display: inline-flex; align-items: center; gap: var(--space-2); }
+.baseline-card .icon, .baseline-strip h2 .icon { color: var(--accent); }
+.baseline-card .meta { margin-top: 0; }
+.baseline-strip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-5); }
+.baseline-strip h2 { margin: 0; font-size: .95rem; }
+.baseline-strip-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.baseline-strip.is-regressed { border-color: color-mix(in srgb, var(--bad) 55%, var(--border)); }
+.baseline-deltas { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-5); margin: 0; flex: 1; }
+.baseline-deltas dt { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.baseline-deltas dd { margin: 0; }
+.history-table tr.is-baseline { background: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
+.history-table tr.is-regressed { box-shadow: inset 3px 0 0 var(--bad); }
+.cell-label { display: none; }
+.history-table input[type=checkbox] { width: 1rem; height: 1rem; margin: 0; }
+.compare-side .title-row { margin-top: var(--space-1); }
+.compare-side .row-title { font-size: 1.05rem; }
+.compare-table tbody th { text-transform: none; letter-spacing: 0; font-size: .92rem; font-weight: 500; color: var(--text); padding: .7rem .75rem; }
+.card-flush .compare-table tbody th:first-child { padding-left: var(--space-5); }
+.compare-table tr.is-regressed { background: color-mix(in srgb, var(--bad-soft) 55%, transparent); }
+.compare-table tr.is-improved { background: color-mix(in srgb, var(--ok-soft) 45%, transparent); }
+.compare-table td.cell-regressed { background: color-mix(in srgb, var(--bad-soft) 70%, transparent); }
