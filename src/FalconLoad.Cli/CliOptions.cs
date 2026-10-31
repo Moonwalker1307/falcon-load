@@ -25,7 +25,8 @@ internal sealed record CliOptions
           --concurrency <n>           Use this many virtual users instead of the number in the file.
           --duration <seconds>        Run each test for this long instead of the file's stop condition.
           --requests <n>              Send this many requests per test instead of the file's stop condition.
-          --max-error-rate <percent>  Fail a test when more than this percentage of its requests fail. Default: 0.
+          --max-error-rate <percent>  Fail a test when more than this percentage of its requests fail. By default a
+                                      test with thresholds passes or fails on them, and one without fails on any error.
           --env-file <path>           An environments file exported from the web UI, for tests that use {{variables}}.
           --env <name>                The environment to use. Default: the test's own environment, or the only one in the file.
           --var <name>=<value>        Set a variable, overriding the environment. Can be repeated.
@@ -37,7 +38,7 @@ internal sealed record CliOptions
         Secrets: an environment variable FALCON_LOAD_<name> sets the secret variable <name>, such as FALCON_LOAD_token
         for {{token}}. Its value is masked in the output, and exports never contain it.
 
-        Exit codes: 0 every test passed, 1 a test failed, 2 the command line or the file is invalid,
+        Exit codes: 0 every test passed, 1 a test failed its thresholds or had too many errors, 2 the command line or the file is invalid,
         130 the run was interrupted.
         """;
 
@@ -55,8 +56,11 @@ internal sealed record CliOptions
 
     public int? TotalRequests { get; init; }
 
-    /// <summary>The allowed share of failed requests, from 0 to 1.</summary>
-    public double MaxErrorRate { get; init; }
+    /// <summary>
+    /// The allowed share of failed requests, from 0 to 1, or null when --max-error-rate wasn't given: then a test with
+    /// thresholds is judged by them alone, and one without allows no failures.
+    /// </summary>
+    public double? MaxErrorRate { get; init; }
 
     public string? Machine { get; init; }
 

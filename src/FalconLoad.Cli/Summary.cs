@@ -8,7 +8,7 @@ namespace FalconLoad.Cli;
 /// <summary>Formats results as plain text for a terminal or a CI log. Numbers always use the invariant culture.</summary>
 internal static class Summary
 {
-    public static string Write(LoadTestPlan plan, LoadTestSnapshot s, IReadOnlyList<string> failures, double maxErrorRate)
+    public static string Write(LoadTestPlan plan, LoadTestSnapshot s, IReadOnlyList<string> failures, double? maxErrorRate)
     {
         var text = new StringBuilder();
         text.AppendLine();
@@ -34,6 +34,25 @@ internal static class Summary
             }
         }
 
+        if (s.Checks.Count > 0)
+        {
+            text.AppendLine("  Checks");
+            foreach (var check in s.Checks)
+            {
+                text.AppendLine(Invariant($"    {check.Passed,10:#,0} passed  {check.Failed,8:#,0} failed  {check.Name}"));
+            }
+        }
+
+        if (s.Thresholds.Count > 0)
+        {
+            text.AppendLine("  Thresholds");
+            foreach (var threshold in s.Thresholds)
+            {
+                var measured = threshold.Actual is { } actual ? Value(actual, threshold.Unit) : "nothing measured";
+                text.AppendLine($"    {(threshold.Passed ? "pass" : "FAIL")}  {threshold.Name}, measured {measured}");
+            }
+        }
+
         if (s.Errors.Count > 0)
         {
             text.AppendLine("  Errors");
@@ -55,7 +74,7 @@ internal static class Summary
         else if (failures.Count == 0)
         {
             text.AppendLine(maxErrorRate > 0
-                ? $"  Result        PASS (at most {Percent(maxErrorRate)} of requests may fail)"
+                ? $"  Result        PASS (at most {Percent(maxErrorRate.Value)} of requests may fail)"
                 : "  Result        PASS");
         }
         else
@@ -72,6 +91,15 @@ internal static class Summary
 
     public static string ProgressLine(LoadTestSnapshot s) => Invariant(
         $"  {Duration(s.Elapsed),7}  {s.TotalRequests,10:#,0} requests  {Rate(s.RequestsPerSecond),8}/s  {Percent(s.ErrorRate),6} failed  p95 {Ms(s.Latency.P95Ms),9}  {s.ActiveVirtualUsers:#,0} {(s.ActiveVirtualUsers == 1 ? "user" : "users")}");
+
+    /// <summary>A threshold's measured value in the unit it is written in: ms, % or req/s.</summary>
+    public static string Value(double value, string unit) => unit switch
+    {
+        "ms" => Ms(value),
+        "%" => Invariant($"{value:0.##}%"),
+        "" => Invariant($"{value:0.##}"),
+        _ => Invariant($"{value:#,0.##} {unit}"),
+    };
 
     public static string Ms(double ms) => ms switch
     {

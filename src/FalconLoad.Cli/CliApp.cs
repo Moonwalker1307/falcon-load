@@ -137,9 +137,21 @@ internal static class CliApp
     }
 
     /// <summary>Why a finished test failed; empty when it passed.</summary>
-    internal static IReadOnlyList<string> Checks(LoadTestSnapshot snapshot, double maxErrorRate)
+    /// <param name="maxErrorRate">From --max-error-rate. Without it, a test without thresholds allows no failed requests.</param>
+    internal static IReadOnlyList<string> Checks(LoadTestSnapshot snapshot, double? maxErrorRate)
     {
         var failures = new List<string>();
+
+        // A test with thresholds is judged by them, the same verdict the web UI and the API show; --max-error-rate only
+        // adds to them when it is given.
+        foreach (var threshold in snapshot.Thresholds.Where(t => !t.Passed))
+        {
+            failures.Add(threshold.Actual is { } actual
+                ? $"Threshold not met: {threshold.Name} (measured {Summary.Value(actual, threshold.Unit)})."
+                : $"Threshold not met: {threshold.Name} (nothing was measured).");
+        }
+
+        var allowed = maxErrorRate ?? (snapshot.Thresholds.Count > 0 ? (double?)null : 0);
         if (snapshot.State == RunState.Failed)
         {
             failures.Add($"The test could not run: {snapshot.FailureReason}");
@@ -150,9 +162,9 @@ internal static class CliApp
             failures.Add("No requests completed.");
         }
 
-        if (snapshot.ErrorRate > maxErrorRate)
+        if (allowed is { } limit && snapshot.ErrorRate > limit)
         {
-            failures.Add($"{Summary.Percent(snapshot.ErrorRate)} of requests failed, more than the {Summary.Percent(maxErrorRate)} allowed.");
+            failures.Add($"{Summary.Percent(snapshot.ErrorRate)} of requests failed, more than the {Summary.Percent(limit)} allowed.");
         }
 
         return failures;

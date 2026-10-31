@@ -76,6 +76,54 @@ public sealed class CliAppTests : IDisposable
         Assert.Equal(CliApp.TestFailed, await Run(handler, "run", file, "--max-error-rate=20%"));
     }
 
+    private static FakeHandler EveryFourthFails()
+    {
+        var count = 0;
+        return new FakeHandler((_, _) => Task.FromResult(new HttpResponseMessage(
+            Interlocked.Increment(ref count) % 4 == 0 ? HttpStatusCode.InternalServerError : HttpStatusCode.OK)));
+    }
+
+    private static LoadTestPlan PlanWithThreshold(ThresholdMetric metric, ThresholdOperator op, double value)
+    {
+        var plan = Plan();
+        plan.Thresholds = [new Threshold { Metric = metric, Operator = op, Value = value }];
+        return plan;
+    }
+
+    [Fact]
+    public async Task Thresholds_DecideTheResultInsteadOfTheDefaultErrorRate()
+    {
+        // A quarter of the requests fail, which the threshold allows, so the test passes without --max-error-rate.
+        var code = await Run(EveryFourthFails(), "run", WriteFile(PlanWithThreshold(ThresholdMetric.ErrorRate, ThresholdOperator.LessThan, 50)));
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.Contains("Thresholds", _out.ToString());
+        Assert.Contains("pass  error rate < 50%, measured 25%", _out.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Result        PASS", _out.ToString());
+    }
+
+    [Fact]
+    public async Task UnmetThreshold_ExitsWithOne()
+    {
+        var plan = PlanWithThreshold(ThresholdMetric.RequestsPerSecond, ThresholdOperator.GreaterThan, 1e12);
+
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.OK), "run", WriteFile(plan));
+
+        Assert.Equal(CliApp.TestFailed, code);
+        Assert.Contains("FAIL: Threshold not met:", _out.ToString());
+    }
+
+    [Fact]
+    public async Task MaxErrorRate_StillAppliesToATestWithThresholds()
+    {
+        var plan = PlanWithThreshold(ThresholdMetric.ErrorRate, ThresholdOperator.LessThan, 50);
+
+        var code = await Run(EveryFourthFails(), "run", WriteFile(plan), "--max-error-rate", "10");
+
+        Assert.Equal(CliApp.TestFailed, code);
+        Assert.Contains("more than the 10% allowed", _out.ToString());
+    }
+
     [Fact]
     public async Task Out_WritesAnExportThatCanBeCombined()
     {
