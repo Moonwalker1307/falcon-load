@@ -116,6 +116,13 @@ public sealed class PlanFile
         plan.Name = string.IsNullOrWhiteSpace(plan.Name) ? "Imported test" : plan.Name;
         plan.Profile ??= new LoadProfile();
         plan.Requests = plan.Requests?.OfType<RequestDefinition>().ToList() ?? [];
+        plan.Parameters = plan.Parameters?.OfType<ParameterList>().ToList() ?? [];
+        foreach (var list in plan.Parameters)
+        {
+            list.Name ??= string.Empty;
+            list.Values ??= [];
+        }
+
         foreach (var request in plan.Requests)
         {
             request.Name ??= string.Empty;

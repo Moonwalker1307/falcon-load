@@ -9,7 +9,7 @@ public sealed class RequestDefinition
 
     public string Method { get; set; } = "GET";
 
-    /// <summary>Absolute URL. May contain template variables such as <c>{{$guid}}</c>.</summary>
+    /// <summary>Absolute URL. May contain template variables such as <c>{{$guid}}</c> or a parameter list's <c>{{name}}</c>.</summary>
     public string Url { get; set; } = "https://localhost:5001/";
 
     public List<HeaderEntry> Headers { get; set; } = [];
@@ -28,7 +28,8 @@ public sealed class RequestDefinition
     [System.Text.Json.Serialization.JsonIgnore]
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? $"{Method} {Url}" : Name;
 
-    public IEnumerable<string> Validate()
+    /// <param name="parameters">The plan's parameter lists; URLs that use them are checked with their first values.</param>
+    public IEnumerable<string> Validate(ParameterSet? parameters = null)
     {
         if (!SupportedMethods.Contains(Method, StringComparer.OrdinalIgnoreCase))
         {
@@ -36,7 +37,7 @@ public sealed class RequestDefinition
         }
 
         // Validate the URL with template variables replaced by harmless placeholders.
-        var probe = TemplateRenderer.RenderForValidation(Url);
+        var probe = TemplateRenderer.RenderForValidation(Url, parameters);
         if (!Uri.TryCreate(probe, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
             yield return "URL must be an absolute http:// or https:// address.";

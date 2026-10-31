@@ -21,6 +21,7 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 - **Request editor**: method, URL, headers, body and content type, with a "Send once" button to check the response before you load test.
 - **Multi-step scenarios**: add several requests; each virtual user runs them in order and loops.
 - **Dynamic values** in URLs, headers and bodies: `{{$guid}}`, `{{$randomInt}}`, `{{$randomInt:1:100}}`, `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$vu}}`, `{{$iteration}}`.
+- **Parameter lists**: name a list of values, such as `userIds` = 17, 42, 99, and write `{{userIds}}` in a URL, header value or body. Each iteration of a virtual user takes one value from every list, so all requests in that iteration use the same value. A list hands out its values in order, shared by all virtual users and starting over at the end, or picks one at random. "Send once" uses the first value. Placeholders that match no list are sent as written.
 - **Load profile**: virtual users (concurrency), stop after a duration or a request count, ramp-up, optional requests-per-second cap, per-request timeout, redirect and TLS options.
 - **Success criteria**: expected status codes per request (e.g. `200,201` or `200-299,404`); defaults to any 2xx/3xx.
 - **Live results**: a pixel-art falcon flies along the progress bar while a test runs. Requests, throughput, error rate, latency (mean, p50, p90, p95, p99, max), per-second throughput and latency charts, per-request breakdown, status code and error tables.
@@ -55,8 +56,9 @@ curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' 
     { "method": "GET", "url": "https://localhost:5001/api/products?page={{$randomInt:1:20}}" },
     { "method": "POST", "url": "https://localhost:5001/api/orders",
       "headers": [{ "name": "Authorization", "value": "Bearer <token>" }],
-      "body": "{ \"id\": \"{{$guid}}\" }", "expectedStatusCodes": "201" }
+      "body": "{ \"id\": \"{{$guid}}\", \"userId\": {{userIds}} }", "expectedStatusCodes": "201" }
   ],
+  "parameters": [{ "name": "userIds", "values": ["17", "42", "99"], "selection": "Sequential" }],
   "profile": { "concurrency": 50, "stopCondition": "Duration", "durationSeconds": 60, "rampUpSeconds": 10, "ignoreTlsErrors": true }
 }'
 ```

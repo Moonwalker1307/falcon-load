@@ -181,8 +181,43 @@
                     <tr><td><code>{{$randomInt}}</code> or <code>{{$randomInt:1:100}}</code></td><td class="muted">Random integer (0–999999, or within a range)</td></tr>
                     <tr><td><code>{{$timestamp}}</code> / <code>{{$isoTimestamp}}</code></td><td class="muted">Current Unix time / ISO 8601 time</td></tr>
                     <tr><td><code>{{$vu}}</code> / <code>{{$iteration}}</code></td><td class="muted">Virtual user number / its iteration count</td></tr>
+                    <tr><td><code>{{userIds}}</code></td><td class="muted">The next value of your parameter list with that name (below)</td></tr>
                 </tbody>
             </table>
+        </div>
+
+        <div class="card" style="margin-bottom:0">
+            <div class="card-header">
+                <h3>Parameter lists</h3>
+                <button class="btn-sm" @onclick="AddParameterList">+ Add list</button>
+            </div>
+            @if (_plan.Parameters.Count == 0)
+            {
+                <div class="small muted">
+                    Name a list of values, such as user ids, and write <code>{{name}}</code> in a URL, header value or body to use them.
+                </div>
+            }
+            @foreach (var parameterList in _plan.Parameters)
+            {
+                var list = parameterList;
+                <div class="parameter-list">
+                    <div class="parameter-list-head">
+                        <input type="text" class="mono" placeholder="userIds" aria-label="List name" @bind="list.Name" @bind:event="oninput" />
+                        <div class="segmented">
+                            <button class="@(list.Selection == ParameterSelection.Sequential ? "on" : "")" title="Values in order, shared by all virtual users" @onclick="() => list.Selection = ParameterSelection.Sequential">In order</button>
+                            <button class="@(list.Selection == ParameterSelection.Random ? "on" : "")" title="A random value each iteration" @onclick="() => list.Selection = ParameterSelection.Random">Random</button>
+                        </div>
+                        <button class="btn-sm btn-icon btn-danger" title="Remove list" @onclick="() => _plan.Parameters.Remove(list)">✕</button>
+                    </div>
+                    <textarea class="mono" rows="4" placeholder="One value per line" aria-label="Values"
+                              @bind:get="string.Join('\n', list.Values)" @bind:set="value => SetValues(list, value)"></textarea>
+                    <div class="hint">
+                        Use as <code>{{@(string.IsNullOrWhiteSpace(list.Name) ? "name" : list.Name)}}</code>.
+                        @list.Values.Count @(list.Values.Count == 1 ? "value" : "values"), one per line.
+                    </div>
+                </div>
+            }
+            <div class="hint">Each iteration takes one value from every list, so all its requests use the same one. "Send once" uses the first value.</div>
         </div>
     </div>
 
@@ -291,6 +326,12 @@
 
     private void AddRequest() => _plan.Requests.Add(new RequestDefinition { Url = _plan.Requests.LastOrDefault()?.Url ?? "https://" });
 
+    private void AddParameterList() => _plan.Parameters.Add(new ParameterList { Name = _plan.Parameters.Count == 0 ? "userIds" : string.Empty });
+
+    // Blank lines are dropped, since a trailing newline in the text box shouldn't become an empty value.
+    private static void SetValues(ParameterList list, string? text) =>
+        list.Values = [.. (text ?? string.Empty).Split('\n').Select(v => v.TrimEnd('\r')).Where(v => v.Trim().Length > 0)];
+
     private void Move(int index, int delta)
     {
         var target = index + delta;
@@ -337,7 +378,7 @@
         _probeResults.Remove(request);
         try
         {
-            _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile);
+            _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters);
         }
         finally
         {

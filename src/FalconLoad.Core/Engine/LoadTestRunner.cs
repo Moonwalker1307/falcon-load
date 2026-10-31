@@ -13,6 +13,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
 {
     private readonly LoadTestPlan _plan;
     private readonly PreparedRequest[] _requests;
+    private readonly ParameterSet? _parameters;
     private readonly HttpMessageInvoker _invoker;
     private readonly bool _ownsInvoker;
     private readonly MetricsCollector _metrics;
@@ -37,6 +38,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
         _plan = plan.Clone();
         _requests = _plan.Requests.Select(PreparedRequest.From).ToArray();
+        _parameters = _plan.Parameters.Count > 0 ? new ParameterSet(_plan.Parameters) : null;
         _metrics = new MetricsCollector(_plan.Requests.Select(r => r.DisplayName).ToList());
 
         if (invoker is null)
@@ -151,10 +153,15 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
         Interlocked.Increment(ref _activeVirtualUsers);
         var buffer = new byte[16 * 1024];
+
+        // Each virtual user refills its own row of parameter values per iteration, so lists cost no allocation per request.
+        var row = _parameters is null ? null : new string[_parameters.Count];
         try
         {
             for (long iteration = 1; ; iteration++)
             {
+                var context = new TemplateContext(index + 1, iteration, new ParameterValues(_parameters, row));
+                var picked = false;
                 for (var step = 0; step < _requests.Length; step++)
                 {
                     if (stop.IsCancellationRequested || Interlocked.Decrement(ref _remainingRequests) < 0)
@@ -167,7 +174,15 @@ public sealed class LoadTestRunner : IAsyncDisposable
                         return;
                     }
 
-                    var result = await SendAsync(step, new TemplateContext(index + 1, iteration), buffer, stop).ConfigureAwait(false);
+                    // Values are picked only once the iteration's first request may go, so with a request count the sequence
+                    // isn't advanced by iterations that never send anything.
+                    if (!picked && row is not null)
+                    {
+                        _parameters!.Next(row);
+                        picked = true;
+                    }
+
+                    var result = await SendAsync(step, context, buffer, stop).ConfigureAwait(false);
                     if (result is { } r)
                     {
                         _metrics.Record(r);

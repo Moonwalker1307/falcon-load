@@ -9,11 +9,13 @@ namespace FalconLoad.Core.Model;
 /// <item><c>{{$randomInt}}</c> a random integer 0..999999, or <c>{{$randomInt:min:max}}</c></item>
 /// <item><c>{{$timestamp}}</c> Unix time in seconds; <c>{{$isoTimestamp}}</c> ISO 8601 UTC</item>
 /// <item><c>{{$iteration}}</c> the virtual user's iteration number; <c>{{$vu}}</c> the virtual user number</item>
+/// <item><c>{{name}}</c> the current value of the plan's <see cref="ParameterList"/> with that name</item>
 /// </list>
+/// Placeholders that match nothing are sent as written.
 /// </summary>
 public static partial class TemplateRenderer
 {
-    [GeneratedRegex(@"\{\{\s*\$(?<name>[A-Za-z]+)(?::(?<a>-?\d+):(?<b>-?\d+))?\s*\}\}")]
+    [GeneratedRegex(@"\{\{\s*(?<builtin>\$)?(?<name>[A-Za-z_][A-Za-z0-9_]*)(?::(?<a>-?\d+):(?<b>-?\d+))?\s*\}\}")]
     private static partial Regex VariablePattern();
 
     public static bool HasVariables(string? text) => text is not null && text.Contains("{{", StringComparison.Ordinal) && VariablePattern().IsMatch(text);
@@ -28,12 +30,18 @@ public static partial class TemplateRenderer
         return VariablePattern().Replace(text, match => Evaluate(match, context) ?? match.Value);
     }
 
-    /// <summary>Renders with fixed placeholder values, used for validating URLs before a run.</summary>
-    public static string RenderForValidation(string text) => Render(text, new TemplateContext(1, 1));
+    /// <summary>Renders with fixed placeholder values and the first value of each list, used for validating URLs before a run.</summary>
+    public static string RenderForValidation(string text, ParameterSet? parameters = null) =>
+        Render(text, new TemplateContext(1, 1, parameters?.First() ?? default));
 
     private static string? Evaluate(Match match, TemplateContext context)
     {
         var name = match.Groups["name"].Value;
+        if (!match.Groups["builtin"].Success)
+        {
+            return !match.Groups["a"].Success && context.Parameters.TryGet(name, out var value) ? value : null;
+        }
+
         return name.ToLowerInvariant() switch
         {
             "guid" => Guid.NewGuid().ToString(),
@@ -60,4 +68,4 @@ public static partial class TemplateRenderer
     }
 }
 
-public readonly record struct TemplateContext(int VirtualUser, long Iteration);
+public readonly record struct TemplateContext(int VirtualUser, long Iteration, ParameterValues Parameters = default);
