@@ -24,6 +24,8 @@ internal sealed class PreparedRequest
 
     public StatusCodeMatcher Matcher { get; private set; } = StatusCodeMatcher.Default;
 
+    public ResponseChecker Checker { get; private set; } = ResponseChecker.Empty;
+
     public static PreparedRequest From(RequestDefinition definition)
     {
         StatusCodeMatcher.TryParse(definition.ExpectedStatusCodes, out var matcher);
@@ -41,6 +43,7 @@ internal sealed class PreparedRequest
                 .Select(h => (h.Name.Trim(), h.Value, TemplateRenderer.HasVariables(h.Value)))
                 .ToArray(),
             Matcher = matcher,
+            Checker = ResponseChecker.From(definition.Assertions),
         };
 
         if (!prepared._urlHasVariables)

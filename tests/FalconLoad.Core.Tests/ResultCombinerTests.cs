@@ -135,7 +135,36 @@ public class ResultCombinerTests
         Assert.NotEmpty(ResultCombiner.Validate([]));
     }
 
-    private static async Task<RunExport> RunAsync(string machine, HttpStatusCode status, int requests, DateTimeOffset startedAt)
+    [Fact]
+    public async Task Combine_AddsUpChecksAndJudgesThresholdsOnTheCombinedRun()
+    {
+        // One machine's responses all fail the check and the other's all pass, so together half the requests fail.
+        static void Configure(LoadTestPlan plan)
+        {
+            plan.Requests[0].Assertions = [new Assertion { Operator = AssertionOperator.Contains, Value = "ok" }];
+            plan.Thresholds = [new Threshold { Metric = ThresholdMetric.ErrorRate, Operator = ThresholdOperator.LessThan, Value = 60 }];
+        }
+
+        var passing = await RunAsync("load-1", HttpStatusCode.OK, requests: 30, Start, Configure);
+        var failing = await RunAsync("load-2", HttpStatusCode.OK, requests: 30, Start, p => { Configure(p); p.Requests[0].Assertions[0].Value = "nope"; });
+        failing = failing with { Plan = passing.Plan };
+        Assert.True(passing.Results.Passed);
+        Assert.False(failing.Results.Passed);
+
+        var imported = new[] { passing, failing }
+            .Select(r => JsonSerializer.Deserialize<RunExport>(JsonSerializer.Serialize(r, Json), Json)!)
+            .ToList();
+        var combined = ResultCombiner.Combine(imported).Combined;
+
+        Assert.Equal(2, combined.Checks.Count);
+        Assert.Equal((30L, 0L), (combined.Checks[0].Passed, combined.Checks[0].Failed));
+        var threshold = Assert.Single(combined.Thresholds);
+        Assert.Equal(50, threshold.Actual);
+        Assert.True(combined.Passed);
+    }
+
+    private static async Task<RunExport> RunAsync(
+        string machine, HttpStatusCode status, int requests, DateTimeOffset startedAt, Action<LoadTestPlan>? configure = null)
     {
         var plan = new LoadTestPlan
         {
@@ -143,6 +172,7 @@ public class ResultCombinerTests
             Requests = [new RequestDefinition { Url = "http://api.test/products" }],
             Profile = new LoadProfile { Concurrency = 2, StopCondition = StopCondition.RequestCount, TotalRequests = requests },
         };
+        configure?.Invoke(plan);
         await using var runner = new LoadTestRunner(plan, new HttpMessageInvoker(FakeHandler.Returning(status)));
         await runner.RunAsync(cancellationToken: CancellationToken.None);
         var (snapshot, histograms) = runner.GetResults();

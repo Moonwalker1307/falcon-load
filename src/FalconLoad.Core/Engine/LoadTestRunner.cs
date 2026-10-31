@@ -39,7 +39,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         _plan = plan.Clone();
         _requests = _plan.Requests.Select(PreparedRequest.From).ToArray();
         _parameters = _plan.Parameters.Count > 0 ? new ParameterSet(_plan.Parameters) : null;
-        _metrics = new MetricsCollector(_plan.Requests.Select(r => r.DisplayName).ToList());
+        _metrics = new MetricsCollector(
+            _plan.Requests.Select(r => r.DisplayName).ToList(),
+            _requests.Any(r => r.Checker.Count > 0) ? _requests.Select(r => r.Checker.Names).ToList() : null);
 
         if (invoker is null)
         {
@@ -56,12 +58,17 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
     public RunState State => _state;
 
-    public LoadTestSnapshot GetSnapshot() =>
-        _metrics.Snapshot(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
+    public LoadTestSnapshot GetSnapshot() => ThresholdEvaluator.Apply(
+        _plan.Thresholds,
+        _metrics.Snapshot(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason));
 
     /// <summary>A snapshot together with the latency histograms behind it, for an exported result.</summary>
-    public (LoadTestSnapshot Snapshot, ResultHistograms Histograms) GetResults() =>
-        _metrics.SnapshotWithHistograms(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
+    public (LoadTestSnapshot Snapshot, ResultHistograms Histograms) GetResults()
+    {
+        var (snapshot, histograms) = _metrics.SnapshotWithHistograms(
+            _state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
+        return (ThresholdEvaluator.Apply(_plan.Thresholds, snapshot), histograms);
+    }
 
     /// <summary>Runs the load test to completion. Cancelling <paramref name="cancellationToken"/> stops it early.</summary>
     /// <param name="onProgress">Invoked with a fresh snapshot every <paramref name="reportInterval"/> while running.</param>
@@ -158,6 +165,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         Interlocked.Increment(ref _activeVirtualUsers);
         var buffer = new byte[16 * 1024];
 
+        // Bodies are only kept when a check needs to read them.
+        var kept = _requests.Any(r => r.Checker.NeedsBody) ? new ResponseBuffer() : null;
+
         // Each virtual user refills its own row of parameter values per iteration, so lists cost no allocation per request.
         var row = _parameters is null ? null : new string[_parameters.Count];
         try
@@ -186,7 +196,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
                         picked = true;
                     }
 
-                    var result = await SendAsync(step, context, buffer, stop).ConfigureAwait(false);
+                    var result = await SendAsync(step, context, buffer, kept, stop).ConfigureAwait(false);
                     if (result is { } r)
                     {
                         _metrics.Record(r);
@@ -222,9 +232,11 @@ public sealed class LoadTestRunner : IAsyncDisposable
     }
 
     /// <summary>Sends one request. Returns null when the run was stopped while the request was in flight.</summary>
-    private async Task<RequestResult?> SendAsync(int step, TemplateContext context, byte[] buffer, CancellationToken stop)
+    private async Task<RequestResult?> SendAsync(int step, TemplateContext context, byte[] buffer, ResponseBuffer? kept, CancellationToken stop)
     {
         var prepared = _requests[step];
+        var keepBody = prepared.Checker.NeedsBody;
+        kept?.Reset();
         var startedAt = _clock.Elapsed;
         var start = Stopwatch.GetTimestamp();
         long bytesSent = 0;
@@ -244,21 +256,44 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 while ((read = await body.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) > 0)
                 {
                     received += read;
+                    if (keepBody)
+                    {
+                        kept!.Append(buffer.AsSpan(0, read));
+                    }
                 }
             }
 
+            // The clock stops once the body is read; checking it is not part of the request's latency.
             var latency = Stopwatch.GetElapsedTime(start);
             var code = (int)response.StatusCode;
-            var success = prepared.Matcher.IsMatch(code);
+            var statusMatches = prepared.Matcher.IsMatch(code);
+            var checker = prepared.Checker;
+            var failedChecks = checker.Count == 0
+                ? 0
+                : checker.Evaluate(response, keepBody ? kept!.Memory : ReadOnlyMemory<byte>.Empty, keepBody && kept!.TooLarge);
+
+            string? error = null;
+            if (!statusMatches)
+            {
+                error = $"Unexpected status {code} {response.StatusCode}";
+            }
+            else if (failedChecks != 0)
+            {
+                error = keepBody && kept!.TooLarge
+                    ? TooLargeToCheck
+                    : checker.FailureMessages[System.Numerics.BitOperations.TrailingZeroCount(failedChecks)];
+            }
+
             return new RequestResult(
                 step,
                 startedAt,
                 latency,
                 code,
-                success,
-                success ? null : $"Unexpected status {code} {response.StatusCode}",
+                error is null,
+                error,
                 bytesSent,
-                received);
+                received,
+                failedChecks);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -281,6 +316,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         RequestResult Failure(string error) =>
             new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, error, bytesSent, 0);
     }
+
+    private static readonly string TooLargeToCheck =
+        $"Response body over {Assertion.MaxBodyBytes / (1024 * 1024)} MB is too large to check";
 
     private static string DescribeTransportError(HttpRequestException ex)
     {

@@ -13,7 +13,14 @@ public sealed record ProbeResult(
     string BodyPreview,
     long BodyBytes,
     bool Success,
-    string? Error);
+    string? Error)
+{
+    /// <summary>What each of the request's checks saw in the response. Empty when it has none or nothing came back.</summary>
+    public IReadOnlyList<CheckOutcome> Checks { get; init; } = [];
+
+    /// <summary>Whether the status matched the expected codes, regardless of the checks.</summary>
+    public bool StatusMatches { get; init; }
+}
 
 /// <summary>
 /// Sends one request and captures the response, so users can verify a request before load testing. Parameter lists
@@ -61,7 +68,13 @@ public static class RequestProbe
             }
 
             var code = (int)response.StatusCode;
-            return new ProbeResult(code, response.ReasonPhrase, latency, headers, preview, bytes.Length, prepared.Matcher.IsMatch(code), null);
+            var statusMatches = prepared.Matcher.IsMatch(code);
+            var checks = prepared.Checker.Explain(response, bytes);
+            return new ProbeResult(code, response.ReasonPhrase, latency, headers, preview, bytes.Length, statusMatches && checks.All(c => c.Passed), null)
+            {
+                Checks = checks,
+                StatusMatches = statusMatches,
+            };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

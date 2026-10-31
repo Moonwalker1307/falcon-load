@@ -25,6 +25,9 @@ public sealed class RequestDefinition
     /// </summary>
     public string? ExpectedStatusCodes { get; set; }
 
+    /// <summary>Checks on the response body and headers. Plans saved before checks existed have none.</summary>
+    public List<Assertion> Assertions { get; set; } = [];
+
     [System.Text.Json.Serialization.JsonIgnore]
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? $"{Method} {Url}" : Name;
 
@@ -46,6 +49,16 @@ public sealed class RequestDefinition
         if (!StatusCodeMatcher.TryParse(ExpectedStatusCodes, out _))
         {
             yield return "Expected status codes must look like \"200,201\" or \"200-299\".";
+        }
+
+        if (Assertions.Count > Assertion.MaxPerRequest)
+        {
+            yield return $"A request can have at most {Assertion.MaxPerRequest} checks.";
+        }
+
+        foreach (var problem in Assertions.Where(a => a.Enabled).SelectMany(a => a.Validate()))
+        {
+            yield return problem;
         }
 
         foreach (var header in Headers.Where(h => h.Enabled))
