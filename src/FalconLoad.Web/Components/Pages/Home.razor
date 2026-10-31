@@ -1,0 +1,140 @@
+@page "/"
+@implements IDisposable
+@inject PlanStore PlanStore
+@inject RunManager RunManager
+@inject NavigationManager Nav
+
+<PageTitle>falcon-load</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Dashboard</h1>
+        <div class="muted">Configure API requests, then hit them hard and watch how they hold up.</div>
+    </div>
+    <div class="actions">
+        <a class="btn btn-primary" href="plans/new">+ New load test</a>
+    </div>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error">@_error</div>
+}
+
+<div class="card">
+    <div class="card-header"><h2>Saved tests</h2></div>
+    @if (_plans.Count == 0)
+    {
+        <div class="empty">
+            <div>You have no saved load tests yet.</div>
+            <a class="btn btn-primary" href="plans/new">Create your first test</a>
+        </div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Requests</th>
+                        <th class="num">Virtual users</th>
+                        <th>Runs for</th>
+                        <th>Updated</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var plan in _plans)
+                    {
+                        <tr>
+                            <td><a href="plans/@plan.Id">@plan.Name</a></td>
+                            <td>
+                                @foreach (var r in plan.Requests.Take(2))
+                                {
+                                    <div class="small"><span class="method">@r.Method</span> <span class="mono muted">@r.Url</span></div>
+                                }
+                                @if (plan.Requests.Count > 2)
+                                {
+                                    <div class="small muted">+ @(plan.Requests.Count - 2) more</div>
+                                }
+                            </td>
+                            <td class="num">@plan.Profile.Concurrency</td>
+                            <td>@Format.StopSummary(plan.Profile)</td>
+                            <td class="muted">@Format.When(plan.UpdatedAt)</td>
+                            <td class="actions">
+                                <button class="btn-sm btn-primary" @onclick="() => Run(plan)">▶ Run</button>
+                                <a class="btn btn-sm" href="plans/@plan.Id">Edit</a>
+                                <button class="btn-sm" @onclick="() => Duplicate(plan)">Duplicate</button>
+                                @if (_confirmDelete == plan.Id)
+                                {
+                                    <button class="btn-sm btn-danger" @onclick="() => Delete(plan)">Confirm delete</button>
+                                    <button class="btn-sm" @onclick="() => _confirmDelete = null">Cancel</button>
+                                }
+                                else
+                                {
+                                    <button class="btn-sm btn-danger" @onclick="() => _confirmDelete = plan.Id">Delete</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>Recent runs</h2>
+        <a href="runs" class="small">All runs →</a>
+    </div>
+    <RunsTable Limit="10" />
+</div>
+
+@code {
+    private IReadOnlyList<LoadTestPlan> _plans = [];
+    private string? _error;
+    private Guid? _confirmDelete;
+
+    protected override void OnInitialized()
+    {
+        _plans = PlanStore.GetAll();
+        PlanStore.Changed += OnPlansChanged;
+    }
+
+    private void OnPlansChanged() => _ = InvokeAsync(() =>
+    {
+        _plans = PlanStore.GetAll();
+        StateHasChanged();
+    });
+
+    private void Run(LoadTestPlan plan)
+    {
+        try
+        {
+            var run = RunManager.Start(plan);
+            Nav.NavigateTo($"runs/{run.Id}");
+        }
+        catch (ArgumentException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    private void Duplicate(LoadTestPlan plan)
+    {
+        var copy = plan.Clone();
+        copy.Id = Guid.NewGuid();
+        copy.Name = $"{plan.Name} (copy)";
+        PlanStore.Save(copy);
+    }
+
+    private void Delete(LoadTestPlan plan)
+    {
+        _confirmDelete = null;
+        PlanStore.Delete(plan.Id);
+    }
+
+    public void Dispose() => PlanStore.Changed -= OnPlansChanged;
+}

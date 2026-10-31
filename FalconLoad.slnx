@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FalconLoad.Core/FalconLoad.Core.csproj" />
+    <Project Path="src/FalconLoad.Web/FalconLoad.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FalconLoad.Core.Tests/FalconLoad.Core.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,120 @@
+@* Dependency-free SVG line chart for per-second timelines. *@
+<div class="chart">
+    @if (Series.Count == 0 || Series.All(s => s.Values.Count == 0))
+    {
+        <div class="chart-empty">Waiting for data…</div>
+    }
+    else
+    {
+        <svg viewBox="0 0 @Width @Height" role="img" aria-label="@AriaLabel">
+            @for (var i = 0; i <= GridLines; i++)
+            {
+                var y = PadTop + PlotHeight * i / GridLines;
+                <line class="gridline" x1="@PadLeft" x2="@(Width - PadRight)" y1="@F(y)" y2="@F(y)" />
+            }
+            @AxisLabels()
+            @foreach (var series in Series.Where(s => s.Values.Count > 0))
+            {
+                var points = Points(series.Values);
+                if (series.Fill)
+                {
+                    <polygon class="area" fill="@series.Color" points="@F(X(0)),@F(PadTop + PlotHeight) @points @F(X(series.Values.Count - 1)),@F(PadTop + PlotHeight)" />
+                }
+                <polyline class="line" stroke="@series.Color" points="@points" />
+            }
+        </svg>
+        <div class="legend">
+            @foreach (var series in Series)
+            {
+                <span><i style="background:@series.Color"></i>@series.Name</span>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private const int Width = 640, Height = 220, PadLeft = 56, PadRight = 12, PadTop = 10, PadBottom = 24, GridLines = 4;
+    private const double PlotWidth = Width - PadLeft - PadRight, PlotHeight = Height - PadTop - PadBottom;
+
+    private double _max = 1;
+    private int _count;
+
+    [Parameter, EditorRequired] public IReadOnlyList<ChartSeries> Series { get; set; } = [];
+
+    [Parameter] public Func<double, string> FormatValue { get; set; } = v => Format.Number(v);
+
+    [Parameter] public string AriaLabel { get; set; } = "Chart";
+
+    protected override void OnParametersSet()
+    {
+        _count = Series.Count == 0 ? 0 : Series.Max(s => s.Values.Count);
+        var max = Series.SelectMany(s => s.Values).DefaultIfEmpty(0).Max();
+        _max = NiceCeiling(max);
+    }
+
+    private double X(int index) => _count <= 1 ? PadLeft + PlotWidth / 2 : PadLeft + PlotWidth * index / (_count - 1);
+
+    private double Y(double value) => PadTop + PlotHeight - PlotHeight * Math.Min(value, _max) / _max;
+
+    private string Points(IReadOnlyList<double> values) =>
+        string.Join(' ', values.Select((v, i) => $"{F(X(i))},{F(Y(v))}"));
+
+    private IEnumerable<(int Index, string Label)> XTicks()
+    {
+        if (_count == 0)
+        {
+            yield break;
+        }
+
+        var ticks = Math.Min(6, _count);
+        var seen = new HashSet<int>();
+        for (var t = 0; t < ticks; t++)
+        {
+            var index = ticks == 1 ? 0 : (int)Math.Round((double)(_count - 1) * t / (ticks - 1));
+            if (seen.Add(index))
+            {
+                yield return (index, $"{index + 1}s");
+            }
+        }
+    }
+
+    /// <summary>SVG &lt;text&gt; elements, built as markup because Razor reserves the &lt;text&gt; tag.</summary>
+    private MarkupString AxisLabels()
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i <= GridLines; i++)
+        {
+            var y = PadTop + PlotHeight * i / GridLines;
+            var value = _max * (GridLines - i) / GridLines;
+            sb.Append($"<text class=\"axis-label\" x=\"{PadLeft - 6}\" y=\"{F(y + 4)}\" text-anchor=\"end\">{System.Net.WebUtility.HtmlEncode(FormatValue(value))}</text>");
+        }
+
+        foreach (var (tick, label) in XTicks())
+        {
+            sb.Append($"<text class=\"axis-label\" x=\"{F(X(tick))}\" y=\"{Height - 6}\" text-anchor=\"middle\">{label}</text>");
+        }
+
+        return new MarkupString(sb.ToString());
+    }
+
+    private static double NiceCeiling(double value)
+    {
+        if (value <= 0)
+        {
+            return 1;
+        }
+
+        var magnitude = Math.Pow(10, Math.Floor(Math.Log10(value)));
+        foreach (var step in new[] { 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10 })
+        {
+            if (step * magnitude >= value)
+            {
+                return step * magnitude;
+            }
+        }
+
+        return 10 * magnitude;
+    }
+
+    private static string F(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}

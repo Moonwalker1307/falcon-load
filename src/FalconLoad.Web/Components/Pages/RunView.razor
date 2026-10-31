@@ -1,0 +1,274 @@
+@page "/runs/{Id:guid}"
+@implements IDisposable
+@inject RunManager RunManager
+@inject PlanStore PlanStore
+@inject NavigationManager Nav
+
+<PageTitle>@(_run?.Plan.Name ?? "Run") · falcon-load</PageTitle>
+
+@if (_run is null)
+{
+    <div class="card empty">
+        <div>This run isn't available. Runs are kept in memory and are cleared when the app restarts.</div>
+        <a class="btn" href="/">Back to dashboard</a>
+    </div>
+    return;
+}
+
+@{
+    var s = _run.Snapshot;
+    var profile = _run.Plan.Profile;
+    var last = s.Timeline.Count > 0 ? s.Timeline[^1] : null;
+}
+
+<div class="page-header">
+    <div>
+        <h1>@_run.Plan.Name <RunStateBadge State="s.State" /></h1>
+        <div class="muted small">
+            Started @_run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ·
+            @profile.Concurrency virtual users · stop after @Format.StopSummary(profile)
+            @if (profile.MaxRequestsPerSecond > 0)
+            {
+                <span> · capped at @profile.MaxRequestsPerSecond req/s</span>
+            }
+        </div>
+    </div>
+    <div class="actions">
+        @if (!s.IsFinished)
+        {
+            <button class="btn-danger" @onclick="() => _run.Stop()">■ Stop</button>
+        }
+        else
+        {
+            <button class="btn-primary" @onclick="RunAgain">▶ Run again</button>
+            <a class="btn" href="api/runs/@_run.Id/export" download>Export JSON</a>
+        }
+        @if (_planSaved)
+        {
+            <a class="btn" href="plans/@_run.Plan.Id">Edit test</a>
+        }
+    </div>
+</div>
+
+@if (s.FailureReason is not null)
+{
+    <div class="alert alert-error">The run failed: @s.FailureReason</div>
+}
+
+<div class="progress" title="@Math.Round(Progress(s, profile) * 100)%">
+    <div style="width:@((Progress(s, profile) * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"></div>
+</div>
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">Requests</div>
+        <div class="value">@Format.Number(s.TotalRequests)</div>
+        <div class="sub">in @Format.Duration(s.Elapsed)</div>
+    </div>
+    <div class="stat">
+        <div class="label">Throughput</div>
+        <div class="value">@Format.Rate(s.RequestsPerSecond)<span class="small muted"> req/s</span></div>
+        <div class="sub">@(s.IsFinished ? "average" : $"now {Format.Rate(last?.Requests ?? 0)} req/s")</div>
+    </div>
+    <div class="stat @(s.FailedRequests > 0 ? "bad" : "")">
+        <div class="label">Errors</div>
+        <div class="value">@Format.Percent(s.ErrorRate)</div>
+        <div class="sub">@s.FailedRequests.ToString("#,0") failed</div>
+    </div>
+    <div class="stat">
+        <div class="label">Median</div>
+        <div class="value">@Format.Ms(s.Latency.P50Ms)</div>
+        <div class="sub">mean @Format.Ms(s.Latency.MeanMs)</div>
+    </div>
+    <div class="stat">
+        <div class="label">p95</div>
+        <div class="value">@Format.Ms(s.Latency.P95Ms)</div>
+        <div class="sub">p90 @Format.Ms(s.Latency.P90Ms)</div>
+    </div>
+    <div class="stat">
+        <div class="label">p99</div>
+        <div class="value">@Format.Ms(s.Latency.P99Ms)</div>
+        <div class="sub">max @Format.Ms(s.Latency.MaxMs)</div>
+    </div>
+    <div class="stat">
+        <div class="label">Virtual users</div>
+        <div class="value">@s.ActiveVirtualUsers</div>
+        <div class="sub">of @profile.Concurrency active</div>
+    </div>
+    <div class="stat">
+        <div class="label">Data received</div>
+        <div class="value">@Format.Bytes(s.BytesReceived)</div>
+        <div class="sub">sent @Format.Bytes(s.BytesSent)</div>
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <h2>Throughput <span class="muted small">(requests per second)</span></h2>
+        <LineChart AriaLabel="Requests per second over time" Series="ThroughputSeries(s)" />
+    </div>
+    <div class="card">
+        <h2>Latency</h2>
+        <LineChart AriaLabel="Latency over time" FormatValue="Format.Ms" Series="LatencySeries(s)" />
+    </div>
+</div>
+
+<div class="card" style="margin-top:1.25rem">
+    <h2>Requests</h2>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Request</th>
+                    <th class="num">Count</th>
+                    <th class="num">Errors</th>
+                    <th class="num">Mean</th>
+                    <th class="num">p50</th>
+                    <th class="num">p95</th>
+                    <th class="num">p99</th>
+                    <th class="num">Max</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var step in s.Steps)
+                {
+                    var def = _run.Plan.Requests[step.StepIndex];
+                    <tr>
+                        <td><span class="step-num">@(step.StepIndex + 1)</span></td>
+                        <td>
+                            @if (!string.IsNullOrWhiteSpace(def.Name))
+                            {
+                                <div>@def.Name</div>
+                            }
+                            <div class="small"><span class="method">@def.Method</span> <span class="mono muted">@def.Url</span></div>
+                        </td>
+                        <td class="num">@step.Requests.ToString("#,0")</td>
+                        <td class="num @(step.Failures > 0 ? "status-err" : "")">@step.Failures.ToString("#,0")</td>
+                        <td class="num">@Format.Ms(step.Latency.MeanMs)</td>
+                        <td class="num">@Format.Ms(step.Latency.P50Ms)</td>
+                        <td class="num">@Format.Ms(step.Latency.P95Ms)</td>
+                        <td class="num">@Format.Ms(step.Latency.P99Ms)</td>
+                        <td class="num">@Format.Ms(step.Latency.MaxMs)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="grid-2">
+    <div class="card">
+        <h2>Status codes</h2>
+        @if (s.StatusCodes.Count == 0)
+        {
+            <div class="muted">No responses yet.</div>
+        }
+        else
+        {
+            <table>
+                <tbody>
+                    @foreach (var (statusCode, count) in s.StatusCodes)
+                    {
+                        <tr>
+                            <td class="mono @Format.StatusClass(statusCode)">@statusCode</td>
+                            <td class="num">@count.ToString("#,0")</td>
+                            <td class="num muted">@Format.Percent((double)count / Math.Max(1, s.TotalRequests))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+    <div class="card">
+        <h2>Errors</h2>
+        @if (s.Errors.Count == 0)
+        {
+            <div class="muted">No errors. 🎯</div>
+        }
+        else
+        {
+            <table>
+                <tbody>
+                    @foreach (var error in s.Errors)
+                    {
+                        <tr>
+                            <td class="small">@error.Message</td>
+                            <td class="num">@error.Count.ToString("#,0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
+@code {
+    private LoadTestRun? _run;
+    private bool _planSaved;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        if (_run is not null)
+        {
+            _run.Updated -= OnUpdated;
+        }
+
+        _run = RunManager.Get(Id);
+        _planSaved = _run is not null && PlanStore.Get(_run.Plan.Id) is not null;
+        if (_run is not null)
+        {
+            _run.Updated += OnUpdated;
+        }
+    }
+
+    private void OnUpdated(LoadTestRun run) => _ = InvokeAsync(StateHasChanged);
+
+    private static double Progress(LoadTestSnapshot s, LoadProfile p)
+    {
+        if (s.IsFinished)
+        {
+            return 1;
+        }
+
+        var fraction = p.StopCondition == StopCondition.Duration
+            ? s.Elapsed.TotalSeconds / p.DurationSeconds
+            : (double)s.TotalRequests / p.TotalRequests;
+        return Math.Clamp(fraction, 0, 1);
+    }
+
+    private static IReadOnlyList<ChartSeries> ThroughputSeries(LoadTestSnapshot s) =>
+    [
+        new("Requests/s", "var(--series-1)", s.Timeline.Select(t => (double)t.Requests).ToList(), Fill: true),
+        new("Errors/s", "var(--series-3)", s.Timeline.Select(t => (double)t.Failures).ToList()),
+    ];
+
+    private static IReadOnlyList<ChartSeries> LatencySeries(LoadTestSnapshot s) =>
+    [
+        new("Mean", "var(--series-1)", s.Timeline.Select(t => t.MeanLatencyMs).ToList()),
+        new("p95", "var(--series-2)", s.Timeline.Select(t => t.P95LatencyMs).ToList()),
+    ];
+
+    private void RunAgain()
+    {
+        if (_run is null)
+        {
+            return;
+        }
+
+        // Prefer the latest saved version of the test, if it still exists.
+        var plan = PlanStore.Get(_run.Plan.Id) ?? _run.Plan;
+        var next = RunManager.Start(plan);
+        Nav.NavigateTo($"runs/{next.Id}");
+    }
+
+    public void Dispose()
+    {
+        if (_run is not null)
+        {
+            _run.Updated -= OnUpdated;
+        }
+    }
+}
