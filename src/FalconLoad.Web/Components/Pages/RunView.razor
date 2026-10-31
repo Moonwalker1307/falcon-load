@@ -9,7 +9,8 @@
 @if (_run is null)
 {
     <div class="card empty">
-        <div>This run isn't available. Runs are kept in memory and are cleared when the app restarts.</div>
+        <h1 tabindex="-1">Run not available</h1>
+        <p>Runs are kept in memory and are cleared when the app restarts. Export a run as JSON to keep it.</p>
         <a class="btn" href="/">Back to dashboard</a>
     </div>
     return;
@@ -23,109 +24,116 @@
 
 <div class="page-header">
     <div>
-        <h1>@_run.Plan.Name <RunStateBadge State="s.State" /></h1>
-        <div class="muted small">
-            Started @_run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ·
-            @profile.Concurrency virtual users · stop after @Format.StopSummary(profile)
+        <div class="eyebrow">Run</div>
+        <div class="title-row">
+            <h1 tabindex="-1">@_run.Plan.Name</h1>
+            <RunStateBadge State="s.State" />
+        </div>
+        <div class="meta">
+            <span>Started @_run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</span>
+            <span>@profile.Concurrency virtual @(profile.Concurrency == 1 ? "user" : "users")</span>
+            <span>Stops after @Format.StopSummary(profile)</span>
+            @if (profile.RampUpSeconds > 0)
+            {
+                <span>@Format.Seconds(profile.RampUpSeconds) ramp-up</span>
+            }
             @if (profile.MaxRequestsPerSecond > 0)
             {
-                <span> · capped at @profile.MaxRequestsPerSecond req/s</span>
+                <span>Capped at @profile.MaxRequestsPerSecond req/s</span>
             }
         </div>
     </div>
     <div class="actions">
+        @if (_planSaved)
+        {
+            <a class="btn btn-ghost" href="plans/@_run.Plan.Id"><Icon Name="edit" />Edit test</a>
+        }
         @if (!s.IsFinished)
         {
-            <button class="btn-danger" @onclick="() => _run.Stop()">■ Stop</button>
+            <button class="btn-danger" @onclick="() => _run.Stop()"><Icon Name="stop" />Stop</button>
         }
         else
         {
-            <button class="btn-primary" @onclick="RunAgain">▶ Run again</button>
-            <a class="btn" href="api/runs/@_run.Id/export" download>Export JSON</a>
-        }
-        @if (_planSaved)
-        {
-            <a class="btn" href="plans/@_run.Plan.Id">Edit test</a>
+            <a class="btn" href="api/runs/@_run.Id/export" download title="Download the full results as JSON"><Icon Name="download" />Export JSON</a>
+            <button class="btn-primary" @onclick="RunAgain"><Icon Name="rerun" />Run again</button>
         }
     </div>
 </div>
 
+@* Announce state changes only; the numbers change every second and would be too noisy to read out. *@
+<div class="sr-only" role="status" aria-live="polite">@StateMessage(s)</div>
+
 @if (s.FailureReason is not null)
 {
-    <div class="alert alert-error">The run failed: @s.FailureReason</div>
+    <div class="alert alert-error" role="alert"><Icon Name="alert" /><div><strong>The run failed.</strong> @s.FailureReason</div></div>
 }
 
-<FlightProgress Value="Progress(s, profile)" Flying="!s.IsFinished" />
+<div class="progress-block">
+    <FlightProgress Value="Progress(s, profile)" Flying="!s.IsFinished" />
+    <div class="progress-text">
+        <span>@ProgressLabel(s, profile)</span>
+        <span>@Format.Duration(s.Elapsed) elapsed</span>
+    </div>
+</div>
 
 <div class="stats">
+    <div class="stat">
+        <div class="label">Throughput</div>
+        <div class="value">@Format.Rate(s.RequestsPerSecond)<span class="unit">req/s</span></div>
+        <div class="sub">@(s.IsFinished ? "average over the run" : $"now {Format.Rate(last?.Requests ?? 0)} req/s")</div>
+    </div>
+    <div class="stat">
+        <div class="label">p95 latency</div>
+        <div class="value">@Format.Ms(s.Latency.P95Ms)</div>
+        <div class="sub">median @Format.Ms(s.Latency.P50Ms)</div>
+    </div>
+    <div class="stat @(s.FailedRequests > 0 ? "bad" : s.TotalRequests > 0 ? "good" : "")">
+        <div class="label">Error rate</div>
+        <div class="value">@Format.Percent(s.ErrorRate)</div>
+        <div class="sub">@s.FailedRequests.ToString("#,0") of @s.TotalRequests.ToString("#,0") failed</div>
+    </div>
     <div class="stat">
         <div class="label">Requests</div>
         <div class="value">@Format.Number(s.TotalRequests)</div>
         <div class="sub">in @Format.Duration(s.Elapsed)</div>
     </div>
-    <div class="stat">
-        <div class="label">Throughput</div>
-        <div class="value">@Format.Rate(s.RequestsPerSecond)<span class="small muted"> req/s</span></div>
-        <div class="sub">@(s.IsFinished ? "average" : $"now {Format.Rate(last?.Requests ?? 0)} req/s")</div>
-    </div>
-    <div class="stat @(s.FailedRequests > 0 ? "bad" : "")">
-        <div class="label">Errors</div>
-        <div class="value">@Format.Percent(s.ErrorRate)</div>
-        <div class="sub">@s.FailedRequests.ToString("#,0") failed</div>
-    </div>
-    <div class="stat">
-        <div class="label">Median</div>
-        <div class="value">@Format.Ms(s.Latency.P50Ms)</div>
-        <div class="sub">mean @Format.Ms(s.Latency.MeanMs)</div>
-    </div>
-    <div class="stat">
-        <div class="label">p95</div>
-        <div class="value">@Format.Ms(s.Latency.P95Ms)</div>
-        <div class="sub">p90 @Format.Ms(s.Latency.P90Ms)</div>
-    </div>
-    <div class="stat">
-        <div class="label">p99</div>
-        <div class="value">@Format.Ms(s.Latency.P99Ms)</div>
-        <div class="sub">max @Format.Ms(s.Latency.MaxMs)</div>
-    </div>
-    <div class="stat">
-        <div class="label">Virtual users</div>
-        <div class="value">@s.ActiveVirtualUsers</div>
-        <div class="sub">of @profile.Concurrency active</div>
-    </div>
-    <div class="stat">
-        <div class="label">Data received</div>
-        <div class="value">@Format.Bytes(s.BytesReceived)</div>
-        <div class="sub">sent @Format.Bytes(s.BytesSent)</div>
-    </div>
+</div>
+
+<div class="stats stats-secondary">
+    <div class="stat"><div class="label">Mean</div><div class="value">@Format.Ms(s.Latency.MeanMs)</div></div>
+    <div class="stat"><div class="label">p90</div><div class="value">@Format.Ms(s.Latency.P90Ms)</div></div>
+    <div class="stat"><div class="label">p99</div><div class="value">@Format.Ms(s.Latency.P99Ms)</div></div>
+    <div class="stat"><div class="label">Max</div><div class="value">@Format.Ms(s.Latency.MaxMs)</div></div>
+    <div class="stat"><div class="label">Active users</div><div class="value">@s.ActiveVirtualUsers<span class="unit">/ @profile.Concurrency</span></div></div>
+    <div class="stat"><div class="label">Received</div><div class="value">@Format.Bytes(s.BytesReceived)</div><div class="sub">sent @Format.Bytes(s.BytesSent)</div></div>
 </div>
 
 <div class="grid-2">
-    <div class="card">
-        <h2>Throughput <span class="muted small">(requests per second)</span></h2>
+    <section class="card" aria-labelledby="tp-title">
+        <div class="card-header"><h2 id="tp-title">Throughput</h2><span class="hint">requests per second</span></div>
         <LineChart AriaLabel="Requests per second over time" Series="ThroughputSeries(s)" />
-    </div>
-    <div class="card">
-        <h2>Latency</h2>
+    </section>
+    <section class="card" aria-labelledby="lat-title">
+        <div class="card-header"><h2 id="lat-title">Latency</h2><span class="hint">per second</span></div>
         <LineChart AriaLabel="Latency over time" FormatValue="Format.Ms" Series="LatencySeries(s)" />
-    </div>
+    </section>
 </div>
 
-<div class="card" style="margin-top:1.25rem">
-    <h2>Requests</h2>
+<section class="card card-flush" aria-labelledby="req-title">
+    <div class="card-header"><h2 id="req-title">Requests</h2></div>
     <div class="table-wrap">
-        <table>
+        <table class="table-hover">
             <thead>
                 <tr>
-                    <th>#</th>
-                    <th>Request</th>
-                    <th class="num">Count</th>
-                    <th class="num">Errors</th>
-                    <th class="num">Mean</th>
-                    <th class="num">p50</th>
-                    <th class="num">p95</th>
-                    <th class="num">p99</th>
-                    <th class="num">Max</th>
+                    <th scope="col">#</th>
+                    <th scope="col">Request</th>
+                    <th scope="col" class="num">Count</th>
+                    <th scope="col" class="num">Errors</th>
+                    <th scope="col" class="num">Mean</th>
+                    <th scope="col" class="num">p50</th>
+                    <th scope="col" class="num">p95</th>
+                    <th scope="col" class="num">p99</th>
+                    <th scope="col" class="num">Max</th>
                 </tr>
             </thead>
             <tbody>
@@ -137,9 +145,9 @@
                         <td>
                             @if (!string.IsNullOrWhiteSpace(def.Name))
                             {
-                                <div>@def.Name</div>
+                                <div class="row-title">@def.Name</div>
                             }
-                            <div class="small"><span class="method">@def.Method</span> <span class="mono muted">@def.Url</span></div>
+                            <div class="request-line"><span class="@Format.MethodClass(def.Method)">@def.Method</span><span class="mono muted" title="@def.Url">@def.Url</span></div>
                         </td>
                         <td class="num">@step.Requests.ToString("#,0")</td>
                         <td class="num @(step.Failures > 0 ? "status-err" : "")">@step.Failures.ToString("#,0")</td>
@@ -153,11 +161,11 @@
             </tbody>
         </table>
     </div>
-</div>
+</section>
 
 <div class="grid-2">
-    <div class="card">
-        <h2>Status codes</h2>
+    <section class="card" aria-labelledby="codes-title">
+        <h2 id="codes-title">Status codes</h2>
         @if (s.StatusCodes.Count == 0)
         {
             <div class="muted">No responses yet.</div>
@@ -168,21 +176,28 @@
                 <tbody>
                     @foreach (var (statusCode, count) in s.StatusCodes)
                     {
+                        var share = (double)count / Math.Max(1, s.TotalRequests);
+                        var cls = Format.StatusClass(statusCode);
                         <tr>
-                            <td class="mono @Format.StatusClass(statusCode)">@statusCode</td>
+                            <td class="mono @cls">@statusCode</td>
                             <td class="num">@count.ToString("#,0")</td>
-                            <td class="num muted">@Format.Percent((double)count / Math.Max(1, s.TotalRequests))</td>
+                            <td>
+                                <div class="share">
+                                    <div class="share-bar @(cls is "status-2xx" or "status-3xx" ? "" : "bad")"><div style="width:@Css(share)%"></div></div>
+                                    <span class="pct">@Format.Percent(share)</span>
+                                </div>
+                            </td>
                         </tr>
                     }
                 </tbody>
             </table>
         }
-    </div>
-    <div class="card">
-        <h2>Errors</h2>
+    </section>
+    <section class="card" aria-labelledby="errors-title">
+        <h2 id="errors-title">Errors</h2>
         @if (s.Errors.Count == 0)
         {
-            <div class="muted">No errors. 🎯</div>
+            <div class="muted">@(s.TotalRequests == 0 ? "No responses yet." : "No errors so far.")</div>
         }
         else
         {
@@ -192,13 +207,13 @@
                     {
                         <tr>
                             <td class="small">@error.Message</td>
-                            <td class="num">@error.Count.ToString("#,0")</td>
+                            <td class="num status-err">@error.Count.ToString("#,0")</td>
                         </tr>
                     }
                 </tbody>
             </table>
         }
-    </div>
+    </section>
 </div>
 
 @code {
@@ -236,6 +251,43 @@
             : (double)s.TotalRequests / p.TotalRequests;
         return Math.Clamp(fraction, 0, 1);
     }
+
+    private static string StateMessage(LoadTestSnapshot s) => s.State switch
+    {
+        RunState.Pending => "The test is starting.",
+        RunState.Running => "The test is running.",
+        RunState.Completed => $"The test completed: {s.TotalRequests:#,0} requests, {Format.Percent(s.ErrorRate)} errors.",
+        RunState.Cancelled => "The test was stopped.",
+        _ => "The test failed.",
+    };
+
+    private static string ProgressLabel(LoadTestSnapshot s, LoadProfile p)
+    {
+        if (s.IsFinished)
+        {
+            return s.State switch
+            {
+                RunState.Completed => "Finished",
+                RunState.Cancelled => "Stopped early",
+                _ => "Failed",
+            };
+        }
+
+        var percent = $"{Math.Round(Progress(s, p) * 100)}%";
+        if (p.StopCondition == StopCondition.Duration)
+        {
+            return $"{percent} · {Format.Remaining(TimeSpan.FromSeconds(p.DurationSeconds) - s.Elapsed)}";
+        }
+
+        // With a request count the time left is only an estimate from the average rate so far.
+        var left = p.TotalRequests - s.TotalRequests;
+        return s.RequestsPerSecond > 0
+            ? $"{percent} · about {Format.Remaining(TimeSpan.FromSeconds(left / s.RequestsPerSecond))}"
+            : percent;
+    }
+
+    private static string Css(double fraction) =>
+        (Math.Clamp(fraction, 0, 1) * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
 
     private static IReadOnlyList<ChartSeries> ThroughputSeries(LoadTestSnapshot s) =>
     [

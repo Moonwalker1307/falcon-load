@@ -47,11 +47,41 @@ public static class Format
 
     public static string StateBadge(RunState state) => "badge badge-" + state.ToString().ToLowerInvariant();
 
+    public static string MethodClass(string method) => "method method-" + method.ToLowerInvariant();
+
     public static string StatusClass(string code) =>
         code.Length == 3 && char.IsDigit(code[0]) ? $"status-{code[0]}xx" : "status-err";
 
     public static string StopSummary(FalconLoad.Core.Model.LoadProfile p) =>
         p.StopCondition == FalconLoad.Core.Model.StopCondition.Duration
-            ? Duration(TimeSpan.FromSeconds(p.DurationSeconds))
+            ? Seconds(p.DurationSeconds)
             : $"{p.TotalRequests:#,0} requests";
+
+    /// <summary>A configured length such as "45s" or "2m 30s", without the decimals <see cref="Duration"/> shows for live timings.</summary>
+    public static string Seconds(int seconds)
+    {
+        var t = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        var parts = new List<string>();
+        if (t.TotalHours >= 1)
+        {
+            parts.Add($"{(int)t.TotalHours}h");
+        }
+
+        if (t.Minutes > 0)
+        {
+            parts.Add($"{t.Minutes}m");
+        }
+
+        if (t.Seconds > 0 || parts.Count == 0)
+        {
+            parts.Add($"{t.Seconds}s");
+        }
+
+        return string.Join(' ', parts);
+    }
+
+    /// <summary>A whole-second countdown such as "1m 05s left", for the run's progress line.</summary>
+    public static string Remaining(TimeSpan t) => t.TotalMinutes >= 1
+        ? $"{(int)t.TotalMinutes}m {t.Seconds:00}s left"
+        : $"{Math.Max(0, (int)Math.Ceiling(t.TotalSeconds))}s left";
 }

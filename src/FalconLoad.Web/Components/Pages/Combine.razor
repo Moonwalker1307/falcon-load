@@ -8,7 +8,7 @@
 <div class="page-header">
     <div>
         <h1>Combine results</h1>
-        <div class="muted">
+        <div class="subtitle">
             When one machine can't create enough load, run the same test on several machines at the same time, export
             each run with <strong>Export JSON</strong>, and add the files here for the full picture.
         </div>
@@ -19,8 +19,8 @@
     <div class="card-header">
         <h2>Results</h2>
         <div class="combine-add">
-            <label class="btn btn-primary">
-                Add exported files…
+            <label class="btn btn-primary file-button">
+                <Icon Name="upload" />Add exported files…
                 <InputFile OnChange="AddFilesAsync" multiple accept=".json,application/json" class="visually-hidden" />
             </label>
             @if (_localRuns.Count > 0)
@@ -32,14 +32,14 @@
                         <option value="@run.Id">@run.Plan.Name · @run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</option>
                     }
                 </select>
-                <button class="btn" disabled="@(_localRunId == "")" @onclick="AddLocalRun">Add</button>
+                <button disabled="@(_localRunId == "")" @onclick="AddLocalRun"><Icon Name="plus" />Add</button>
             }
         </div>
     </div>
 
     @foreach (var problem in _problems)
     {
-        <div class="alert alert-error">@problem</div>
+        <div class="alert alert-error" role="alert"><Icon Name="alert" /><div>@problem</div></div>
     }
 
     @if (_loading)
@@ -49,7 +49,7 @@
     else if (_sources.Count == 0)
     {
         <div class="empty">
-            No results yet. Exported files stay in this page only; nothing is uploaded or saved.
+            <p>No results yet. Add the exported JSON from each machine, or a run from this one. Files stay in this page only; nothing is uploaded or saved.</p>
         </div>
     }
 
@@ -98,7 +98,7 @@
                             <td class="num">@Format.Ms(m.Latency.P50Ms)</td>
                             <td class="num">@Format.Ms(m.Latency.P95Ms)</td>
                             <td class="num">@Format.Ms(m.Latency.P99Ms)</td>
-                            <td class="actions"><button class="btn btn-sm btn-icon" title="Remove" aria-label="Remove @machine.Name" @onclick="() => Remove(index)">✕</button></td>
+                            <td class="actions"><button class="btn-sm btn-icon btn-ghost btn-danger" title="Remove" aria-label="Remove @machine.Name" @onclick="() => Remove(index)"><Icon Name="x" /></button></td>
                         </tr>
                     }
                 </tbody>
@@ -116,12 +116,12 @@
 
     @foreach (var warning in r.Warnings)
     {
-        <div class="alert alert-info">@warning</div>
+        <div class="alert alert-info" role="status"><Icon Name="info" /><div>@warning</div></div>
     }
 
     @if (s.FailureReason is not null)
     {
-        <div class="alert alert-error">A run failed. @s.FailureReason</div>
+        <div class="alert alert-error" role="alert"><Icon Name="alert" /><div><strong>A run failed.</strong> @s.FailureReason</div></div>
     }
 
     <div class="stats">
