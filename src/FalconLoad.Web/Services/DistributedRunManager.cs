@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using FalconLoad.Core.Distributed;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
+using FalconLoad.Core.Telemetry;
 
 namespace FalconLoad.Web.Services;
 
@@ -71,6 +72,20 @@ public sealed class DistributedRun
         Plan = Plan,
         Results = Snapshot.Results with { State = Snapshot.State, FailureReason = Snapshot.FailureReason ?? Snapshot.Results.FailureReason },
     };
+
+    /// <summary>The run's results with one entry per agent, for the metric exporters.</summary>
+    public RunTelemetry GetTelemetry()
+    {
+        var snapshot = Snapshot;
+        var agents = _runner?.GetAgentExports() ?? _finalExports;
+        return new RunTelemetry(
+            Id,
+            Plan.Name,
+            snapshot.StartedAt ?? StartedAt,
+            snapshot.State,
+            snapshot.Results.Passed,
+            agents.Select(MachineTelemetry.From).OfType<MachineTelemetry>().ToList());
+    }
 
     internal void Finish(DistributedRunner runner)
     {

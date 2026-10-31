@@ -593,4 +593,95 @@ public sealed class CliAppTests : IDisposable
         Assert.Equal(CliApp.Passed, code);
         Assert.Contains("Usage: falcon-load run <file>", _out.ToString());
     }
+
+    [Fact]
+    public async Task Metrics_ArePushedToInfluxDbAndOtlp_WithSettingsFromTheEnvironment()
+    {
+        var receiver = FakeHandler.Returning(HttpStatusCode.NoContent, "");
+        var environment = new Dictionary<string, string>
+        {
+            [CliConsole.InfluxTokenVariable] = "influx-secret",
+            [CliConsole.OtlpHeadersVariable] = "Authorization=Basic%20abc123, X-Scope-OrgID=tenant-1",
+        };
+        var resultsPath = Path.Combine(_directory, "results.json");
+
+        var code = await CliApp.RunAsync(
+            ["run", WriteFile(Plan()), "--influx", "http://influx.test:8086", "--influx-bucket", "load", "--influx-org", "MyOrg",
+             "--otlp", "http://collector.test:4318", "--out", resultsPath, "--machine", "runner-1", "--quiet"],
+            new CliConsole(new StringReader(""), _out, _error, ErrorIsTerminal: false, EnvironmentVariables: environment.GetValueOrDefault),
+            _ => new HttpMessageInvoker(FakeHandler.Returning(HttpStatusCode.OK), disposeHandler: true),
+            telemetryInvoker: new HttpMessageInvoker(receiver));
+
+        Assert.Equal(CliApp.Passed, code);
+        var runId = JsonSerializer.Deserialize<RunExport>(File.ReadAllText(resultsPath), PlanFile.JsonOptions)!.Id.ToString();
+
+        // Every test gets a final push, however short it is, under the same run id as its result file.
+        var influx = receiver.Received.Where(r => r.Request.RequestUri!.Host == "influx.test").ToList();
+        Assert.NotEmpty(influx);
+        Assert.Equal("Token influx-secret", influx[^1].Request.Headers.Authorization!.ToString());
+        Assert.Equal("/api/v2/write?bucket=load&precision=ms&org=MyOrg", influx[^1].Request.RequestUri!.PathAndQuery);
+        Assert.Contains($"falcon_load,run_id={runId},test=Smoke requests=20i,failures=0i,", influx[^1].Body);
+        Assert.Contains("running=false", influx[^1].Body);
+        Assert.Contains("falcon_load_machine,run_id=" + runId + ",test=Smoke,machine=runner-1 ", influx[^1].Body);
+
+        var otlp = receiver.Received.Where(r => r.Request.RequestUri!.Host == "collector.test").ToList();
+        Assert.NotEmpty(otlp);
+        Assert.Equal("http://collector.test:4318/v1/metrics", otlp[^1].Request.RequestUri!.AbsoluteUri);
+        Assert.Equal("Basic abc123", otlp[^1].Request.Headers.Authorization!.ToString());
+        Assert.Equal("tenant-1", otlp[^1].Request.Headers.GetValues("X-Scope-OrgID").Single());
+        Assert.Contains(runId, otlp[^1].Body);
+        Assert.Contains("\"falcon_load_requests\"", otlp[^1].Body);
+    }
+
+    [Fact]
+    public async Task Metrics_AFailingPushIsReported_ButDoesNotFailTheTest()
+    {
+        var receiver = FakeHandler.Returning(HttpStatusCode.Unauthorized, "bad token");
+
+        var code = await CliApp.RunAsync(
+            ["run", WriteFile(Plan()), "--influx", "http://influx.test:8086", "--influx-bucket", "load", "--quiet"],
+            new CliConsole(new StringReader(""), _out, _error, ErrorIsTerminal: false),
+            _ => new HttpMessageInvoker(FakeHandler.Returning(HttpStatusCode.OK), disposeHandler: true),
+            telemetryInvoker: new HttpMessageInvoker(receiver));
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.Contains("Metrics export: InfluxDB answered 401 Unauthorized: bad token", _error.ToString());
+    }
+
+    [Theory]
+    [InlineData("--influx-bucket and --influx-org need --influx", "--influx-bucket", "b")]
+    [InlineData("--influx needs --influx-bucket", "--influx", "http://influx.test")]
+    [InlineData("--metrics-interval needs --influx or --otlp", "--metrics-interval", "2")]
+    [InlineData("--metrics-interval must be a whole number", "--otlp", "http://c.test", "--metrics-interval", "0")]
+    public async Task Metrics_InvalidOptions_ExitWithTwo(string message, params string[] options)
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+
+        var code = await Run(handler, ["run", WriteFile(Plan()), .. options]);
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Contains(message, _error.ToString());
+        Assert.Empty(handler.Received);
+    }
+
+    [Fact]
+    public async Task Metrics_AnInvalidOtlpEndpoint_ExitsWithTwo_BeforeAnythingIsSent()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+
+        var code = await Run(handler, "run", WriteFile(Plan()), "--otlp", "localhost:4318");
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Contains("The OTLP endpoint must be an absolute http:// or https:// address", _error.ToString());
+        Assert.Empty(handler.Received);
+    }
+
+    [Fact]
+    public void OtlpHeaders_AreReadInTheOpenTelemetryFormat()
+    {
+        var headers = CliApp.ParseOtlpHeaders(" api-key = a%2Cb%3Dc ,empty=, Authorization=Bearer x=y ");
+
+        Assert.Equal(["api-key", "empty", "Authorization"], headers.Select(h => h.Name));
+        Assert.Equal(["a,b=c", "", "Bearer x=y"], headers.Select(h => h.Value));
+    }
 }

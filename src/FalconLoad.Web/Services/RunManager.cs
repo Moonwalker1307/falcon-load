@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using FalconLoad.Core.Engine;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
+using FalconLoad.Core.Telemetry;
 
 namespace FalconLoad.Web.Services;
 
@@ -78,6 +79,20 @@ public sealed class LoadTestRun
             Results = snapshot,
             Histograms = histograms,
         };
+    }
+
+    /// <summary>The run's results with each request's latency histogram, for the metric exporters.</summary>
+    public RunTelemetry GetTelemetry()
+    {
+        // Read in this order: a run that finishes in between has its final results kept before the runner is let go.
+        var runner = _runner;
+        var machine = _final is { } final ? MachineTelemetry.From(Environment.MachineName, final.Snapshot, final.Histograms)
+            : runner is not null ? runner.GetTelemetry(Environment.MachineName)
+            : _stored is not null ? MachineTelemetry.From(_stored)
+            : null;
+        return machine is null
+            ? new RunTelemetry(Id, Plan.Name, StartedAt, Snapshot.State, Snapshot.Passed, [])
+            : RunTelemetry.OnOneMachine(Id, Plan.Name, StartedAt, machine);
     }
 
     /// <summary>Keeps the final results' compact histograms and lets go of the runner and its metrics.</summary>

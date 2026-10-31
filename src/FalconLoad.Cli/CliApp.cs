@@ -4,6 +4,7 @@ using FalconLoad.Core.Engine;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
 using FalconLoad.Core.Reports;
+using FalconLoad.Core.Telemetry;
 
 namespace FalconLoad.Cli;
 
@@ -12,13 +13,18 @@ namespace FalconLoad.Cli;
 /// <param name="Secrets">
 /// Secret variables from the process environment (<c>FALCON_LOAD_TOKEN</c> supplies <c>{{token}}</c>), by variable name.
 /// </param>
+/// <param name="EnvironmentVariables">Other settings from the process environment, such as <c>INFLUX_TOKEN</c>; null reads none.</param>
 internal sealed record CliConsole(
     TextReader In,
     TextWriter Out,
     TextWriter Error,
     bool ErrorIsTerminal,
-    IReadOnlyDictionary<string, string>? Secrets = null)
+    IReadOnlyDictionary<string, string>? Secrets = null,
+    Func<string, string?>? EnvironmentVariables = null)
 {
+    public const string InfluxTokenVariable = "INFLUX_TOKEN";
+    public const string OtlpHeadersVariable = "OTEL_EXPORTER_OTLP_HEADERS";
+
     /// <summary>Environment variables with this prefix supply secret values, so a CI job can pass tokens without a file.</summary>
     public const string SecretPrefix = "FALCON_LOAD_";
 }
@@ -32,12 +38,14 @@ internal static class CliApp
     public const int Interrupted = 130;
 
     /// <param name="createInvoker">Builds the HTTP invoker for a plan; null uses the engine's own handler. Tests pass a fake.</param>
+    /// <param name="telemetryInvoker">Sends the metric pushes of --influx and --otlp; null uses a plain HTTP client.</param>
     public static async Task<int> RunAsync(
         IReadOnlyList<string> args,
         CliConsole console,
         Func<LoadTestPlan, HttpMessageInvoker>? createInvoker = null,
         TimeSpan? progressInterval = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        HttpMessageInvoker? telemetryInvoker = null)
     {
         var options = CliOptions.Parse(args, out var error);
         if (options is null)
@@ -57,6 +65,13 @@ internal static class CliApp
                 return Passed;
         }
 
+        var telemetry = TelemetryFrom(options, console);
+        if (telemetry?.Validate() is { Count: > 0 } telemetryProblems)
+        {
+            await WriteProblemsAsync(console, "The metrics export options are invalid:", telemetryProblems);
+            return InvalidInput;
+        }
+
         var plans = await LoadPlansAsync(options, console);
         if (plans is null)
         {
@@ -67,6 +82,20 @@ internal static class CliApp
         var htmlOutputs = OutputPaths(options.Html, plans.Select(p => p.Plan).ToList(), ".html");
         var junit = new List<(RunExport, RunVerdict)>();
         var machine = string.IsNullOrWhiteSpace(options.Machine) ? Environment.MachineName : options.Machine;
+
+        // With --influx or --otlp, the test that is running is pushed in the background, and each test once more when it ends.
+        Func<RunTelemetry?> current = () => null;
+        using var ownedHttp = telemetry is not null && telemetryInvoker is null ? new HttpClient() : null;
+        var publisher = telemetry is null ? null : new TelemetryPublisher(
+            () => telemetry,
+            () => current() is { } run ? [run] : [],
+            telemetryInvoker ?? ownedHttp!,
+            machine,
+            Version,
+            message => console.Error.WriteLine($"Metrics export: {message}"));
+        using var stopPublishing = new CancellationTokenSource();
+        var publishing = publisher?.RunAsync(stopPublishing.Token) ?? Task.CompletedTask;
+
         var exitCode = Passed;
         for (var i = 0; i < plans.Count; i++)
         {
@@ -77,6 +106,7 @@ internal static class CliApp
 
             var (plan, environment) = plans[i];
             var invoker = createInvoker?.Invoke(plan);
+            var runId = Guid.NewGuid();
             var startedAt = DateTimeOffset.UtcNow;
             LoadTestSnapshot snapshot;
             ResultHistograms histograms;
@@ -89,15 +119,22 @@ internal static class CliApp
                 }
 
                 var progress = options.Quiet ? null : new ProgressPrinter(console);
+                current = () => RunTelemetry.OnOneMachine(runId, plan.Name, startedAt, runner.GetTelemetry(machine));
                 await runner.RunAsync(progress is null ? null : progress.Report, progressInterval ?? TimeSpan.FromSeconds(1), cancellationToken);
                 progress?.Finish();
                 (snapshot, histograms) = runner.GetResults();
+                var final = RunTelemetry.OnOneMachine(runId, plan.Name, startedAt, MachineTelemetry.From(machine, snapshot, histograms));
+                current = () => final;
 
                 // The runner's copy records the environment's name (never its values) for the export.
                 ran = runner.Plan;
             }
 
             invoker?.Dispose();
+            if (publisher is not null)
+            {
+                await publisher.PushAsync(CancellationToken.None);
+            }
 
             var verdict = RunVerdict.Evaluate(snapshot, options.MaxErrorRate);
             var failures = verdict.Failures;
@@ -105,7 +142,7 @@ internal static class CliApp
 
             var export = new RunExport
             {
-                Id = Guid.NewGuid(),
+                Id = runId,
                 StartedAt = startedAt,
                 Machine = machine,
                 Plan = ran,
@@ -140,6 +177,9 @@ internal static class CliApp
         {
             await WriteAsync(junitPath, JUnitReport.Render(junit), console, "JUnit report");
         }
+
+        await stopPublishing.CancelAsync();
+        await publishing;
 
         if (cancellationToken.IsCancellationRequested)
         {
@@ -446,6 +486,55 @@ internal static class CliApp
         {
             await console.Error.WriteLineAsync($"  - {problem}");
         }
+    }
+
+    /// <summary>The metrics export asked for with --influx and --otlp, or null for none.</summary>
+    internal static TelemetrySettings? TelemetryFrom(CliOptions options, CliConsole console)
+    {
+        if (options.InfluxUrl is null && options.OtlpEndpoint is null)
+        {
+            return null;
+        }
+
+        var settings = new TelemetrySettings { PrometheusEnabled = false, PushIntervalSeconds = options.MetricsIntervalSeconds ?? 5 };
+        if (options.InfluxUrl is not null)
+        {
+            settings.InfluxDb = new InfluxDbSettings
+            {
+                Enabled = true,
+                Url = options.InfluxUrl,
+                Bucket = options.InfluxBucket ?? string.Empty,
+                Organization = options.InfluxOrganization,
+                Token = console.EnvironmentVariables?.Invoke(CliConsole.InfluxTokenVariable) ?? string.Empty,
+            };
+        }
+
+        if (options.OtlpEndpoint is not null)
+        {
+            settings.Otlp = new OtlpSettings
+            {
+                Enabled = true,
+                Endpoint = options.OtlpEndpoint,
+                Headers = ParseOtlpHeaders(console.EnvironmentVariables?.Invoke(CliConsole.OtlpHeadersVariable)),
+            };
+        }
+
+        return settings;
+    }
+
+    /// <summary>Reads headers in the OpenTelemetry format, <c>name=value,name=value</c> with percent-encoded values.</summary>
+    internal static List<TelemetryHeader> ParseOtlpHeaders(string? text)
+    {
+        var headers = new List<TelemetryHeader>();
+        foreach (var pair in (text ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var equals = pair.IndexOf('=');
+            headers.Add(equals <= 0
+                ? new TelemetryHeader { Name = pair }
+                : new TelemetryHeader { Name = pair[..equals].Trim(), Value = Uri.UnescapeDataString(pair[(equals + 1)..].Trim()) });
+        }
+
+        return headers;
     }
 
     private static string Version =>

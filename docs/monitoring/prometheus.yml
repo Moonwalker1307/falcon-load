@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  # falcon-load answers on /metrics, the path Prometheus scrapes by default.
+  - job_name: falcon-load
+    static_configs:
+      - targets: ["falcon-load:8080"]

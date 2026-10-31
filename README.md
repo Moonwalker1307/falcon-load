@@ -47,6 +47,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Import requests** from a pasted curl command, a Postman collection (v2.0/v2.1) or an OpenAPI 3 spec (JSON or YAML) on the Import page, then create a new test or add them to an existing one. See [Importing requests](#importing-requests).
 - **Combine results from several machines**: when one machine can't generate enough load, run the same test on several machines at the same time, export each run, and add the files on the Combine page. It shows the combined throughput, error rate, latency percentiles, status codes and errors, with a per-machine breakdown and a throughput line per machine.
 - **Agents**: or let one falcon-load drive the others. Register the other machines on the Agents page, and a test started with "Run on agents" is split between them by weight, started on all of them at the same moment, shown live with their results merged, and stopped on all of them with one button. See [Run a test from several machines](#run-a-test-from-several-machines-agents).
+- **Live metrics in Grafana**: Prometheus scrapes every running test from `/metrics`, and falcon-load can push to InfluxDB and to an OpenTelemetry (OTLP) endpoint while tests run, from the web app and from the command line. A test run on agents is reported by the controller, one series per agent. A ready-made Grafana dashboard and a Docker Compose stack are included. See [Monitoring](#monitoring-with-prometheus-influxdb-and-opentelemetry).
 - **Command line runner** that runs exported tests in CI, prints a summary, writes the results as JSON and fails the build when too many requests fail.
 - **HTML and JUnit reports** of a finished run, from the run page, the CLI and the API: a self-contained page to read or attach to a CI job, and JUnit XML that CI systems show as test results. See [Reports](#reports).
 - **Docker images** for the web app and the command line runner.
@@ -84,6 +85,10 @@ It runs every test in the file in order, shows live progress on standard error, 
 | `--var <name>=<value>` | Set a variable, overriding the environment's value. Can be repeated |
 | `--data <name>=<path>` | Use the CSV or JSON file at `<path>` instead of the rows saved in the test's [data file](#data-files) called `<name>`, such as `--data users.csv=./users.csv`. Can be repeated. A name no test uses, or a file that can't be read as a table, exits with `2` |
 | `--machine <name>` | The machine name recorded in the results; useful in containers, whose host names are random |
+| `--influx <url>` | Write live metrics to InfluxDB at this address, such as `http://localhost:8086`, with the token from the `INFLUX_TOKEN` environment variable. Needs `--influx-bucket` |
+| `--influx-bucket <name>`, `--influx-org <name>` | The InfluxDB bucket (the database on InfluxDB 1.8 and 3) and, for InfluxDB 2, the organization |
+| `--otlp <endpoint>` | Send live metrics over OTLP/HTTP, such as `http://localhost:4318` or Prometheus's `http://localhost:9090/api/v1/otlp`. Headers come from `OTEL_EXPORTER_OTLP_HEADERS` (`Authorization=Bearer%20abc,X-Scope-OrgID=tenant`) |
+| `--metrics-interval <seconds>` | How often `--influx` and `--otlp` push. Default: 5. Each test is pushed once more when it ends |
 | `--quiet` | Print only the summary |
 
 A test passes or fails on the same verdict as in the web UI: when it has thresholds, the summary lists each one with its measured value, and the test passes when they all hold. A test without thresholds passes when no request failed.
@@ -170,6 +175,9 @@ Both reports use the same verdict as the CLI's exit code: a test with thresholds
 | `GET` | `/api/distributed/runs/{id}/report`, `/api/distributed/runs/{id}/junit` | The merged results of a finished distributed run as an HTML report or JUnit XML |
 | `GET` | `/api/distributed/runs/{id}/export` | The merged results plus every agent's export, as a JSON download |
 | `POST` | `/api/distributed/runs/{id}/stop` | Stop the test on every agent |
+| `GET` | `/metrics` | Prometheus scrape: the running tests and those that finished in the last 5 minutes. `404` when turned off on the Monitoring page |
+| `GET` | `/api/telemetry` | Where live metrics go, and how the last push to InfluxDB and the OTLP endpoint went. The token and header values are `null` when set |
+| `PUT` | `/api/telemetry` | Change where live metrics go (same shape as the `settings` that `GET` returns). A token or header value sent as `null` keeps the saved one |
 | `GET` | `/api/agent` | *Agent mode.* What this machine says about itself to a controller, including its clock |
 | `POST` | `/api/agent/runs` | *Agent mode.* Start a share of a test (`plan`, optional `startAt`, `controller`) |
 | `GET` | `/api/agent/runs/{id}` | *Agent mode.* The share's results with histograms, for merging |
@@ -340,6 +348,57 @@ When one machine can't send enough load, falcon-load can run a test from several
 
 The controller first contacts every agent and measures its clock against its own, then tells all of them to start at the same moment a couple of seconds ahead, each on its own clock, so the agents start together even when their clocks differ. If an agent can't be reached or refuses its share, nothing starts, or the agents that did start are stopped again, because part of the load would say little. While the test runs, the controller fetches every agent's results once a second and merges them exactly as the Combine page does, with the histograms, so the live percentiles are those of one test. The run page shows each agent's share and state, the merged numbers and charts with a throughput line per agent, and warnings about clocks that are off by a second or more. "Stop on all agents" stops every share, and the controller waits for their final results. An agent that stops answering is given up on after twenty seconds; its results up to then stay in the total, and the run is reported as failed with the reason. The export of a distributed run holds the merged results and every agent's own export, so the agents' runs can be combined again on the Combine page later. Distributed runs live in memory like other runs and disappear on restart.
 
+## Monitoring with Prometheus, InfluxDB and OpenTelemetry
+
+The **Monitoring** page sends the live numbers of every test to the tools you already watch your systems with, so a load test shows up in Grafana next to the CPU, queue lengths and error logs of the API it hits. There are three ways out, and any of them can be used together:
+
+- **Prometheus** scrapes `http://<falcon-load>/metrics`. It is on by default (turn it off on the Monitoring page) and shows the tests that are running and those that finished in the last five minutes. Scrape every few seconds for live charts:
+
+  ```yaml
+  scrape_configs:
+    - job_name: falcon-load
+      scrape_interval: 5s
+      static_configs:
+        - targets: ["localhost:5299"]
+  ```
+
+- **InfluxDB**: give the URL, bucket, organization and token. falcon-load writes through `/api/v2/write`, which InfluxDB 2 and 3 have, and 1.8 too with the database as the bucket and `user:password` as the token.
+- **OpenTelemetry**: an OTLP/HTTP endpoint, such as an OpenTelemetry Collector or Grafana Alloy on `http://localhost:4318`, a hosted service, or Prometheus 3 itself started with `--web.enable-otlp-receiver` (endpoint `http://prometheus:9090/api/v1/otlp`). `/v1/metrics` is added to the address unless it ends with it already. Add headers such as `Authorization` for a hosted endpoint. Metrics are sent as OTLP JSON.
+
+InfluxDB and the OTLP endpoint are pushed to every 5 seconds while a test runs (change the interval on the page), and once more when it ends, so even a test shorter than the interval arrives with its final numbers. The page shows whether the last push worked, and why not when it didn't, such as `InfluxDB answered 401 Unauthorized`; a failing destination never affects the test. The InfluxDB token and header values are write-only, like the secrets of an environment: they are saved in `telemetry.json` next to the saved tests, readable only by your user on Unix, and never shown again or returned by the API.
+
+**What is sent.** Every series is labelled with `run_id`, `test` and `machine`, and the per-request ones with `request` (its name, or method and URL as written, so `{{token}}` stays `{{token}}`) and `request_index`. Error messages and response bodies are never sent.
+
+| Prometheus name (OTLP name) | Type | Meaning |
+| --- | --- | --- |
+| `falcon_load_requests_total` (`falcon_load_requests`) | counter | Requests by `request` and `outcome` (`success` or `failure`, where a failure is a transport error, an unexpected status or a failed check) |
+| `falcon_load_request_duration_seconds` (`falcon_load_request_duration`, unit `s`) | histogram | Latency until the full response body was read, by `request`, in buckets from 1 ms to 60 s |
+| `falcon_load_responses_total` (`falcon_load_responses`) | counter | Responses by `status_code`, `none` when no response arrived |
+| `falcon_load_checks_total` (`falcon_load_checks`) | counter | Response checks by `request`, `check` and `outcome` |
+| `falcon_load_virtual_users` | gauge | Virtual users sending requests |
+| `falcon_load_sent_bytes_total`, `falcon_load_received_bytes_total` (`falcon_load_sent`, `falcon_load_received`, unit `By`) | counter | Bytes sent and received |
+| `falcon_load_run_active` | gauge | 1 while the run is going, 0 once it has finished (labelled with `run_id` and `test` only) |
+| `falcon_load_run_passed` | gauge | 1 while the run's thresholds hold, 0 when one fails or the run was stopped; only for tests with thresholds |
+
+The OTLP names become the Prometheus names when Prometheus receives them over OTLP, so the same queries and dashboard work either way. Counters and histograms are cumulative from the start of their run. Throughput is `sum(rate(falcon_load_requests_total[30s]))`, and the p95 latency over any window is `histogram_quantile(0.95, sum by (le) (rate(falcon_load_request_duration_seconds_bucket[30s])))`, within about 1% of a bucket bound.
+
+InfluxDB has no histogram a dashboard can add up, so each push writes ready-made numbers for the interval since the previous one: the measurements `falcon_load` (the whole run), `falcon_load_request` (each request, tag `request`), `falcon_load_machine` (each machine or agent, tag `machine`) and `falcon_load_status` (field `count` per `status_code`). The first three have the running totals `requests` and `failures`, and for the interval `rps`, `interval_requests`, `interval_failures`, `error_percent` and `latency_mean_ms`, `latency_p50_ms`, `latency_p90_ms`, `latency_p95_ms`, `latency_p99_ms` and `latency_max_ms` (left out when the interval had no requests). `falcon_load` also has `virtual_users`, `bytes_sent`, `bytes_received`, `running` and, with thresholds, `passed`. The percentiles come from the difference between two pushes' histograms, with the agents merged first, so they are exact for the whole test.
+
+**Tests on agents.** The controller reports a test it runs on agents, with one series per agent (`machine` is the agent's name), so `sum` adds them up to the whole test and `histogram_quantile` over the summed buckets gives its percentiles. Agents leave the shares they run for a controller out of their own `/metrics` and pushes, so scraping every machine never counts a request twice; configure the destinations on the controller.
+
+**Grafana.** [`docs/monitoring`](docs/monitoring) has a dashboard for Prometheus, [`falcon-load.json`](docs/monitoring/grafana/falcon-load.json), with throughput, error rate, latency percentiles, status codes and virtual users, per machine and per request, and pickers for the test, run and machine. Import it in Grafana (Dashboards, New, Import) and choose your Prometheus data source. Or start falcon-load, Prometheus and Grafana together, already connected, with:
+
+```bash
+cd docs/monitoring
+docker compose up --build
+```
+
+Then open falcon-load on http://localhost:5299, run a test, and watch it in Grafana on http://localhost:3000. Prometheus in that stack also accepts OTLP on http://localhost:9090/api/v1/otlp, for the command line runner:
+
+```bash
+falcon-load run tests.json --otlp http://localhost:9090/api/v1/otlp
+```
+
 ## Run history and baselines
 
 Every finished run of a saved test is kept in its history, and one run can be the baseline the others are compared with. To fail a CI build when a run regresses against the baseline, start the saved test, wait for it to finish, then ask for the comparison:
@@ -374,6 +433,7 @@ src/FalconLoad.Cli           Headless command line runner (falcon-load run tests
 tests/FalconLoad.Core.Tests  xUnit tests for the engine and metrics
 tests/FalconLoad.Cli.Tests   xUnit tests for the command line runner
 Dockerfile, Dockerfile.cli   Container images for the web app and the CLI
+docs/monitoring              Grafana dashboard and a Docker Compose stack with Prometheus and Grafana
 ```
 
 How the engine works: each virtual user is a task that loops over the plan's requests through a shared `SocketsHttpHandler`, with its own extracted variables. A request is timed until its full response body has been read. Latencies go into a fixed-size log-linear histogram (about 1% precision), so percentiles stay cheap and memory stays flat however long a test runs. Requests still in flight when a test stops are discarded rather than counted as errors.

@@ -1,0 +1,37 @@
+# falcon-load with Prometheus and Grafana, for watching load tests live. From this folder:
+#   docker compose up --build
+# Then open falcon-load on http://localhost:5299 and Grafana on http://localhost:3000 (dashboard "falcon-load").
+# Every port is published on 127.0.0.1 only, so nothing here is reachable from other machines.
+services:
+  falcon-load:
+    build:
+      context: ../..
+    ports:
+      - "127.0.0.1:5299:8080"
+    volumes:
+      - falcon-load-data:/data
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    # The OTLP receiver lets a falcon-load CLI, or a falcon-load elsewhere, push to http://localhost:9090/api/v1/otlp.
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--web.enable-otlp-receiver"]
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    environment:
+      # Anyone who can open the page may view the dashboards without logging in; sign in as admin/admin to edit.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/falcon-load.json
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/falcon-load.json:/var/lib/grafana/dashboards/falcon-load.json:ro
+
+volumes:
+  falcon-load-data:
