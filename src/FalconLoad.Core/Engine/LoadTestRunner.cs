@@ -74,7 +74,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         // The parameter set holds the rows; the plan that is reported with the results doesn't need them as well.
         _plan.DropDataRows();
         _extracts = _requests.Any(r => r.Extractor is not null);
-        _keepsBodies = _requests.Any(r => r.Extractor is { NeedsBody: true } || r.Checker.NeedsBody);
+        _keepsBodies = _requests.Any(r => r.Extractor is { NeedsBody: true } || r.Checker.NeedsBody || r.ProtocolNeedsBody);
         _hasOnceRequests = _requests.Any(r => r.OncePerVirtualUser);
         _metrics = new MetricsCollector(
             _plan.Requests.Select(r => r.DisplayName).ToList(),
@@ -422,9 +422,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         var prepared = _requests[step];
         var extractor = prepared.Extractor;
         var checker = prepared.Checker;
-        var keep = extractor is { NeedsBody: true } || checker.NeedsBody ? kept : null;
-        // Checks need the whole body, up to their limit; extraction only reads the start of it.
-        keep?.Reset(checker.NeedsBody ? Assertion.MaxBodyBytes : ResponseExtractor.MaxBodyBytes);
+        var keep = extractor is { NeedsBody: true } || checker.NeedsBody || prepared.ProtocolNeedsBody ? kept : null;
+        // Checks and the protocol's own verdict need the whole body, up to their limit; extraction only reads the start of it.
+        keep?.Reset(checker.NeedsBody || prepared.ProtocolNeedsBody ? Assertion.MaxBodyBytes : ResponseExtractor.MaxBodyBytes);
 
         // The token is in hand before the clock starts. It is almost always ready at once; only after it expired or was
         // rejected does a request wait for the new one, and that wait is the token endpoint's time, not the API's.
@@ -476,15 +476,20 @@ public sealed class LoadTestRunner : IAsyncDisposable
             var keptBody = keep?.Memory ?? ReadOnlyMemory<byte>.Empty;
             var failedChecks = checker.Count == 0 ? 0 : checker.Evaluate(response, keptBody, keep?.TooLarge ?? false);
 
+            // The protocol's own verdict, such as a GraphQL error, comes before the checks, like an unexpected status does.
             string? error = null;
             if (!statusMatches)
             {
                 error = $"Unexpected status {code} {response.StatusCode}";
             }
+            else if (prepared.ProtocolError(keptBody.Span, keep?.TooLarge ?? false) is { } protocolError)
+            {
+                error = protocolError;
+            }
             else if (failedChecks != 0)
             {
                 error = checker.NeedsBody && keep!.TooLarge
-                    ? TooLargeToCheck
+                    ? PreparedRequest.TooLargeToCheck
                     : checker.FailureMessages[System.Numerics.BitOperations.TrailingZeroCount(failedChecks)];
             }
 
@@ -532,9 +537,6 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
     /// <summary>Hides secrets, and the OAuth2 tokens of the run, in text that people will see.</summary>
     private string? Mask(string? text) => text is null ? null : _tokens?.Mask(text) ?? _masker.Apply(text);
-
-    private static readonly string TooLargeToCheck =
-        $"Response body over {Assertion.MaxBodyBytes / (1024 * 1024)} MB is too large to check";
 
     private static string DescribeTransportError(HttpRequestException ex)
     {

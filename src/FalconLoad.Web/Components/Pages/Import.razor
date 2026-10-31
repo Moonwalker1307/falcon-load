@@ -167,7 +167,7 @@
                         @foreach (var request in _result.Requests.Take(PreviewLimit))
                         {
                             <tr>
-                                <td><span class="@Format.MethodClass(request.Method)">@request.Method</span> @ShortName(request)</td>
+                                <td><span class="@Format.MethodClass(request.Label)">@request.Label</span> @ShortName(request)</td>
                                 <td class="mono muted" title="@request.Url">@request.Url</td>
                             </tr>
                         }

@@ -2,7 +2,7 @@
 
 ![falcon-load](docs/logo/falcon-load-logo.png)
 
-An API load tester with a web UI. Configure the HTTP requests you want to hammer, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update live.
+An API load tester with a web UI. Configure the HTTP or GraphQL requests you want to hammer, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update live.
 
 Built with .NET 10: an ASP.NET Core host with an interactive Blazor Server UI, and a standalone load engine library.
 
@@ -29,6 +29,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 
 - **Request editor**: method, URL, headers, body and content type, with a "Send once" button to check the response before you load test. Problems are shown next to the request or setting they belong to, and the editor warns before you leave with unsaved changes.
 - **Multi-step scenarios**: add several requests; each virtual user runs them in order and loops.
+- **GraphQL**: switch a request to GraphQL and write the query, its variables and the operation name instead of a body. A response that reports errors counts as a failed request, even with status 200. See [Protocols](#protocols).
 - **Dynamic values** in URLs, headers and bodies: `{{$guid}}`, `{{$randomInt}}`, `{{$randomInt:1:100}}`, `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$vu}}`, `{{$iteration}}`.
 - **Parameter lists**: name a list of values, such as `userIds` = 17, 42, 99, and write `{{userIds}}` in a URL, header value or body. Each iteration of a virtual user takes one value from every list, so all requests in that iteration use the same value. A list hands out its values in order, shared by all virtual users and starting over at the end, or picks one at random. "Send once" uses the first value. Placeholders that match no list are sent as written.
 - **Data files**: upload a CSV file or a JSON array of objects, such as a list of test users, and each column becomes a variable (`{{email}}`, `{{password}}`). Every iteration of a virtual user takes one whole row, so an email and its password always belong together. See [Data files](#data-files).
@@ -222,6 +223,26 @@ curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' 
 }'
 ```
 
+## Protocols
+
+Every request has a protocol, chosen next to the URL. Plans saved before protocols existed are plain HTTP. A test can mix protocols, and checks, extractions, thresholds, the command line and agents work the same for all of them.
+
+- **HTTP** is the default: method, URL, headers and body.
+- **GraphQL** sends an operation to the endpoint URL as an HTTP POST with the JSON body `{ "query": …, "variables": …, "operationName": … }`. The Query tab holds the query, its variables as a JSON object (checked when the test is saved) and the optional operation name; dynamic values and `{{variables}}` work in all three, in a string or as a bare number such as `"first": {{$randomInt:1:50}}`. GraphQL servers answer errors with status 200, so a response whose `errors` array has an entry counts as a failed request, named after the first error's message (`GraphQL error: Not authorised`), as does a response that isn't a JSON object. Checks and extractions read the response as usual: `$.data.products[0].id`. In the JSON, a request gets `"protocol": "GraphQL"`, the query in `body` and `"graphQL": { "variables": "{ … }", "operationName": "…" }`; the `method` is ignored.
+
+```bash
+curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' -d '{
+  "name": "Products via GraphQL",
+  "requests": [{
+    "protocol": "GraphQL", "url": "https://localhost:5001/graphql",
+    "body": "query Products($first: Int) { products(first: $first) { id name } }",
+    "graphQL": { "variables": "{ \"first\": {{$randomInt:1:50}} }", "operationName": "Products" },
+    "assertions": [{ "source": "JsonPath", "target": "$.data.products", "operator": "Exists" }]
+  }],
+  "profile": { "concurrency": 20, "stopCondition": "Duration", "durationSeconds": 30 }
+}'
+```
+
 ## Staged load
 
 A staged profile is a list of stages, each with a duration, a target and a way of getting there: a **hold** jumps to the target and stays, a **ramp** moves in a straight line from where the previous stage ended (the first stage starts from 0). The test lasts as long as the stages add up to, so the stop condition and ramp-up don't apply, and neither does a request count. A target of 0 pauses the load.
@@ -250,7 +271,7 @@ curl -fsS http://localhost:5299/api/runs/$run | jq -e '.results.passed == true' 
 The **Import** page (and "From curl, Postman or OpenAPI…" on the dashboard) reads text you paste or a file you choose, shows a preview with anything that was left out or still needs attention, and then creates a new test or appends the requests to a saved one. The load profile is left at its defaults for you to set in the editor. Nothing is sent to any URL while importing.
 
 - **curl**: bash-style commands, as copied from API docs or a browser's "Copy as cURL (bash)". Several commands in a row become several requests. Read: the URL, `-X`, `-H`, `-d`/`--data*` (including `--data-urlencode`, `-G` and `--json`), `-F` text fields, `-u`, `-b` with a cookie string, `-A`, `-e`, `-I` and `-k` (which turns on "Ignore TLS errors"). Like curl, a body without a `Content-Type` is sent as `application/x-www-form-urlencoded`. Anything that reads a file (`-d @file`, `-F file=@x`), proxies and client certificates are reported and left out. Windows `cmd` quoting is not understood.
-- **Postman**: folders become name prefixes (`Orders / Create order`), and disabled headers stay in the test but switched off. Collection variables become parameter lists, so `{{base-url}}` becomes `{{base_url}}` (list names can't contain dashes or dots), and variables that are used but never defined get an empty list. `{{$guid}}`, `{{$randomUUID}}`, `{{$timestamp}}`, `{{$isoTimestamp}}` and `{{$randomInt}}` map to falcon-load's dynamic values; other Postman dynamic values are sent as written and reported. Raw, urlencoded, form-data (text fields) and GraphQL bodies are converted. Bearer, basic and API key authorization (inherited from folders and the collection) becomes a header. Scripts, environments and file bodies are not read.
+- **Postman**: folders become name prefixes (`Orders / Create order`), and disabled headers stay in the test but switched off. Collection variables become parameter lists, so `{{base-url}}` becomes `{{base_url}}` (list names can't contain dashes or dots), and variables that are used but never defined get an empty list. `{{$guid}}`, `{{$randomUUID}}`, `{{$timestamp}}`, `{{$isoTimestamp}}` and `{{$randomInt}}` map to falcon-load's dynamic values; other Postman dynamic values are sent as written and reported. Raw, urlencoded and form-data (text fields) bodies are converted, and a GraphQL body becomes a GraphQL request. Bearer, basic and API key authorization (inherited from folders and the collection) becomes a header. Scripts, environments and file bodies are not read.
 - **OpenAPI 3**: the page lists the spec's operations, grouped by tag, with a filter, so you can pick the ones to import. Each request gets a URL on the spec's first server (or the base address you type in), path parameters and required query and header parameters filled from `example`, `default`, the first `enum` value or a sample of the right type, and a JSON, form or text body from the spec's example or generated from its schema. Only `2xx` responses count as success. Bearer, OAuth, basic and API key security becomes a header or query parameter that uses a parameter list named after the security scheme; fill it in before running. Swagger 2.0 files are refused with a hint to convert them. YAML is read by a small built-in reader that handles ordinary spec files but not anchors, aliases, tags or several documents in one file; it says so rather than guessing.
 
 `POST /api/import` takes the text as the body and returns `{ plan, warnings, saved }`. Query parameters: `kind` (`curl`, `postman`, `openapi` or `auto`, the default), `name`, `baseUrl` and repeated `operations` (OpenAPI only; default all), `planId` (append to that saved test instead of creating one), and `save` (default `true`; `false` returns the test without saving it, e.g. to pass it to `POST /api/runs`). Like the other plan endpoints, a test that fails validation comes back as a validation problem.

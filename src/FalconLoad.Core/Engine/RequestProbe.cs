@@ -5,6 +5,7 @@ using FalconLoad.Core.Model;
 namespace FalconLoad.Core.Engine;
 
 /// <summary>The response to a single test request, used to check a request before load testing with it.</summary>
+/// <param name="Error">Why nothing came back, or, with a status code, what the protocol found wrong with the response, such as a GraphQL error.</param>
 public sealed record ProbeResult(
     int? StatusCode,
     string? ReasonPhrase,
@@ -144,6 +145,7 @@ public static class RequestProbe
 
             var code = (int)response.StatusCode;
             var statusMatches = prepared.Matcher.IsMatch(code);
+            var protocolError = statusMatches ? prepared.ProtocolError(bytes, bytes.Length > Assertion.MaxBodyBytes) : null;
             var checks = prepared.Checker.Explain(response, bytes);
             List<ExtractedValue>? extractions = null;
             if (prepared.Extractor is { } extractor)
@@ -152,7 +154,7 @@ public static class RequestProbe
                 extractor.Apply(response, bytes.AsSpan(0, Math.Min(bytes.Length, ResponseExtractor.MaxBodyBytes)), variables, extractions);
             }
 
-            return new ProbeResult(code, masker(response.ReasonPhrase), latency, headers, preview, bytes.Length, statusMatches && checks.All(c => c.Passed), null, extractions)
+            return new ProbeResult(code, masker(response.ReasonPhrase), latency, headers, preview, bytes.Length, statusMatches && protocolError is null && checks.All(c => c.Passed), masker(protocolError), extractions)
             {
                 Checks = [.. checks.Select(c => c with { Actual = masker(c.Actual) })],
                 StatusMatches = statusMatches,

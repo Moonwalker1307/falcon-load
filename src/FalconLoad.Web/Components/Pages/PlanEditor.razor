@@ -265,7 +265,7 @@
                             }
                             @if (collapsed)
                             {
-                                <span class="@Format.MethodClass(request.Method)">@request.Method</span>
+                                <span class="@Format.MethodClass(request.Label)">@request.Label</span>
                                 <span class="mono">@request.Url</span>
                             }
                         </div>
@@ -298,28 +298,41 @@
                         <span>Once per virtual user<span class="hint">Send it on the first iteration only, such as a login whose token later requests reuse. If it fails, it is sent again until it succeeds.</span></span>
                     </label>
 
-                    <label for="@idp-url">Method and URL</label>
-                    <div class="url-row">
-                        <select @bind="request.Method" aria-label="HTTP method">
-                            @foreach (var method in RequestDefinition.SupportedMethods)
-                            {
-                                <option value="@method">@method</option>
-                            }
+                    <label for="@idp-url">@(request.Protocol == RequestProtocol.Http ? "Method and URL" : "Protocol and URL")</label>
+                    <div class="url-row @(request.Protocol == RequestProtocol.Http ? "" : "no-method")">
+                        <select class="protocol" @bind="request.Protocol" @bind:after="() => SetProtocol(request)" aria-label="Protocol" title="How this request talks to the server">
+                            <option value="@RequestProtocol.Http">HTTP</option>
+                            <option value="@RequestProtocol.GraphQL">GraphQL</option>
                         </select>
-                        <input id="@idp-url" type="text" class="mono" placeholder="https://api.example.com/items" spellcheck="false" autocomplete="off"
+                        @if (request.Protocol == RequestProtocol.Http)
+                        {
+                            <select @bind="request.Method" aria-label="HTTP method">
+                                @foreach (var method in RequestDefinition.SupportedMethods)
+                                {
+                                    <option value="@method">@method</option>
+                                }
+                            </select>
+                        }
+                        <input id="@idp-url" type="text" class="mono" placeholder="@UrlPlaceholder(request.Protocol)" spellcheck="false" autocomplete="off"
                                aria-describedby="@idp-url-hint" @bind="request.Url" @bind:event="oninput" />
                         <button @onclick="() => Probe(request)" disabled="@_probing.Contains(request)" title="Send this request once and show the response">
                             <Icon Name="send" />@(_probing.Contains(request) ? "Sending…" : "Send once")
                         </button>
                     </div>
-                    <div class="hint" id="@idp-url-hint">Dynamic values such as <code>{{$guid}}</code> and environment variables such as <code>{{baseUrl}}</code> work here too.</div>
+                    <div class="hint" id="@idp-url-hint">
+                        @if (request.Protocol == RequestProtocol.GraphQL)
+                        {
+                            <span>The GraphQL endpoint. The query on the Query tab is sent to it as a POST with a JSON body. </span>
+                        }
+                        Dynamic values such as <code>{{$guid}}</code> and environment variables such as <code>{{baseUrl}}</code> work here too.
+                    </div>
 
                     <div class="tabs" role="tablist" aria-label="Request @(index + 1) details">
                         <button role="tab" id="@idp-tab-headers" aria-selected="@(tab == "headers" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "headers"'>
                             Headers<span class="count">@request.Headers.Count(h => h.Enabled)</span>
                         </button>
                         <button role="tab" id="@idp-tab-body" aria-selected="@(tab == "body" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "body"'>
-                            Body
+                            @(request.Protocol == RequestProtocol.GraphQL ? "Query" : "Body")
                             @if (!string.IsNullOrEmpty(request.Body))
                             {
                                 <span class="dot" aria-label="has a body"></span>
@@ -370,6 +383,26 @@
                                     </span>
                                 </div>
                             }
+                        }
+                        else if (tab == "body" && request.Protocol == RequestProtocol.GraphQL)
+                        {
+                            var graphQL = request.GraphQL ??= new GraphQLOptions();
+                            <label for="@idp-bodytext">Query</label>
+                            <textarea id="@idp-bodytext" class="mono" placeholder="query Products($first: Int) {&#10;  products(first: $first) { id name }&#10;}" spellcheck="false" @bind="request.Body" @bind:event="oninput"></textarea>
+                            <div class="graphql-row">
+                                <div class="field">
+                                    <label for="@idp-gqlvars">Variables <span class="optional">(JSON)</span></label>
+                                    <textarea id="@idp-gqlvars" class="mono short" placeholder='{ "first": {{$randomInt:1:50}} }' spellcheck="false" @bind="graphQL.Variables" @bind:event="oninput"></textarea>
+                                </div>
+                                <div class="field field-narrow">
+                                    <label for="@idp-gqlop">Operation name <span class="optional">(optional)</span></label>
+                                    <input id="@idp-gqlop" type="text" class="mono" placeholder="Products" spellcheck="false" @bind="graphQL.OperationName" @bind:event="oninput" />
+                                </div>
+                            </div>
+                            <div class="hint">
+                                Sent as <code>{"query": …, "variables": …, "operationName": …}</code>. A response with entries in its <code>errors</code> array counts as a failed request,
+                                even with status 200. Checks and extractions read the response as usual, e.g. <code>$.data.products[0].id</code>.
+                            </div>
                         }
                         else if (tab == "body")
                         {
@@ -499,6 +532,10 @@
                                 {
                                     <strong class="status-err">Request failed</strong>
                                     <span>@probe.Error</span>
+                                }
+                                @if (probe.StatusCode is not null && probe.Error is not null)
+                                {
+                                    <span class="status-err">@probe.Error</span>
                                 }
                                 <span class="spacer"></span>
                                 <button class="btn-sm btn-ghost btn-icon" aria-label="Close response" title="Close" @onclick="() => _probeResults.Remove(request)"><Icon Name="x" /></button>
@@ -1105,6 +1142,31 @@
         return $"{users} {stop}{ramp}{cap}.";
     }
 
+    private static string UrlPlaceholder(RequestProtocol protocol) => protocol switch
+    {
+        RequestProtocol.GraphQL => "https://api.example.com/graphql",
+        _ => "https://api.example.com/items",
+    };
+
+    // A request keeps its protocol's own settings only while it uses that protocol, so a plan saved as HTTP has no
+    // GraphQL leftovers. The body, headers, checks and extractions stay, since a query is a body too.
+    private void SetProtocol(RequestDefinition request)
+    {
+        if (request.Protocol == RequestProtocol.GraphQL)
+        {
+            request.GraphQL ??= new GraphQLOptions();
+        }
+        else
+        {
+            request.GraphQL = null;
+        }
+
+        if (request.Protocol != RequestProtocol.Http && _tabs.GetValueOrDefault(request, "headers") == "headers" && string.IsNullOrEmpty(request.Body))
+        {
+            _tabs[request] = "body";
+        }
+    }
+
     private static string ExpressionPlaceholder(ExtractionSource source) => source switch
     {
         ExtractionSource.Header => "Location",
@@ -1155,7 +1217,17 @@
         _plan.Profile.Stages.Add(new LoadStage { DurationSeconds = last?.DurationSeconds ?? 60, Target = last?.Target ?? _peak });
     }
 
-    private void AddRequest() => _plan.Requests.Add(new RequestDefinition { Url = _plan.Requests.LastOrDefault()?.Url ?? "https://" });
+    // A new request starts like the one before it: same URL and protocol, since scenarios usually stay on one API.
+    private void AddRequest()
+    {
+        var last = _plan.Requests.LastOrDefault();
+        _plan.Requests.Add(new RequestDefinition
+        {
+            Url = last?.Url ?? "https://",
+            Protocol = last?.Protocol ?? RequestProtocol.Http,
+            GraphQL = last?.Protocol == RequestProtocol.GraphQL ? new GraphQLOptions() : null,
+        });
+    }
 
     private const int PreviewRows = 5;
     private string? _dataProblem;

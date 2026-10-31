@@ -226,22 +226,12 @@ public static partial class PostmanImporter
 
             case "graphql":
             {
+                // A GraphQL body becomes a GraphQL request, so the query and variables are edited as such.
                 var graphql = body["graphql"] as JsonObject;
-                var payload = new JsonObject { ["query"] = Rewrite(Text(graphql?["query"]), context) };
-                var variables = Text(graphql?["variables"]);
-                if (variables.Length > 0)
-                {
-                    try
-                    {
-                        payload["variables"] = JsonNode.Parse(Rewrite(variables, context));
-                    }
-                    catch (System.Text.Json.JsonException)
-                    {
-                        payload["variables"] = variables;
-                    }
-                }
-
-                request.Body = payload.ToJsonString();
+                var variables = Rewrite(Text(graphql?["variables"]), context);
+                request.Protocol = RequestProtocol.GraphQL;
+                request.Body = Rewrite(Text(graphql?["query"]), context);
+                request.GraphQL = new GraphQLOptions { Variables = string.IsNullOrWhiteSpace(variables) ? null : variables };
                 request.ContentType = "application/json";
                 break;
             }
