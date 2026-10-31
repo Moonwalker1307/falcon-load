@@ -53,9 +53,26 @@ public static class Format
         code.Length == 3 && char.IsDigit(code[0]) ? $"status-{code[0]}xx" : "status-err";
 
     public static string StopSummary(FalconLoad.Core.Model.LoadProfile p) =>
-        p.StopCondition == FalconLoad.Core.Model.StopCondition.Duration
-            ? Seconds(p.DurationSeconds)
-            : $"{p.TotalRequests:#,0} requests";
+        p.IsStaged ? Seconds(p.TotalStageSeconds)
+        : p.StopCondition == FalconLoad.Core.Model.StopCondition.Duration ? Seconds(p.DurationSeconds)
+        : $"{p.TotalRequests:#,0} requests";
+
+    /// <summary>The unit a staged profile's targets are in.</summary>
+    public static string StageUnit(FalconLoad.Core.Model.LoadProfile p) =>
+        p.StageMode == FalconLoad.Core.Model.StageMode.RequestRate ? "req/s" : "virtual users";
+
+    /// <summary>How much load a profile applies, such as "10 virtual users" or "up to 200 req/s in 5 stages".</summary>
+    public static string LoadSummary(FalconLoad.Core.Model.LoadProfile p)
+    {
+        if (!p.IsStaged)
+        {
+            return p.Concurrency == 1 ? "1 virtual user" : $"{p.Concurrency:#,0} virtual users";
+        }
+
+        var peak = new FalconLoad.Core.Model.StageSchedule(p.Stages).Peak;
+        var stages = p.Stages.Count == 1 ? "1 stage" : $"{p.Stages.Count} stages";
+        return $"up to {Rate(peak)} {StageUnit(p)} in {stages}";
+    }
 
     /// <summary>A configured length such as "45s" or "2m 30s", without the decimals <see cref="Duration"/> shows for live timings.</summary>
     public static string Seconds(int seconds)

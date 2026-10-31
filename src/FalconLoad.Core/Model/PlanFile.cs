@@ -115,6 +115,7 @@ public sealed class PlanFile
     {
         plan.Name = string.IsNullOrWhiteSpace(plan.Name) ? "Imported test" : plan.Name;
         plan.Profile ??= new LoadProfile();
+        plan.Profile.Stages = plan.Profile.Stages?.OfType<LoadStage>().ToList() ?? [];
         plan.Requests = plan.Requests?.OfType<RequestDefinition>().ToList() ?? [];
         plan.Parameters = plan.Parameters?.OfType<ParameterList>().ToList() ?? [];
         foreach (var list in plan.Parameters)

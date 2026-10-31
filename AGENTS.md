@@ -47,7 +47,8 @@ engine works. It is the only user-facing documentation, so it has to stay true.
 
 - `src/FalconLoad.Core/`
   - `Model/`: `LoadTestPlan` (requests plus profile, `Validate()`, `Clone()`), `RequestDefinition`, `LoadProfile`
-    (concurrency, stop condition, ramp-up, rate cap, timeout, TLS and redirect options), `StatusCodeMatcher` (`200,201`
+    (concurrency, stop condition, ramp-up, rate cap, timeout, TLS and redirect options, and optional `LoadStage`s that
+    `StageSchedule` turns into load over time), `StagePresets` (step, spike and soak), `StatusCodeMatcher` (`200,201`
     or `200-299,404`) and `TemplateRenderer` (the `{{$guid}}`-style dynamic values).
   - `Engine/`: `LoadTestRunner` runs a plan once and reports snapshots; `PreparedRequest` precomputes each request;
     `HttpHandlerFactory` builds the shared handler; `RequestProbe` sends one request for the "Send once" button and

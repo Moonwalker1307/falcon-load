@@ -31,13 +31,17 @@
         </div>
         <div class="meta">
             <span>Started @_run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</span>
-            <span>@profile.Concurrency virtual @(profile.Concurrency == 1 ? "user" : "users")</span>
+            <span>@Format.LoadSummary(profile)</span>
+            @if (profile.StageMode == StageMode.RequestRate && profile.IsStaged)
+            {
+                <span>sent by up to @profile.Concurrency virtual @(profile.Concurrency == 1 ? "user" : "users")</span>
+            }
             <span>Stops after @Format.StopSummary(profile)</span>
-            @if (profile.RampUpSeconds > 0)
+            @if (profile.RampUpSeconds > 0 && !profile.IsStaged)
             {
                 <span>@Format.Seconds(profile.RampUpSeconds) ramp-up</span>
             }
-            @if (profile.MaxRequestsPerSecond > 0)
+            @if (profile.MaxRequestsPerSecond > 0 && !(profile.IsStaged && profile.StageMode == StageMode.RequestRate))
             {
                 <span>Capped at @profile.MaxRequestsPerSecond req/s</span>
             }
@@ -71,7 +75,7 @@
 <div class="progress-block">
     <FlightProgress Value="Progress(s, profile)" Flying="!s.IsFinished" />
     <div class="progress-text">
-        <span>@ProgressLabel(s, profile)</span>
+        <span>@ProgressLabel(s, profile)@StageLabel(s, profile)</span>
         <span>@Format.Duration(s.Elapsed) elapsed</span>
     </div>
 </div>
@@ -104,14 +108,14 @@
     <div class="stat"><div class="label">p90</div><div class="value">@Format.Ms(s.Latency.P90Ms)</div></div>
     <div class="stat"><div class="label">p99</div><div class="value">@Format.Ms(s.Latency.P99Ms)</div></div>
     <div class="stat"><div class="label">Max</div><div class="value">@Format.Ms(s.Latency.MaxMs)</div></div>
-    <div class="stat"><div class="label">Active users</div><div class="value">@s.ActiveVirtualUsers<span class="unit">/ @profile.Concurrency</span></div></div>
+    <div class="stat"><div class="label">Active users</div><div class="value">@s.ActiveVirtualUsers<span class="unit">/ @profile.PeakVirtualUsers</span></div></div>
     <div class="stat"><div class="label">Received</div><div class="value">@Format.Bytes(s.BytesReceived)</div><div class="sub">sent @Format.Bytes(s.BytesSent)</div></div>
 </div>
 
 <div class="grid-2">
     <section class="card" aria-labelledby="tp-title">
         <div class="card-header"><h2 id="tp-title">Throughput</h2><span class="hint">requests per second</span></div>
-        <LineChart AriaLabel="Requests per second over time" Series="ThroughputSeries(s)" />
+        <LineChart AriaLabel="Requests per second over time" Series="ThroughputSeries(s, profile)" />
     </section>
     <section class="card" aria-labelledby="lat-title">
         <div class="card-header"><h2 id="lat-title">Latency</h2><span class="hint">per second</span></div>
@@ -246,8 +250,8 @@
             return 1;
         }
 
-        var fraction = p.StopCondition == StopCondition.Duration
-            ? s.Elapsed.TotalSeconds / p.DurationSeconds
+        var fraction = p.IsStaged ? s.Elapsed.TotalSeconds / p.TotalStageSeconds
+            : p.StopCondition == StopCondition.Duration ? s.Elapsed.TotalSeconds / p.DurationSeconds
             : (double)s.TotalRequests / p.TotalRequests;
         return Math.Clamp(fraction, 0, 1);
     }
@@ -274,6 +278,11 @@
         }
 
         var percent = $"{Math.Round(Progress(s, p) * 100)}%";
+        if (p.IsStaged)
+        {
+            return $"{percent} · {Format.Remaining(TimeSpan.FromSeconds(p.TotalStageSeconds) - s.Elapsed)}";
+        }
+
         if (p.StopCondition == StopCondition.Duration)
         {
             return $"{percent} · {Format.Remaining(TimeSpan.FromSeconds(p.DurationSeconds) - s.Elapsed)}";
@@ -286,14 +295,39 @@
             : percent;
     }
 
+    /// <summary>Which stage a staged run is in and what it is aiming for, shown while the run is going.</summary>
+    private static string StageLabel(LoadTestSnapshot s, LoadProfile p)
+    {
+        if (s.IsFinished || !p.IsStaged)
+        {
+            return string.Empty;
+        }
+
+        var schedule = new StageSchedule(p.Stages);
+        var seconds = s.Elapsed.TotalSeconds;
+        return $" · stage {schedule.StageIndexAt(seconds) + 1} of {p.Stages.Count}, target {Format.Rate(Math.Round(schedule.TargetAt(seconds), 1))} {Format.StageUnit(p)}";
+    }
+
     private static string Css(double fraction) =>
         (Math.Clamp(fraction, 0, 1) * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
 
-    private static IReadOnlyList<ChartSeries> ThroughputSeries(LoadTestSnapshot s) =>
-    [
-        new("Requests/s", "var(--series-1)", s.Timeline.Select(t => (double)t.Requests).ToList(), Fill: true),
-        new("Errors/s", "var(--series-3)", s.Timeline.Select(t => (double)t.Failures).ToList()),
-    ];
+    private static IReadOnlyList<ChartSeries> ThroughputSeries(LoadTestSnapshot s, LoadProfile p)
+    {
+        List<ChartSeries> series =
+        [
+            new("Requests/s", "var(--series-1)", s.Timeline.Select(t => (double)t.Requests).ToList(), Fill: true),
+            new("Errors/s", "var(--series-3)", s.Timeline.Select(t => (double)t.Failures).ToList()),
+        ];
+
+        // Next to what was sent, the rate the stages asked for in each second, so a shortfall is easy to see.
+        if (p.IsStaged && p.StageMode == StageMode.RequestRate)
+        {
+            var schedule = new StageSchedule(p.Stages);
+            series.Add(new("Target", "var(--series-2)", s.Timeline.Select(t => schedule.TargetAt(t.Second + 0.5)).ToList()));
+        }
+
+        return series;
+    }
 
     private static IReadOnlyList<ChartSeries> LatencySeries(LoadTestSnapshot s) =>
     [

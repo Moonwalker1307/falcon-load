@@ -106,7 +106,7 @@ else
                                 }
                             </td>
                             <td class="load-cell">
-                                <div>@plan.Profile.Concurrency @(plan.Profile.Concurrency == 1 ? "user" : "users")</div>
+                                <div>@(plan.Profile.IsStaged ? Format.LoadSummary(plan.Profile) : $"{plan.Profile.Concurrency} {(plan.Profile.Concurrency == 1 ? "user" : "users")}")</div>
                                 <div class="small muted">@Format.StopSummary(plan.Profile)</div>
                             </td>
                             <td class="hide-sm muted nowrap">@Format.When(plan.UpdatedAt)</td>
