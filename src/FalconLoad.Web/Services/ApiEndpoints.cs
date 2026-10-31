@@ -4,6 +4,7 @@ using FalconLoad.Core.Engine;
 using FalconLoad.Core.Import;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
+using FalconLoad.Core.Reports;
 
 namespace FalconLoad.Web.Services;
 
@@ -175,6 +176,13 @@ public static class ApiEndpoints
                 ? Results.Json(run.ToExport(), PlanStore.JsonOptions, statusCode: 200)
                     .WithDownloadName($"falcon-load-{Slug(run.Plan.Name)}-{run.StartedAt:yyyyMMdd-HHmmss}.json")
                 : Results.NotFound());
+
+        // Reports of a finished run: an HTML page to read or attach, and JUnit XML for a CI system's test results.
+        api.MapGet("/runs/{id:guid}/report", (Guid id, RunManager runs) =>
+            runs.Get(id) is { } run ? ReportDownload(run.ToExport(), ReportKind.Html) : Results.NotFound());
+
+        api.MapGet("/runs/{id:guid}/junit", (Guid id, RunManager runs) =>
+            runs.Get(id) is { } run ? ReportDownload(run.ToExport(), ReportKind.JUnit) : Results.NotFound());
 
         // A saved test's stored runs and its baseline, so CI can fail a build when a run regresses.
         api.MapGet("/plans/{id:guid}/history", (Guid id, PlanStore store, RunHistoryStore history) =>
@@ -374,6 +382,12 @@ public static class ApiEndpoints
         api.MapGet("/distributed/runs/{id:guid}", (Guid id, DistributedRunManager runs) =>
             runs.Get(id) is { } run ? Results.Ok(new { run.Id, run.StartedAt, run.Plan, run.Snapshot }) : Results.NotFound());
 
+        api.MapGet("/distributed/runs/{id:guid}/report", (Guid id, DistributedRunManager runs) =>
+            runs.Get(id) is { } run ? ReportDownload(run.ToReportExport(), ReportKind.Html) : Results.NotFound());
+
+        api.MapGet("/distributed/runs/{id:guid}/junit", (Guid id, DistributedRunManager runs) =>
+            runs.Get(id) is { } run ? ReportDownload(run.ToReportExport(), ReportKind.JUnit) : Results.NotFound());
+
         api.MapGet("/distributed/runs/{id:guid}/export", (Guid id, DistributedRunManager runs) =>
             runs.Get(id) is { } run
                 ? Results.Json(run.ToExport(), PlanStore.JsonOptions, statusCode: 200)
@@ -482,6 +496,30 @@ public static class ApiEndpoints
         run.Plan,
         Results = run.Snapshot,
     };
+
+    private enum ReportKind
+    {
+        Html,
+        JUnit,
+    }
+
+    /// <summary>
+    /// A report is the judgement of a finished run, so a run still going gets a conflict rather than a verdict that
+    /// would change a second later.
+    /// </summary>
+    private static IResult ReportDownload(RunExport export, ReportKind kind)
+    {
+        if (!export.Results.IsFinished)
+        {
+            return Results.Problem("The run hasn't finished yet. Wait for it to end or stop it, then ask for the report.", statusCode: StatusCodes.Status409Conflict);
+        }
+
+        var verdict = RunVerdict.Evaluate(export.Results, null);
+        var name = $"falcon-load-{Slug(export.Plan.Name)}-{export.StartedAt:yyyyMMdd-HHmmss}";
+        return kind == ReportKind.Html
+            ? Results.Text(HtmlReport.Render(export, verdict), "text/html; charset=utf-8").WithDownloadName(name + ".html")
+            : Results.Text(JUnitReport.Render(export, verdict), "application/xml; charset=utf-8").WithDownloadName(name + "-junit.xml");
+    }
 
     private static string Slug(string name)
     {

@@ -22,6 +22,10 @@ internal sealed record CliOptions
           --test <name>               Run only the test with this name. By default every test in the file runs, in order.
           --out <path>                Write the results as JSON, in the same format as an export from the web UI.
                                       When several tests run, <path> is a directory that gets one file per test.
+          --html <path>               Write an HTML report of each test. When several tests run, <path> is a directory
+                                      that gets one file per test.
+          --junit <path>              Write the results as JUnit XML for a CI system's test report: one file, with a
+                                      test suite per test and a test case per threshold.
           --concurrency <n>           Use this many virtual users instead of the number in the file.
           --duration <seconds>        Run each test for this long instead of the file's stop condition.
           --requests <n>              Send this many requests per test instead of the file's stop condition.
@@ -51,6 +55,10 @@ internal sealed record CliOptions
     public string? Test { get; init; }
 
     public string? Out { get; init; }
+
+    public string? Html { get; init; }
+
+    public string? Junit { get; init; }
 
     public int? Concurrency { get; init; }
 
@@ -167,6 +175,12 @@ internal sealed record CliOptions
                 case "--out":
                     options = options with { Out = value };
                     break;
+                case "--html":
+                    options = options with { Html = value };
+                    break;
+                case "--junit":
+                    options = options with { Junit = value };
+                    break;
                 case "--machine":
                     options = options with { Machine = value };
                     break;
@@ -252,7 +266,7 @@ internal sealed record CliOptions
     }
 
     private static readonly HashSet<string> ValueOptions =
-        ["--test", "--out", "--machine", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate"];
+        ["--test", "--out", "--html", "--junit", "--machine", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate"];
 
     private static bool TryPositive(string name, string value, out int result, out string? error)
     {

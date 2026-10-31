@@ -59,6 +59,9 @@ engine works. It is the only user-facing documentation, so it has to stay true.
   - `Engine/`: `LoadTestRunner` runs a plan once and reports snapshots; `PreparedRequest` precomputes each request;
     `HttpHandlerFactory` builds the shared handler; `RequestProbe` sends one request for the "Send once" button and
     `/api/probe`.
+  - `Reports/`: `RunVerdict` (the one pass/fail verdict behind the CLI's exit code and both reports), `HtmlReport`
+    (a self-contained page with hand-written SVG charts, no script) and `JUnitReport`. Reports show results only,
+    never headers, bodies or environment values.
   - `Metrics/`: `MetricsCollector` aggregates `RequestResult`s into a `LoadTestSnapshot`, overall, per request and per
     second, using `LatencyHistogram`.
 - `src/FalconLoad.Web/`

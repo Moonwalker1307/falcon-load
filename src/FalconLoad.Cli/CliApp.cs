@@ -3,6 +3,7 @@ using System.Text.Json;
 using FalconLoad.Core.Engine;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
+using FalconLoad.Core.Reports;
 
 namespace FalconLoad.Cli;
 
@@ -62,7 +63,9 @@ internal static class CliApp
             return InvalidInput;
         }
 
-        var outputs = OutputPaths(options.Out, plans.Select(p => p.Plan).ToList());
+        var outputs = OutputPaths(options.Out, plans.Select(p => p.Plan).ToList(), ".json");
+        var htmlOutputs = OutputPaths(options.Html, plans.Select(p => p.Plan).ToList(), ".html");
+        var junit = new List<(RunExport, RunVerdict)>();
         var machine = string.IsNullOrWhiteSpace(options.Machine) ? Environment.MachineName : options.Machine;
         var exitCode = Passed;
         for (var i = 0; i < plans.Count; i++)
@@ -82,7 +85,7 @@ internal static class CliApp
             {
                 if (plans.Count > 1 || !options.Quiet)
                 {
-                    await console.Error.WriteLineAsync($"Running '{plan.Name}': {Describe(plan.Profile)}");
+                    await console.Error.WriteLineAsync($"Running '{plan.Name}': {ReportFormat.DescribeProfile(plan.Profile)}");
                 }
 
                 var progress = options.Quiet ? null : new ProgressPrinter(console);
@@ -96,26 +99,31 @@ internal static class CliApp
 
             invoker?.Dispose();
 
-            var failures = Checks(snapshot, options.MaxErrorRate);
+            var verdict = RunVerdict.Evaluate(snapshot, options.MaxErrorRate);
+            var failures = verdict.Failures;
             await console.Out.WriteAsync(Summary.Write(plan, snapshot, failures, options.MaxErrorRate));
+
+            var export = new RunExport
+            {
+                Id = Guid.NewGuid(),
+                StartedAt = startedAt,
+                Machine = machine,
+                Plan = ran,
+                Results = snapshot,
+                Histograms = histograms,
+            };
 
             if (outputs is not null)
             {
-                var export = new RunExport
-                {
-                    Id = Guid.NewGuid(),
-                    StartedAt = startedAt,
-                    Machine = machine,
-                    Plan = ran,
-                    Results = snapshot,
-                    Histograms = histograms,
-                };
-
-                var path = outputs[i];
-                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-                await File.WriteAllTextAsync(path, JsonSerializer.Serialize(export, PlanFile.JsonOptions), CancellationToken.None);
-                await console.Error.WriteLineAsync($"Results written to {path}");
+                await WriteAsync(outputs[i], JsonSerializer.Serialize(export, PlanFile.JsonOptions), console, "Results");
             }
+
+            if (htmlOutputs is not null)
+            {
+                await WriteAsync(htmlOutputs[i], HtmlReport.Render(export, verdict), console, "Report");
+            }
+
+            junit.Add((export, verdict));
 
             if (snapshot.State == RunState.Cancelled)
             {
@@ -127,6 +135,12 @@ internal static class CliApp
             }
         }
 
+        // Written after the loop so one file covers every test, also when an interrupt skipped the last ones.
+        if (options.Junit is { } junitPath && junit.Count > 0)
+        {
+            await WriteAsync(junitPath, JUnitReport.Render(junit), console, "JUnit report");
+        }
+
         if (cancellationToken.IsCancellationRequested)
         {
             await console.Error.WriteLineAsync(plans.Count > 1 ? "Interrupted; tests that had not started were skipped." : "Interrupted.");
@@ -134,40 +148,6 @@ internal static class CliApp
         }
 
         return exitCode;
-    }
-
-    /// <summary>Why a finished test failed; empty when it passed.</summary>
-    /// <param name="maxErrorRate">From --max-error-rate. Without it, a test without thresholds allows no failed requests.</param>
-    internal static IReadOnlyList<string> Checks(LoadTestSnapshot snapshot, double? maxErrorRate)
-    {
-        var failures = new List<string>();
-
-        // A test with thresholds is judged by them, the same verdict the web UI and the API show; --max-error-rate only
-        // adds to them when it is given.
-        foreach (var threshold in snapshot.Thresholds.Where(t => !t.Passed))
-        {
-            failures.Add(threshold.Actual is { } actual
-                ? $"Threshold not met: {threshold.Name} (measured {Summary.Value(actual, threshold.Unit)})."
-                : $"Threshold not met: {threshold.Name} (nothing was measured).");
-        }
-
-        var allowed = maxErrorRate ?? (snapshot.Thresholds.Count > 0 ? (double?)null : 0);
-        if (snapshot.State == RunState.Failed)
-        {
-            failures.Add($"The test could not run: {snapshot.FailureReason}");
-        }
-
-        if (snapshot.TotalRequests == 0 && snapshot.State == RunState.Completed)
-        {
-            failures.Add("No requests completed.");
-        }
-
-        if (allowed is { } limit && snapshot.ErrorRate > limit)
-        {
-            failures.Add($"{Summary.Percent(snapshot.ErrorRate)} of requests failed, more than the {Summary.Percent(limit)} allowed.");
-        }
-
-        return failures;
     }
 
     private static async Task<IReadOnlyList<(LoadTestPlan Plan, TestEnvironment? Environment)>?> LoadPlansAsync(CliOptions options, CliConsole console)
@@ -415,8 +395,15 @@ internal static class CliApp
         }
     }
 
+    private static async Task WriteAsync(string path, string content, CliConsole console, string what)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        await File.WriteAllTextAsync(path, content, CancellationToken.None);
+        await console.Error.WriteLineAsync($"{what} written to {path}");
+    }
+
     /// <summary>One file per test: the given path for a single test, otherwise files named after the tests in that directory.</summary>
-    internal static IReadOnlyList<string>? OutputPaths(string? output, IReadOnlyList<LoadTestPlan> plans)
+    internal static IReadOnlyList<string>? OutputPaths(string? output, IReadOnlyList<LoadTestPlan> plans, string extension)
     {
         if (string.IsNullOrWhiteSpace(output))
         {
@@ -439,7 +426,7 @@ internal static class CliApp
                 candidate = $"{slug}-{n}";
             }
 
-            paths.Add(Path.Combine(output, candidate + ".json"));
+            paths.Add(Path.Combine(output, candidate + extension));
         }
 
         return paths;
@@ -450,23 +437,6 @@ internal static class CliApp
         var chars = name.Trim().ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray();
         var slug = string.Join('-', new string(chars).Split('-', StringSplitOptions.RemoveEmptyEntries));
         return slug.Length == 0 ? "test" : slug;
-    }
-
-    private static string Describe(LoadProfile profile)
-    {
-        if (profile.IsStaged)
-        {
-            var peak = new StageSchedule(profile.Stages).Peak;
-            var unit = profile.StageMode == StageMode.RequestRate ? "req/s" : "virtual users";
-            var pool = profile.StageMode == StageMode.RequestRate ? $", sent by up to {profile.Concurrency:#,0} virtual users" : string.Empty;
-            return $"{profile.Stages.Count} {(profile.Stages.Count == 1 ? "stage" : "stages")} over {profile.TotalStageSeconds}s, up to {peak:#,0.##} {unit}{pool}";
-        }
-
-        var stop = profile.StopCondition == StopCondition.Duration
-            ? $"for {profile.DurationSeconds}s"
-            : $"{profile.TotalRequests:#,0} requests";
-        var users = profile.Concurrency == 1 ? "1 virtual user" : $"{profile.Concurrency:#,0} virtual users";
-        return $"{users}, {stop}";
     }
 
     private static async Task WriteProblemsAsync(CliConsole console, string heading, IEnumerable<string> problems)

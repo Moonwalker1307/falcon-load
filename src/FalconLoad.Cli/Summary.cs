@@ -1,7 +1,7 @@
-using System.Globalization;
 using System.Text;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
+using static FalconLoad.Core.Reports.ReportFormat;
 
 namespace FalconLoad.Cli;
 
@@ -92,40 +92,5 @@ internal static class Summary
     public static string ProgressLine(LoadTestSnapshot s) => Invariant(
         $"  {Duration(s.Elapsed),7}  {s.TotalRequests,10:#,0} requests  {Rate(s.RequestsPerSecond),8}/s  {Percent(s.ErrorRate),6} failed  p95 {Ms(s.Latency.P95Ms),9}  {s.ActiveVirtualUsers:#,0} {(s.ActiveVirtualUsers == 1 ? "user" : "users")}");
 
-    /// <summary>A threshold's measured value in the unit it is written in: ms, % or req/s.</summary>
-    public static string Value(double value, string unit) => unit switch
-    {
-        "ms" => Ms(value),
-        "%" => Invariant($"{value:0.##}%"),
-        "" => Invariant($"{value:0.##}"),
-        _ => Invariant($"{value:#,0.##} {unit}"),
-    };
-
-    public static string Ms(double ms) => ms switch
-    {
-        0 => "0 ms",
-        < 1 => Invariant($"{ms:0.00} ms"),
-        < 100 => Invariant($"{ms:0.0} ms"),
-        < 1000 => Invariant($"{ms:0} ms"),
-        _ => Invariant($"{ms / 1000:0.00} s"),
-    };
-
-    public static string Rate(double perSecond) => perSecond < 10 ? Invariant($"{perSecond:0.##}") : Invariant($"{perSecond:#,0.#}");
-
-    public static string Percent(double fraction) =>
-        fraction == 0 ? "0%" : fraction < 0.0001 ? "<0.01%" : Invariant($"{fraction * 100:0.##}%");
-
-    public static string Bytes(long bytes) => bytes switch
-    {
-        >= 1L << 30 => Invariant($"{bytes / (double)(1L << 30):0.##} GB"),
-        >= 1L << 20 => Invariant($"{bytes / (double)(1L << 20):0.##} MB"),
-        >= 1L << 10 => Invariant($"{bytes / 1024.0:0.#} KB"),
-        _ => Invariant($"{bytes} B"),
-    };
-
-    public static string Duration(TimeSpan t) => t.TotalHours >= 1
-        ? Invariant($"{(int)t.TotalHours}h {t.Minutes:00}m {t.Seconds:00}s")
-        : t.TotalMinutes >= 1 ? Invariant($"{t.Minutes}m {t.Seconds:00}s") : Invariant($"{t.TotalSeconds:0.0}s");
-
-    private static string Invariant(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
+    private static string Invariant(FormattableString text) => text.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }

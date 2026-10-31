@@ -59,6 +59,19 @@ public sealed class DistributedRun
         };
     }
 
+    /// <summary>
+    /// The merged results as an ordinary run export, for the reports. The controller's own state and failure reason win
+    /// over the merged results', since a run whose agent was lost has to read as failed in the report.
+    /// </summary>
+    public RunExport ToReportExport() => new()
+    {
+        Id = Id,
+        StartedAt = Snapshot.StartedAt ?? StartedAt,
+        Machine = System.Environment.MachineName,
+        Plan = Plan,
+        Results = Snapshot.Results with { State = Snapshot.State, FailureReason = Snapshot.FailureReason ?? Snapshot.Results.FailureReason },
+    };
+
     internal void Finish(DistributedRunner runner)
     {
         _finalExports = runner.GetAgentExports();
