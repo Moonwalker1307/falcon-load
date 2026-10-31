@@ -135,6 +135,13 @@ public sealed class PlanFile
                 header.Name ??= string.Empty;
                 header.Value ??= string.Empty;
             }
+
+            request.Extractions = request.Extractions?.OfType<ExtractionRule>().ToList() ?? [];
+            foreach (var rule in request.Extractions)
+            {
+                rule.Variable ??= string.Empty;
+                rule.Expression ??= string.Empty;
+            }
         }
     }
 }

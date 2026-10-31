@@ -9,9 +9,10 @@ namespace FalconLoad.Core.Model;
 /// <item><c>{{$randomInt}}</c> a random integer 0..999999, or <c>{{$randomInt:min:max}}</c></item>
 /// <item><c>{{$timestamp}}</c> Unix time in seconds; <c>{{$isoTimestamp}}</c> ISO 8601 UTC</item>
 /// <item><c>{{$iteration}}</c> the virtual user's iteration number; <c>{{$vu}}</c> the virtual user number</item>
-/// <item><c>{{name}}</c> the current value of the plan's <see cref="ParameterList"/> with that name</item>
+/// <item><c>{{name}}</c> the current value of the plan's <see cref="ParameterList"/> with that name, or else the
+/// virtual user's variable of that name, taken from an earlier response by an <see cref="ExtractionRule"/></item>
 /// </list>
-/// Placeholders that match nothing are sent as written.
+/// Placeholders that match nothing, including a variable no response has supplied yet, are sent as written.
 /// </summary>
 public static partial class TemplateRenderer
 {
@@ -30,16 +31,43 @@ public static partial class TemplateRenderer
         return VariablePattern().Replace(text, match => Evaluate(match, context) ?? match.Value);
     }
 
-    /// <summary>Renders with fixed placeholder values and the first value of each list, used for validating URLs before a run.</summary>
-    public static string RenderForValidation(string text, ParameterSet? parameters = null) =>
-        Render(text, new TemplateContext(1, 1, parameters?.First() ?? default));
+    /// <summary>
+    /// Renders with fixed placeholder values and the first value of each list, used for validating URLs before a run.
+    /// Extracted variables have no value until a response supplies one, so they stand in as <c>1</c>, or as a URL when
+    /// the text starts with one, such as a URL taken from a <c>Location</c> header.
+    /// </summary>
+    public static string RenderForValidation(string text, ParameterSet? parameters = null, IReadOnlyCollection<string>? variables = null)
+    {
+        Dictionary<string, string>? stand = null;
+        if (variables is { Count: > 0 })
+        {
+            stand = variables.Distinct(StringComparer.OrdinalIgnoreCase).ToDictionary(v => v, _ => "1", StringComparer.OrdinalIgnoreCase);
+            var first = VariablePattern().Match(text.TrimStart());
+            if (first is { Success: true, Index: 0 } && !first.Groups["builtin"].Success && stand.ContainsKey(first.Groups["name"].Value))
+            {
+                text = "http://localhost" + text.TrimStart()[first.Length..];
+            }
+        }
+
+        return Render(text, new TemplateContext(1, 1, parameters?.First() ?? default, stand));
+    }
 
     private static string? Evaluate(Match match, TemplateContext context)
     {
         var name = match.Groups["name"].Value;
         if (!match.Groups["builtin"].Success)
         {
-            return !match.Groups["a"].Success && context.Parameters.TryGet(name, out var value) ? value : null;
+            if (match.Groups["a"].Success)
+            {
+                return null;
+            }
+
+            if (context.Parameters.TryGet(name, out var value))
+            {
+                return value;
+            }
+
+            return context.Variables is not null && context.Variables.TryGetValue(name, out var extracted) ? extracted : null;
         }
 
         return name.ToLowerInvariant() switch
@@ -68,4 +96,9 @@ public static partial class TemplateRenderer
     }
 }
 
-public readonly record struct TemplateContext(int VirtualUser, long Iteration, ParameterValues Parameters = default);
+/// <param name="Variables">The virtual user's extracted variables, compared without regard to case; null when the plan extracts nothing.</param>
+public readonly record struct TemplateContext(
+    int VirtualUser,
+    long Iteration,
+    ParameterValues Parameters = default,
+    IReadOnlyDictionary<string, string>? Variables = null);

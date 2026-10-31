@@ -23,6 +23,8 @@
     var planProblems = _showProblems ? _plan.Validate() : [];
     var profileProblems = _showProblems ? _plan.Profile.Validate().ToList() : [];
     var profile = _plan.Profile;
+    var parameterSet = _showProblems ? new ParameterSet(_plan.Parameters) : null;
+    var extracted = _plan.ExtractedVariables();
 }
 
 <div class="page-header editor-header">
@@ -77,7 +79,7 @@
             var request = _plan.Requests[index];
             var tab = _tabs.GetValueOrDefault(request, "headers");
             var collapsed = _collapsed.Contains(request);
-            var problems = _showProblems ? request.Validate().ToList() : [];
+            var problems = _showProblems ? request.Validate(parameterSet, extracted).ToList() : [];
             var idp = $"req-{index}";
             <section class="card request-card @(problems.Count > 0 ? "has-error" : "")" aria-labelledby="@idp-title">
                 <div class="card-header">
@@ -89,6 +91,10 @@
                         <span class="step-num" aria-hidden="true">@(index + 1)</span>
                         <div class="request-summary">
                             <h3 id="@idp-title">@(string.IsNullOrWhiteSpace(request.Name) ? $"Request {index + 1}" : request.Name)</h3>
+                            @if (request.OncePerVirtualUser)
+                            {
+                                <span class="badge badge-once" title="Sent once per virtual user">Once</span>
+                            }
                             @if (collapsed)
                             {
                                 <span class="@Format.MethodClass(request.Method)">@request.Method</span>
@@ -119,6 +125,10 @@
                         <label for="@idp-name">Name <span class="optional">(optional)</span></label>
                         <input id="@idp-name" type="text" placeholder="e.g. List products" @bind="request.Name" @bind:event="oninput" />
                     </div>
+                    <label class="check">
+                        <input type="checkbox" @bind="request.OncePerVirtualUser" />
+                        <span>Once per virtual user<span class="hint">Send it on the first iteration only, such as a login whose token later requests reuse. If it fails, it is sent again until it succeeds.</span></span>
+                    </label>
 
                     <label for="@idp-url">Method and URL</label>
                     <div class="url-row">
@@ -149,6 +159,9 @@
                         </button>
                         <button role="tab" id="@idp-tab-checks" aria-selected="@(tab == "checks" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "checks"'>
                             Checks<span class="count">@request.Assertions.Count(a => a.Enabled)</span>
+                        </button>
+                        <button role="tab" id="@idp-tab-extract" aria-selected="@(tab == "extract" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "extract"'>
+                            Extract<span class="count">@request.Extractions.Count</span>
                         </button>
                     </div>
 
@@ -184,6 +197,38 @@
                             {
                                 <div class="hint">Heads up: many servers ignore a body on @request.Method requests.</div>
                             }
+                        }
+                        else if (tab == "extract")
+                        {
+                            @if (request.Extractions.Count == 0)
+                            {
+                                <div class="hint">
+                                    Take a value from this response, such as a login token, and use it in later requests as <code>{{token}}</code>.
+                                    Each virtual user keeps its own values.
+                                </div>
+                            }
+                            @for (var j = 0; j < request.Extractions.Count; j++)
+                            {
+                                var rule = request.Extractions[j];
+                                var n = j + 1;
+                                <div class="extract-row">
+                                    <input type="text" class="mono" placeholder="token" aria-label="Extraction @n variable name" spellcheck="false" @bind="rule.Variable" @bind:event="oninput" />
+                                    <select aria-label="Extraction @n source" @bind="rule.Source">
+                                        <option value="@ExtractionSource.JsonPath">JSON path</option>
+                                        <option value="@ExtractionSource.Header">Header</option>
+                                        <option value="@ExtractionSource.Regex">Regex</option>
+                                    </select>
+                                    <input type="text" class="mono x-expr" placeholder="@ExpressionPlaceholder(rule.Source)" aria-label="Extraction @n @SourceLabel(rule.Source)" spellcheck="false"
+                                           @bind="rule.Expression" @bind:event="oninput" />
+                                    <button class="btn-sm btn-icon btn-ghost btn-danger x-remove" title="Remove extraction" aria-label="Remove extraction @n" @onclick="() => request.Extractions.Remove(rule)"><Icon Name="x" /></button>
+                                </div>
+                            }
+                            <button class="btn-sm" @onclick='() => request.Extractions.Add(new ExtractionRule { Variable = request.Extractions.Count == 0 ? "token" : string.Empty })'><Icon Name="plus" />Add extraction</button>
+                            <div class="hint">
+                                A JSON path looks like <code>$.data.token</code> or <code>items[0].id</code>. A header is found by name, such as <code>Location</code>.
+                                A regex takes its first capture group, or the whole match without one, e.g. <code>id="([^"]+)"</code>.
+                                A response with an expected status that lacks the value counts as an error. "Send once" here makes the values available to "Send once" on later requests.
+                            </div>
                         }
                         else
                         {
@@ -294,6 +339,26 @@
                             {
                                 <span class="probe-label">Response headers</span>
                                 <pre>@string.Join("\n", probe.Headers.Select(h => $"{h.Key}: {h.Value}"))</pre>
+                                @if (probe.Extractions is { Count: > 0 } extractions)
+                                {
+                                    <span class="probe-label">Extracted</span>
+                                    <ul class="probe-extracts">
+                                        @foreach (var item in extractions)
+                                        {
+                                            <li>
+                                                <code>{{@item.Variable}}</code>
+                                                @if (item.Value is not null)
+                                                {
+                                                    <span class="mono">@item.Value</span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="status-err">@item.Error</span>
+                                                }
+                                            </li>
+                                        }
+                                    </ul>
+                                }
                                 @if (!string.IsNullOrEmpty(probe.BodyPreview))
                                 {
                                     <span class="probe-label">Body</span>
@@ -308,7 +373,7 @@
 
         <div>
             <button class="add-request" @onclick="AddRequest"><Icon Name="plus" />Add request</button>
-            <div class="hint">Each virtual user sends the requests in this order, then starts over.</div>
+            <div class="hint">Each virtual user sends the requests in this order, then starts over. Values it extracts from a response stay with it for its later requests.</div>
         </div>
 
         <section class="card" aria-labelledby="thresholds-title">
@@ -378,6 +443,7 @@
                     <tr><td><code>{{$timestamp}}</code> / <code>{{$isoTimestamp}}</code></td><td class="muted">Current Unix time / ISO 8601 time</td></tr>
                     <tr><td><code>{{$vu}}</code> / <code>{{$iteration}}</code></td><td class="muted">Virtual user number / its iteration count</td></tr>
                     <tr><td><code>{{userIds}}</code></td><td class="muted">The next value of your parameter list with that name (below)</td></tr>
+                    <tr><td><code>{{token}}</code></td><td class="muted">A value this virtual user extracted from an earlier response (a request's Extract tab)</td></tr>
                 </tbody>
             </table>
         </section>
@@ -522,6 +588,9 @@
     private readonly Dictionary<RequestDefinition, ProbeResult> _probeResults = new(ReferenceEqualityComparer.Instance);
     private readonly HashSet<RequestDefinition> _probing = new(ReferenceEqualityComparer.Instance);
 
+    // Values extracted by "Send once", so sending a login once lets the next request's "Send once" use its token.
+    private readonly Dictionary<string, string> _probeVariables = new(StringComparer.OrdinalIgnoreCase);
+
     [Parameter] public Guid? Id { get; set; }
 
     // Comparing serialized JSON is cheap at plan sizes and catches every kind of edit, including reordering.
@@ -537,6 +606,7 @@
         _showProblems = false;
         _savedMessage = null;
         _probeResults.Clear();
+        _probeVariables.Clear();
         _collapsed.Clear();
         if (Id is { } id)
         {
@@ -568,6 +638,20 @@
         var cap = p.MaxRequestsPerSecond > 0 ? $", at most {p.MaxRequestsPerSecond:#,0.##} req/s" : string.Empty;
         return $"{users} {stop}{ramp}{cap}.";
     }
+
+    private static string ExpressionPlaceholder(ExtractionSource source) => source switch
+    {
+        ExtractionSource.Header => "Location",
+        ExtractionSource.Regex => "token=([A-Za-z0-9._-]+)",
+        _ => "$.data.token",
+    };
+
+    private static string SourceLabel(ExtractionSource source) => source switch
+    {
+        ExtractionSource.Header => "header name",
+        ExtractionSource.Regex => "regular expression",
+        _ => "JSON path",
+    };
 
     private void ToggleCollapsed(RequestDefinition request)
     {
@@ -692,7 +776,7 @@
         _probeResults.Remove(request);
         try
         {
-            _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters);
+            _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables);
         }
         finally
         {

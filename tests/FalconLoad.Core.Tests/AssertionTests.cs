@@ -40,14 +40,13 @@ public class AssertionTests
     [InlineData("$.items[1].name", "null")]
     [InlineData("$['odd key']", "true")]
     [InlineData("$.items.length", "2")]
-    [InlineData("$.items[0].name.length", "6")]
     [InlineData("$.items[0]", """{ "id": 7, "name": "falcon" }""")]
     public void JsonPath_FindsValues(string path, string expected)
     {
         using var document = JsonDocument.Parse(OrderJson);
         Assert.True(JsonPath.TryParse(path, out var parsed, out var error), error);
 
-        Assert.True(parsed.TryEvaluate(document.RootElement, out var value));
+        Assert.True(parsed.TryFind(document.RootElement, out var value));
         Assert.Equal(expected, value.Kind == JsonValueKind.String ? $"\"{value.Text}\"" : value.Text);
     }
 
@@ -60,7 +59,7 @@ public class AssertionTests
     {
         using var document = JsonDocument.Parse(OrderJson);
         Assert.True(JsonPath.TryParse(path, out var parsed, out _));
-        Assert.False(parsed.TryEvaluate(document.RootElement, out _));
+        Assert.False(parsed.TryFind(document.RootElement, out _));
     }
 
     [Theory]

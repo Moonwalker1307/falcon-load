@@ -231,7 +231,7 @@ internal sealed class ResponseChecker
         {
             actual = null;
             // A body that isn't JSON has no values, so it is treated like a path that leads nowhere.
-            if (document is null || Path is null || !Path.TryEvaluate(document.RootElement, out var value))
+            if (document is null || Path is null || !Path.TryFind(document.RootElement, out var value))
             {
                 return TestText(null, out _);
             }

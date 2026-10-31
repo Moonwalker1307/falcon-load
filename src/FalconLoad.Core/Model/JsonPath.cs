@@ -4,10 +4,11 @@ using System.Text.Json;
 namespace FalconLoad.Core.Model;
 
 /// <summary>
-/// A small subset of JSONPath for picking one value out of a response: <c>$.data.items[0].id</c>,
-/// <c>$['odd key']</c>, <c>items[-1]</c> (counted from the end) and <c>items.length</c> (the number of items in an array
-/// or characters in a string, unless the object really has a "length" property). The leading <c>$</c> is optional.
-/// Wildcards, filters and slices are not supported, because a check compares one value.
+/// The small subset of JSONPath that picking one value out of a response needs, shared by checks and extraction:
+/// <c>$.data.items[0].id</c>, <c>$['odd key']</c>, <c>items[-1]</c> (counted from the end) and <c>items.length</c> (the
+/// number of items in an array, unless the object really has a "length" property). The leading <c>$.</c> is optional.
+/// Property names are case sensitive, as they are in JSON. Wildcards, filters and slices are not supported, because a
+/// check or an extraction wants one value.
 /// </summary>
 public sealed class JsonPath
 {
@@ -100,11 +101,27 @@ public sealed class JsonPath
     }
 
     /// <summary>
-    /// Finds the value in <paramref name="root"/>. Strings come back unquoted, numbers, booleans and null as written,
-    /// and objects and arrays as their JSON text.
+    /// Finds the value to extract at this path. Strings are returned without quotes, numbers and booleans as written,
+    /// and objects and arrays as JSON. A missing value or a JSON null finds nothing.
+    /// </summary>
+    public bool TryEvaluate(JsonElement root, out string value)
+    {
+        if (TryFind(root, out var found) && found.Kind is not (JsonValueKind.Null or JsonValueKind.Undefined))
+        {
+            value = found.Text;
+            return true;
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// Finds the value in <paramref name="root"/> for a check, together with its JSON kind. Strings come back unquoted,
+    /// numbers, booleans and null as written, and objects and arrays as their JSON text.
     /// </summary>
     /// <returns>False when the path leads nowhere.</returns>
-    public bool TryEvaluate(JsonElement root, out JsonPathValue value)
+    public bool TryFind(JsonElement root, out JsonPathValue value)
     {
         value = default;
         var current = root;
@@ -119,18 +136,12 @@ public sealed class JsonPath
                     continue;
                 }
 
-                // ".length" counts, but only as the last step and only where no real property is called that.
+                // ".length" counts an array, but only as the last step and only where no real property is called that.
                 if (name == "length" && i == _segments.Length - 1)
                 {
                     if (current.ValueKind == JsonValueKind.Array)
                     {
                         value = new JsonPathValue(JsonValueKind.Number, current.GetArrayLength().ToString(CultureInfo.InvariantCulture));
-                        return true;
-                    }
-
-                    if (current.ValueKind == JsonValueKind.String)
-                    {
-                        value = new JsonPathValue(JsonValueKind.Number, current.GetString()!.Length.ToString(CultureInfo.InvariantCulture));
                         return true;
                     }
                 }

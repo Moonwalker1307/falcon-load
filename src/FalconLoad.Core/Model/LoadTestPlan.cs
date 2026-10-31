@@ -42,18 +42,36 @@ public sealed class LoadTestPlan
         }
 
         var parameters = new ParameterSet(Parameters);
+        var variables = ExtractedVariables();
         for (var i = 0; i < Requests.Count; i++)
         {
-            foreach (var problem in Requests[i].Validate(parameters))
+            foreach (var problem in Requests[i].Validate(parameters, variables))
             {
                 errors.Add($"Request {i + 1} ({Requests[i].DisplayName}): {problem}");
             }
+        }
+
+        foreach (var variable in variables)
+        {
+            if (names.Contains(variable))
+            {
+                errors.Add($"'{variable}' is both a parameter list and an extracted variable; rename one of them.");
+            }
+        }
+
+        if (Requests.Count > 0 && Requests.All(r => r.OncePerVirtualUser))
+        {
+            errors.Add("At least one request has to run on every iteration; untick \"Once per virtual user\" on one of them.");
         }
 
         errors.AddRange(Profile.Validate());
         errors.AddRange(Thresholds.Where(t => t.Enabled).SelectMany(t => t.Validate(Requests.Count)));
         return errors;
     }
+
+    /// <summary>The distinct names of the variables the plan's requests extract from responses.</summary>
+    public IReadOnlyList<string> ExtractedVariables() =>
+        [.. Requests.SelectMany(r => r.Extractions).Select(e => e.Variable?.Trim()).OfType<string>().Where(v => v.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase)];
 
     public LoadTestPlan Clone()
     {
