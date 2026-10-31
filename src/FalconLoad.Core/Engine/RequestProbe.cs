@@ -13,25 +13,41 @@ public sealed record ProbeResult(
     string BodyPreview,
     long BodyBytes,
     bool Success,
-    string? Error);
+    string? Error,
+    IReadOnlyList<ExtractedValue>? Extractions = null);
 
 /// <summary>
 /// Sends one request and captures the response, so users can verify a request before load testing. Parameter lists
-/// supply their first value.
+/// supply their first value, the environment, if any, supplies its variables, and the request's extraction rules are
+/// tried on the response. The environment's secret values are hidden in what comes back, in case the server echoes them.
 /// </summary>
 public static class RequestProbe
 {
     private const int MaxPreviewBytes = 16 * 1024;
 
+    /// <param name="variables">
+    /// Extracted variables for placeholders, compared without regard to case. Values this request extracts are added.
+    /// </param>
     public static async Task<ProbeResult> SendAsync(
         RequestDefinition definition,
         LoadProfile profile,
         HttpMessageInvoker? invoker = null,
         CancellationToken cancellationToken = default,
-        IReadOnlyList<ParameterList>? parameters = null)
+        IReadOnlyList<ParameterList>? parameters = null,
+        Dictionary<string, string>? variables = null,
+        TestEnvironment? environment = null)
     {
         var set = new ParameterSet(parameters ?? []);
-        var problems = definition.Validate(set).ToList();
+        var masker = environment?.CreateMasker() ?? SecretMasker.None;
+
+        // Parameter lists and variables already extracted win over an environment variable of the same name.
+        var values = new Dictionary<string, string>(environment?.ToValues() ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
+        foreach (var name in (parameters ?? []).Select(p => p.Name).Concat(variables?.Keys ?? Enumerable.Empty<string>()))
+        {
+            values.Remove(name);
+        }
+
+        var problems = definition.Validate(set, variables?.Keys.ToList(), values, forRun: true).ToList();
         if (problems.Count > 0)
         {
             return new ProbeResult(null, null, TimeSpan.Zero, [], string.Empty, 0, false, string.Join(" ", problems));
@@ -39,29 +55,40 @@ public static class RequestProbe
 
         var owned = invoker is null;
         invoker ??= new HttpMessageInvoker(HttpHandlerFactory.Create(profile), disposeHandler: true);
-        var prepared = PreparedRequest.From(definition);
+        var prepared = PreparedRequest.From(definition, values);
         var start = Stopwatch.GetTimestamp();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(profile.TimeoutSeconds));
 
         try
         {
-            using var request = prepared.Build(new TemplateContext(1, 1, set.First()), out _);
+            // Variables from earlier probes fill in placeholders, and this probe's extractions are added to them, so
+            // sending a login request once lets the next "Send once" use its token.
+            variables ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            using var request = prepared.Build(new TemplateContext(1, 1, set.First(), variables), out _);
             using var response = await invoker.SendAsync(request, timeout.Token).ConfigureAwait(false);
             var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
             var latency = Stopwatch.GetElapsedTime(start);
 
             var headers = response.Headers.Concat(response.Content.Headers)
-                .Select(h => new KeyValuePair<string, string>(h.Key, string.Join(", ", h.Value)))
+                .Select(h => new KeyValuePair<string, string>(h.Key, masker.Apply(string.Join(", ", h.Value))))
                 .ToList();
-            var preview = Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, MaxPreviewBytes));
+            var preview = masker.Apply(Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, MaxPreviewBytes)));
             if (bytes.Length > MaxPreviewBytes)
             {
                 preview += $"\n… ({bytes.Length - MaxPreviewBytes:N0} more bytes)";
             }
 
             var code = (int)response.StatusCode;
-            return new ProbeResult(code, response.ReasonPhrase, latency, headers, preview, bytes.Length, prepared.Matcher.IsMatch(code), null);
+            var success = prepared.Matcher.IsMatch(code);
+            List<ExtractedValue>? extractions = null;
+            if (prepared.Extractor is { } extractor)
+            {
+                extractions = [];
+                extractor.Apply(response, bytes.AsSpan(0, Math.Min(bytes.Length, ResponseExtractor.MaxBodyBytes)), variables, extractions);
+            }
+
+            return new ProbeResult(code, masker.Apply(response.ReasonPhrase), latency, headers, preview, bytes.Length, success, null, extractions);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -84,6 +111,7 @@ public static class RequestProbe
         }
 
         ProbeResult Failed(string error) =>
-            new(null, null, Stopwatch.GetElapsedTime(start), [], string.Empty, 0, false, error);
+            new(null, null, Stopwatch.GetElapsedTime(start), [], string.Empty, 0, false, masker.Apply(error));
     }
 }
+

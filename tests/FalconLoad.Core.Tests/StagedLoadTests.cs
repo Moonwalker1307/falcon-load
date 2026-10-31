@@ -252,6 +252,41 @@ public class StagedLoadTests
     }
 
     [Fact]
+    public async Task VirtualUserStages_AUserThatStartsAgainLogsInAgain()
+    {
+        // The user is stopped by the pause, so its token and its "once per virtual user" login are gone when it comes back.
+        var logins = 0;
+        var handler = new FakeHandler((request, _) =>
+        {
+            var login = request.RequestUri!.AbsolutePath == "/login";
+            if (login)
+            {
+                Interlocked.Increment(ref logins);
+            }
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(login ? "{ \"token\": \"t\" }" : "ok") });
+        });
+        var plan = Plan(StageMode.VirtualUsers, 1, Hold(1, 1), Hold(0, 1), Hold(1, 1));
+        plan.Requests =
+        [
+            new RequestDefinition
+            {
+                Method = "POST",
+                Url = "http://api.test/login",
+                OncePerVirtualUser = true,
+                Extractions = [new ExtractionRule { Variable = "token", Expression = "$.token" }],
+            },
+            new RequestDefinition { Url = "http://api.test/items", Headers = [new HeaderEntry { Name = "Authorization", Value = "Bearer {{token}}" }] },
+        ];
+        await using var runner = new LoadTestRunner(plan, new HttpMessageInvoker(handler));
+
+        var result = await runner.RunAsync(cancellationToken: CancellationToken.None);
+
+        Assert.Equal(0, result.FailedRequests);
+        Assert.Equal(2, logins);
+    }
+
+    [Fact]
     public async Task RateStages_NeverSendMoreThanTheTarget()
     {
         // 20 requests per second for 2 seconds is 40 requests; with instant responses and four users it should get close.

@@ -103,6 +103,31 @@ public sealed class PlanStore
         return removed;
     }
 
+    /// <summary>Points every test that used environment <paramref name="oldName"/> at its new name, after the environment is renamed.</summary>
+    public void RenameEnvironment(string oldName, string newName)
+    {
+        bool changed;
+        lock (_gate)
+        {
+            var affected = _plans.Where(p => string.Equals(p.Environment, oldName, StringComparison.OrdinalIgnoreCase)).ToList();
+            foreach (var plan in affected)
+            {
+                plan.Environment = newName;
+            }
+
+            changed = affected.Count > 0;
+            if (changed)
+            {
+                Persist();
+            }
+        }
+
+        if (changed)
+        {
+            Changed?.Invoke();
+        }
+    }
+
     private List<LoadTestPlan> Load()
     {
         if (!File.Exists(_path))

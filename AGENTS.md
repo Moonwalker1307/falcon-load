@@ -37,6 +37,10 @@ engine works. It is the only user-facing documentation, so it has to stay true.
 - **Plans are user data.** `App_Data/plans.json` (or the `FalconLoad:DataDirectory` setting) holds saved tests,
   including their headers and tokens. A model change must still load files written by the previous version, and
   validation messages come from `Validate()` on the model, shared by the UI and the API.
+- **Secrets stay secret.** `environments.json` holds environments with their secret values. A secret leaves
+  `EnvironmentStore` only through `TestEnvironment.Redacted()` (UI, API and exports) or to the engine, and the engine
+  hides secret values in error text with `SecretMasker`. A new place that shows, logs or exports data from a run or an
+  environment needs a test that a secret doesn't come out.
 - **Only test what you are allowed to.** falcon-load sends real traffic to any URL it is given. Tests use
   `FakeHandler` and never hit the network. Don't point it at third-party services while developing, and don't add
   features meant to expose it publicly (authentication bypasses, open CORS, binding to all interfaces by default).
@@ -46,7 +50,8 @@ engine works. It is the only user-facing documentation, so it has to stay true.
 ## Repo map
 
 - `src/FalconLoad.Core/`
-  - `Model/`: `LoadTestPlan` (requests plus profile, `Validate()`, `Clone()`), `RequestDefinition`, `LoadProfile`
+  - `Model/`: `LoadTestPlan` (requests plus profile, `Validate()`, `Clone()`), `TestEnvironment` and `SecretMasker`
+    (variable sets and hiding their secrets), `RequestDefinition`, `LoadProfile`
     (concurrency, stop condition, ramp-up, rate cap, timeout, TLS and redirect options, and optional `LoadStage`s that
     `StageSchedule` turns into load over time), `StagePresets` (step, spike and soak), `StatusCodeMatcher` (`200,201`
     or `200-299,404`) and `TemplateRenderer` (the `{{$guid}}`-style dynamic values).
@@ -58,8 +63,9 @@ engine works. It is the only user-facing documentation, so it has to stay true.
 - `src/FalconLoad.Web/`
   - `Program.cs`: service registration and the middleware pipeline.
   - `Services/`: `RunManager` (in-memory runs, the last 50 finished ones are kept), `PlanStore` (saved plans in JSON),
+    `EnvironmentStore` (environments in JSON),
     `ApiEndpoints` (the `/api` minimal API group).
-  - `Components/Pages/`: `Home` (dashboard), `PlanEditor`, `RunView` (live results), `Runs`.
+  - `Components/Pages/`: `Home` (dashboard), `PlanEditor`, `Environments` and `EnvironmentEditor`, `RunView` (live results), `Runs`.
     `Components/Shared/`: charts, the runs table, badges and `Format` helpers. `wwwroot/app.css` holds all styling.
 - `tests/FalconLoad.Core.Tests/`: xUnit tests of the runner and metrics. `FakeHandler` stands in for the network.
 - `.github/workflows/ci.yml`: restore, build and test in Release on Ubuntu for every push to `main` and every PR.
