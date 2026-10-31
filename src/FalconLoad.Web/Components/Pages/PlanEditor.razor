@@ -51,6 +51,7 @@
         </span>
         @if (Id is { } savedId)
         {
+            <a class="btn btn-ghost" href="plans/@savedId/history" title="Earlier runs of this test and its baseline"><Icon Name="history" /><span class="hide-sm">History</span></a>
             <a class="btn btn-ghost" href="api/plans/@savedId/export" download title="Download the saved version of this test, to import on another machine"><Icon Name="download" /><span class="hide-sm">Export</span></a>
         }
         <button @onclick="Save"><Icon Name="save" />Save</button>

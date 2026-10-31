@@ -21,16 +21,22 @@ public sealed class PlanStore
     public PlanStore(IConfiguration configuration, IHostEnvironment environment, ILogger<PlanStore> logger)
     {
         _logger = logger;
-        var configured = configuration["FalconLoad:DataDirectory"];
-        var directory = string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(environment.ContentRootPath, "App_Data")
-            : Path.GetFullPath(configured, environment.ContentRootPath);
+        var directory = DataDirectory(configuration, environment);
         Directory.CreateDirectory(directory);
         _path = Path.Combine(directory, "plans.json");
         _plans = Load();
     }
 
     public event Action? Changed;
+
+    /// <summary>The folder that holds saved plans and run history: <c>App_Data</c>, or the <c>FalconLoad:DataDirectory</c> setting.</summary>
+    public static string DataDirectory(IConfiguration configuration, IHostEnvironment environment)
+    {
+        var configured = configuration["FalconLoad:DataDirectory"];
+        return string.IsNullOrWhiteSpace(configured)
+            ? Path.Combine(environment.ContentRootPath, "App_Data")
+            : Path.GetFullPath(configured, environment.ContentRootPath);
+    }
 
     public IReadOnlyList<LoadTestPlan> GetAll()
     {

@@ -1,0 +1,253 @@
+@page "/compare"
+@implements IDisposable
+@inject RunManager RunManager
+@inject RunHistoryStore History
+@inject PlanStore PlanStore
+@inject RegressionThresholds Thresholds
+@inject NavigationManager Nav
+
+<PageTitle>Compare runs · falcon-load</PageTitle>
+
+@if (_before is null || _after is null || _comparison is null)
+{
+    <div class="card empty">
+        <h1 tabindex="-1">Runs not available</h1>
+        <p>Pick two runs on a test's History page to compare them. Runs of tests that aren't saved are kept only in memory, until the app restarts.</p>
+        <a class="btn" href="/">Back to dashboard</a>
+    </div>
+    return;
+}
+
+@{
+    var c = _comparison;
+    var a = _before.Snapshot;
+    var b = _after.Snapshot;
+    var isBaseline = _beforeIsBaseline;
+}
+
+<div class="page-header">
+    <div>
+        <div class="eyebrow">Compare runs</div>
+        <h1 tabindex="-1">@_after.Plan.Name</h1>
+    </div>
+    <div class="actions">
+        @if (_planSaved)
+        {
+            <a class="btn btn-ghost" href="plans/@_after.Plan.Id/history"><Icon Name="history" />History</a>
+        }
+        <a class="btn" href="@($"compare?baseline={_after.Id}&run={_before.Id}")" title="Swap the two sides"><Icon Name="compare" />Swap</a>
+    </div>
+</div>
+
+<div class="grid-2 compare-sides">
+    <section class="card compare-side" aria-labelledby="side-before">
+        <div class="eyebrow" id="side-before">@(isBaseline ? "Baseline" : "Before")</div>
+        <div class="title-row">
+            <a class="row-title" href="runs/@_before.Id">@_before.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</a>
+            <RunStateBadge State="a.State" />
+        </div>
+        <div class="meta">
+            <span>@_before.Plan.Profile.Concurrency @(_before.Plan.Profile.Concurrency == 1 ? "user" : "users")</span>
+            <span>@Format.StopSummary(_before.Plan.Profile)</span>
+            <span>@a.TotalRequests.ToString("#,0") requests in @Format.Duration(a.Elapsed)</span>
+        </div>
+    </section>
+    <section class="card compare-side" aria-labelledby="side-after">
+        <div class="eyebrow" id="side-after">This run</div>
+        <div class="title-row">
+            <a class="row-title" href="runs/@_after.Id">@_after.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</a>
+            <RunStateBadge State="b.State" />
+        </div>
+        <div class="meta">
+            <span>@_after.Plan.Profile.Concurrency @(_after.Plan.Profile.Concurrency == 1 ? "user" : "users")</span>
+            <span>@Format.StopSummary(_after.Plan.Profile)</span>
+            <span>@b.TotalRequests.ToString("#,0") requests in @Format.Duration(b.Elapsed)</span>
+        </div>
+    </section>
+</div>
+
+@if (c.HasRegression)
+{
+    <div class="alert alert-error" role="status">
+        <Icon Name="alert" />
+        <div>
+            <strong>@(c.RegressionCount == 1 ? "1 metric regressed" : $"{c.RegressionCount} metrics regressed").</strong>
+            Highlighted in red below. A change counts as a regression when @Format.Thresholds(c.Thresholds).
+        </div>
+    </div>
+}
+else
+{
+    <div class="alert alert-info" role="status">
+        <Icon Name="check" />
+        <div>
+            <strong>No regressions.</strong>
+            @(c.ImprovementCount > 0 ? $"{(c.ImprovementCount == 1 ? "1 metric" : $"{c.ImprovementCount} metrics")} improved beyond the thresholds; the rest stayed within them." : "Every metric stayed within the thresholds.")
+            A change counts as a regression when @Format.Thresholds(c.Thresholds).
+        </div>
+    </div>
+}
+
+@if (c.Warnings.Count > 0)
+{
+    <div class="alert alert-info">
+        <Icon Name="info" />
+        <div>
+            <strong>Read these numbers with care.</strong>
+            <ul>
+                @foreach (var warning in c.Warnings)
+                {
+                    <li>@warning</li>
+                }
+            </ul>
+        </div>
+    </div>
+}
+
+<section class="card card-flush" aria-labelledby="overall-title">
+    <div class="card-header"><h2 id="overall-title">Overall</h2></div>
+    <div class="table-wrap">
+        <table class="compare-table">
+            <thead>
+                <tr>
+                    <th scope="col">Metric</th>
+                    <th scope="col" class="num">@(isBaseline ? "Baseline" : "Before")</th>
+                    <th scope="col" class="num">This run</th>
+                    <th scope="col" class="num">Change</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var m in c.Overall)
+                {
+                    <tr class="@RowClass(m)">
+                        <th scope="row">@m.Label</th>
+                        <td class="num">@Format.Value(m.Unit, m.Baseline)</td>
+                        <td class="num">@Format.Value(m.Unit, m.Current)</td>
+                        <td class="num"><DeltaBadge Change="m" /></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<div class="grid-2">
+    <section class="card" aria-labelledby="cmp-tp-title">
+        <div class="card-header"><h2 id="cmp-tp-title">Throughput</h2><span class="hint">requests per second</span></div>
+        <LineChart AriaLabel="Requests per second over time, both runs" Series="Overlay(t => t.Requests)" />
+    </section>
+    <section class="card" aria-labelledby="cmp-lat-title">
+        <div class="card-header"><h2 id="cmp-lat-title">p95 latency</h2><span class="hint">per second</span></div>
+        <LineChart AriaLabel="p95 latency over time, both runs" FormatValue="Format.Ms" Series="Overlay(t => t.P95LatencyMs)" />
+    </section>
+</div>
+
+@if (c.Steps.Count > 0)
+{
+    <section class="card card-flush" aria-labelledby="steps-title">
+        <div class="card-header"><h2 id="steps-title">Requests</h2><span class="hint">each cell shows this run, then the change from @(isBaseline ? "the baseline" : "before")</span></div>
+        <div class="table-wrap">
+            <table class="compare-table">
+                <thead>
+                    <tr>
+                        <th scope="col">#</th>
+                        <th scope="col">Request</th>
+                        @foreach (var m in c.Steps[0].Metrics)
+                        {
+                            <th scope="col" class="num">@ShortLabel(m)</th>
+                        }
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var step in c.Steps)
+                    {
+                        <tr class="@(step.Metrics.Any(m => m.Verdict == ChangeVerdict.Regressed) ? "is-regressed" : "")">
+                            <td><span class="step-num">@(step.StepIndex + 1)</span></td>
+                            <td class="row-title">@step.Name</td>
+                            @foreach (var m in step.Metrics)
+                            {
+                                <td class="num @(m.Verdict == ChangeVerdict.Regressed ? "cell-regressed" : "")" title="Before: @Format.Value(m.Unit, m.Baseline)">
+                                    @Format.Value(m.Unit, m.Current)
+                                    <div class="small"><DeltaBadge Change="m" /></div>
+                                </td>
+                            }
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    private LoadTestRun? _before;
+    private LoadTestRun? _after;
+    private RunComparison? _comparison;
+    private bool _planSaved;
+    private bool _beforeIsBaseline;
+
+    [SupplyParameterFromQuery(Name = "baseline")] public Guid? BaselineId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "run")] public Guid? RunId { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        Unsubscribe();
+        _before = BaselineId is { } before ? RunManager.Get(before) : null;
+        _after = RunId is { } after ? RunManager.Get(after) : null;
+        _planSaved = _after is not null && PlanStore.Get(_after.Plan.Id) is not null;
+        _beforeIsBaseline = _before is not null && _after is not null && History.GetBaselineId(_after.Plan.Id) == _before.Id;
+
+        // A run that is still going keeps its comparison up to date.
+        if (_before is not null)
+        {
+            _before.Updated += OnUpdated;
+        }
+
+        if (_after is not null)
+        {
+            _after.Updated += OnUpdated;
+        }
+
+        Recompare();
+    }
+
+    private void Recompare() =>
+        _comparison = _before is null || _after is null ? null : RunComparer.Compare(_before.ToExport(), _after.ToExport(), Thresholds);
+
+    private void OnUpdated(LoadTestRun run) => _ = InvokeAsync(() =>
+    {
+        Recompare();
+        StateHasChanged();
+    });
+
+    private static string RowClass(MetricChange m) => m.Verdict switch
+    {
+        ChangeVerdict.Regressed => "is-regressed",
+        ChangeVerdict.Improved => "is-improved",
+        _ => "",
+    };
+
+    private static string ShortLabel(MetricChange m) => m.Label.Replace(" latency", "");
+
+    private IReadOnlyList<ChartSeries> Overlay(Func<TimelinePoint, double> value) =>
+    [
+        new(_beforeIsBaseline ? "Baseline" : "Before", "var(--series-2)", _before!.Snapshot.Timeline.Select(value).ToList()),
+        new("This run", "var(--series-1)", _after!.Snapshot.Timeline.Select(value).ToList()),
+    ];
+
+    private void Unsubscribe()
+    {
+        if (_before is not null)
+        {
+            _before.Updated -= OnUpdated;
+        }
+
+        if (_after is not null)
+        {
+            _after.Updated -= OnUpdated;
+        }
+    }
+
+    public void Dispose() => Unsubscribe();
+}

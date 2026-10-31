@@ -1,0 +1,17 @@
+@* The overall verdict of a comparison with the baseline. *@
+@if (Comparison.HasRegression)
+{
+    <span class="badge badge-failed">@(Comparison.RegressionCount == 1 ? "1 regression" : $"{Comparison.RegressionCount} regressions")</span>
+}
+else if (Comparison.ImprovementCount > 0)
+{
+    <span class="badge badge-completed">Better</span>
+}
+else
+{
+    <span class="badge">No change</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public RunComparison Comparison { get; set; } = default!;
+}

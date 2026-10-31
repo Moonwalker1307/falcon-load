@@ -39,6 +39,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Pass/fail thresholds** for the whole run, such as `p95 latency < 500 ms`, `error rate < 1%` or `throughput > 200 req/s`, for all requests or one of them. A run passes when it completes and every threshold holds; a stopped or failed run doesn't pass. The run page, the runs list and the JSON API show the verdict (`passed`: `true`, `false`, or `null` for a test without thresholds), so a CI job can fail on it. A threshold over requests that sent nothing fails.
 - **Live results**: a pixel-art falcon flies along the progress bar while a test runs. Requests, throughput, error rate, latency (mean, p50, p90, p95, p99, max), per-second throughput and latency charts, per-request breakdown, status code and error tables.
 - **Saved tests** persisted to `App_Data/plans.json` (change with the `FalconLoad:DataDirectory` setting). The last 50 runs are kept in memory and can be exported as JSON.
+- **Run history and baselines**: every finished run of a saved test is stored on disk, so a test's history survives a restart. A test's History page lists its last 30 runs with trend charts. Mark a good run as the **baseline**, and every other run shows its change from it, on the History page, on the run's own page (live while it runs) and on a side-by-side Compare page with both runs' charts overlaid and a per-request breakdown. Changes beyond the regression thresholds are highlighted: red for a regression, green for an improvement. You can also tick any two runs and compare them.
 - **Export and import tests** to share them between machines: "Export" on a test (or "Export all" on the dashboard) downloads a JSON file, and "Import…" on another machine loads it. Imported tests get new ids, so an import never overwrites a saved test, and a file is only imported when every test in it is valid. The file includes any header you typed in directly, such as `Authorization: Bearer abc`, so treat it like the tokens in it, or keep the token in an environment as a secret and write `{{token}}` in the header, which exports as `{{token}}`. The editor warns when a header like `Authorization` holds a plain value.
 - **Import requests** from a pasted curl command, a Postman collection (v2.0/v2.1) or an OpenAPI 3 spec (JSON or YAML) on the Import page, then create a new test or add them to an existing one. See [Importing requests](#importing-requests).
 - **Combine results from several machines**: when one machine can't generate enough load, run the same test on several machines at the same time, export each run, and add the files on the Combine page. It shows the combined throughput, error rate, latency percentiles, status codes and errors, with a per-machine breakdown and a throughput line per machine.
@@ -119,6 +120,10 @@ The `--user` option lets the container write the results file into your folder. 
 | `GET` | `/api/runs/{id}` | Live or final results, with `results.passed`, `results.thresholds` and `results.checks` |
 | `GET` | `/api/runs/{id}/export` | Results as a JSON download, with the latency histograms needed to combine them |
 | `POST` | `/api/runs/{id}/stop` | Stop a running test |
+| `GET` | `/api/plans/{id}/history` | A saved test's stored runs, newest first, and its baseline run id |
+| `PUT` | `/api/plans/{id}/baseline` | Make a stored run the baseline (`{ "runId": "…" }` in the body) |
+| `DELETE` | `/api/plans/{id}/baseline` | Clear the baseline |
+| `GET` | `/api/runs/{id}/compare` | Compare a run with the test's baseline, or with `?baseline={runId}`; `hasRegression` is true when anything regressed |
 | `POST` | `/api/results/combine` | Combine an array of exported results from several machines |
 | `POST` | `/api/probe` | Send a single request and return the response, with what its extraction rules found. Takes `?environment=Name` |
 | `POST` | `/api/probe` | Send a single request and return the response |
@@ -219,6 +224,31 @@ When one machine can't send enough load, falcon-load can run a test from several
 3. **Run a test on the agents** with "Save & run on agents" in the editor, the "Agents" button next to a saved test, or the Agents page. The controller splits the test by weight: the virtual users, the request count and the rate cap are divided between the enabled agents (every agent used gets at least one virtual user, and a test never uses more agents than it has virtual users), while the duration, ramp-up and timeout apply on each agent as they are. `{{$vu}}` keeps numbering virtual users on from one agent to the next, so every virtual user in the whole test has its own number. A parameter list handed out in order is dealt round-robin to the agents, so no two agents use the same value at the same time and every value is still used once per pass; random and very short lists are sent whole.
 
 The controller first contacts every agent and measures its clock against its own, then tells all of them to start at the same moment a couple of seconds ahead, each on its own clock, so the agents start together even when their clocks differ. If an agent can't be reached or refuses its share, nothing starts, or the agents that did start are stopped again, because part of the load would say little. While the test runs, the controller fetches every agent's results once a second and merges them exactly as the Combine page does, with the histograms, so the live percentiles are those of one test. The run page shows each agent's share and state, the merged numbers and charts with a throughput line per agent, and warnings about clocks that are off by a second or more. "Stop on all agents" stops every share, and the controller waits for their final results. An agent that stops answering is given up on after twenty seconds; its results up to then stay in the total, and the run is reported as failed with the reason. The export of a distributed run holds the merged results and every agent's own export, so the agents' runs can be combined again on the Combine page later. Distributed runs live in memory like other runs and disappear on restart.
+
+## Run history and baselines
+
+Every finished run of a saved test is kept in its history, and one run can be the baseline the others are compared with. To fail a CI build when a run regresses against the baseline, start the saved test, wait for it to finish, then ask for the comparison:
+
+```bash
+run=$(curl -s -X POST http://localhost:5299/api/plans/$PLAN_ID/run | jq -r .id)
+until curl -s http://localhost:5299/api/runs/$run | jq -e .results.isFinished > /dev/null; do sleep 2; done
+curl -s http://localhost:5299/api/runs/$run/compare | jq -e '.hasRegression == false'
+```
+
+### Regression thresholds
+
+A run is compared with the baseline metric by metric. A change counts as a regression, or in the other direction an improvement, when it goes beyond these thresholds; smaller changes are treated as noise.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `LatencyPercent` | `10` | Mean, p50, p90, p95 or p99 latency rises by more than this percentage of the baseline… |
+| `MinLatencyChangeMs` | `1` | …and by at least this many milliseconds, so 0.4 ms to 0.6 ms on a fast endpoint isn't a "50% regression" |
+| `ThroughputPercent` | `10` | Average requests per second falls by more than this percentage |
+| `ErrorRatePoints` | `1` | The error rate rises by more than this many percentage points (2% to 3.5% is 1.5 points) |
+
+They apply to the whole run and to each request, matched by position in the test. Request counts, bytes and the maximum latency are shown but never judged, because the count follows from the load profile and one slow request moves the maximum. Change the defaults in `appsettings.json` under `FalconLoad:Regression`, or per call with query parameters of the same names in camel case, e.g. `/api/runs/{id}/compare?latencyPercent=5`. The comparison also warns when the load profile or a request's URL changed between the two runs, or when a run was stopped early, since those change what the numbers mean.
+
+How the history is stored: each finished run of a saved test is written whole, as its export file, to `runs/{id}.json` in the data directory, and `runs/index.json` holds the summaries and each test's baseline. A test keeps its newest 30 runs plus its baseline, however old; deleting a test deletes its history. Runs of tests that aren't saved, such as ad-hoc API runs, are not stored. A stored run opens, exports and combines like a run still in memory.
 
 ## Project layout
 

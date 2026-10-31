@@ -1,0 +1,9 @@
+@* A metric's change from the baseline, coloured by its verdict and spelled out for screen readers. *@
+<span class="@Format.ChangeClass(Change.Verdict)" title="@Format.VerdictText(Change.Verdict)">@Format.Change(Change)</span>@if (Change.Verdict is ChangeVerdict.Regressed or ChangeVerdict.Improved)
+{
+    <span class="sr-only">, @Format.VerdictText(Change.Verdict)</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public MetricChange Change { get; set; } = default!;
+}

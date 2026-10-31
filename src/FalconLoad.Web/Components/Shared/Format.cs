@@ -100,4 +100,57 @@ public static class Format
     public static string Remaining(TimeSpan t) => t.TotalMinutes >= 1
         ? $"{(int)t.TotalMinutes}m {t.Seconds:00}s left"
         : $"{Math.Max(0, (int)Math.Ceiling(t.TotalSeconds))}s left";
+
+    /// <summary>A compared metric's value in its own unit.</summary>
+    public static string Value(MetricUnit unit, double value) => unit switch
+    {
+        MetricUnit.Milliseconds => Ms(value),
+        MetricUnit.RequestsPerSecond => $"{Rate(value)} req/s",
+        MetricUnit.Fraction => Percent(value),
+        MetricUnit.Bytes => Bytes((long)value),
+        _ => value.ToString("#,0"),
+    };
+
+    /// <summary>
+    /// How a metric moved from the baseline: in percent of the baseline, or for a rate in percentage points, since
+    /// "errors up 100%" for 1% to 2% reads far worse than it is.
+    /// </summary>
+    public static string Change(MetricChange m)
+    {
+        if (m.Unit == MetricUnit.Fraction)
+        {
+            var points = m.Change * 100;
+            return Math.Abs(points) < 0.05 ? "±0 pts" : $"{(points > 0 ? "+" : "−")}{Math.Abs(points):0.#} pts";
+        }
+
+        if (m.RelativeChange is not { } relative)
+        {
+            return m.Current == 0 ? "±0" : "new";
+        }
+
+        return Math.Abs(relative) < 0.0005 ? "±0%" : $"{(relative > 0 ? "+" : "−")}{Math.Abs(relative):0.#%}";
+    }
+
+    /// <summary>The CSS class that colours a change: red for a regression, green for an improvement.</summary>
+    public static string ChangeClass(ChangeVerdict verdict) => verdict switch
+    {
+        ChangeVerdict.Regressed => "delta delta-bad",
+        ChangeVerdict.Improved => "delta delta-good",
+        _ => "delta",
+    };
+
+    /// <summary>Spoken and tooltip text for a change, since the colour alone doesn't say whether it is good.</summary>
+    public static string VerdictText(ChangeVerdict verdict) => verdict switch
+    {
+        ChangeVerdict.Regressed => "regression",
+        ChangeVerdict.Improved => "improvement",
+        ChangeVerdict.Unchanged => "within the thresholds",
+        _ => "not judged",
+    };
+
+    /// <summary>The thresholds in words, to finish the sentence "A run counts as a regression when …".</summary>
+    public static string Thresholds(RegressionThresholds t) =>
+        $"a latency rises by more than {t.LatencyPercent:0.#}% (and at least {Ms(t.MinLatencyChangeMs)}), " +
+        $"throughput falls by more than {t.ThroughputPercent:0.#}%, or the error rate rises by more than " +
+        $"{t.ErrorRatePoints:0.#} percentage {(t.ErrorRatePoints == 1 ? "point" : "points")}";
 }

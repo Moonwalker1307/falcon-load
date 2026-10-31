@@ -3,6 +3,8 @@
 @inject RunManager RunManager
 @inject PlanStore PlanStore
 @inject EnvironmentStore EnvironmentStore
+@inject RunHistoryStore History
+@inject RegressionThresholds Thresholds
 @inject NavigationManager Nav
 
 <PageTitle>@(_run?.Plan.Name ?? "Run") · falcon-load</PageTitle>
@@ -11,7 +13,7 @@
 {
     <div class="card empty">
         <h1 tabindex="-1">Run not available</h1>
-        <p>Runs are kept in memory and are cleared when the app restarts. Export a run as JSON to keep it.</p>
+        <p>Finished runs of saved tests are kept in the test's history. Other runs are kept only in memory and are cleared when the app restarts; export a run as JSON to keep it.</p>
         <a class="btn" href="/">Back to dashboard</a>
     </div>
     return;
@@ -30,6 +32,10 @@
             <h1 tabindex="-1">@_run.Plan.Name</h1>
             <RunStateBadge State="s.State" />
             <VerdictBadge Snapshot="s" />
+            @if (_isBaseline)
+            {
+                <span class="badge badge-baseline">Baseline</span>
+            }
         </div>
         <div class="meta">
             <span>Started @_run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</span>
@@ -53,6 +59,11 @@
         @if (_planSaved)
         {
             <a class="btn btn-ghost" href="plans/@_run.Plan.Id"><Icon Name="edit" />Edit test</a>
+            <a class="btn btn-ghost" href="plans/@_run.Plan.Id/history"><Icon Name="history" />History</a>
+        }
+        @if (_stored && !_isBaseline)
+        {
+            <button @onclick="SetBaseline" title="Compare later runs of this test with this one"><Icon Name="flag" />Set as baseline</button>
         }
         @if (!s.IsFinished)
         {
@@ -88,6 +99,31 @@
 </div>
 
 <ThresholdResults Snapshot="s" />
+@if (_baseline is not null && !_isBaseline)
+{
+    var c = RunComparer.Compare(_baseline.Results, s, Thresholds);
+    <section class="card baseline-strip @(c.HasRegression ? "is-regressed" : "")" aria-labelledby="vs-baseline-title">
+        <div class="baseline-strip-head">
+            <h2 id="vs-baseline-title"><Icon Name="flag" />Compared with the baseline</h2>
+            <BaselineVerdict Comparison="c" />
+            @if (!s.IsFinished)
+            {
+                <span class="small muted">so far</span>
+            }
+        </div>
+        <dl class="baseline-deltas">
+            @foreach (var key in new[] { "requestsPerSecond", "p95Ms", "p99Ms", "errorRate" })
+            {
+                var m = c.Overall.First(x => x.Key == key);
+                <div>
+                    <dt>@m.Label</dt>
+                    <dd><DeltaBadge Change="m" /> <span class="small muted">from @Format.Value(m.Unit, m.Baseline)</span></dd>
+                </div>
+            }
+        </dl>
+        <a class="btn btn-sm" href="compare?baseline=@_baseline.RunId&run=@_run.Id"><Icon Name="compare" />Full comparison</a>
+    </section>
+}
 
 <div class="stats">
     <div class="stat">
@@ -235,6 +271,9 @@
     private LoadTestRun? _run;
     private bool _planSaved;
     private string? _startError;
+    private bool _stored;
+    private bool _isBaseline;
+    private RunHistoryEntry? _baseline;
 
     [Parameter] public Guid Id { get; set; }
 
@@ -247,13 +286,38 @@
 
         _run = RunManager.Get(Id);
         _planSaved = _run is not null && PlanStore.Get(_run.Plan.Id) is not null;
+        LoadHistory();
         if (_run is not null)
         {
             _run.Updated += OnUpdated;
         }
     }
 
+    protected override void OnInitialized() => History.Changed += OnHistoryChanged;
+
+    private void LoadHistory()
+    {
+        _stored = _run is not null && History.GetEntry(_run.Id) is not null;
+        _baseline = _run is null ? null : History.GetBaseline(_run.Plan.Id);
+        _isBaseline = _run is not null && _baseline?.RunId == _run.Id;
+    }
+
     private void OnUpdated(LoadTestRun run) => _ = InvokeAsync(StateHasChanged);
+
+    // A run is stored when it finishes, and the baseline can change on another page or tab.
+    private void OnHistoryChanged() => _ = InvokeAsync(() =>
+    {
+        LoadHistory();
+        StateHasChanged();
+    });
+
+    private void SetBaseline()
+    {
+        if (_run is not null)
+        {
+            History.SetBaseline(_run.Plan.Id, _run.Id);
+        }
+    }
 
     private static double Progress(LoadTestSnapshot s, LoadProfile p)
     {
@@ -346,6 +410,7 @@
 
     public void Dispose()
     {
+        History.Changed -= OnHistoryChanged;
         if (_run is not null)
         {
             _run.Updated -= OnUpdated;
