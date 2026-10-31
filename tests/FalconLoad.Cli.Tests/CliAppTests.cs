@@ -212,6 +212,107 @@ public sealed class CliAppTests : IDisposable
         Assert.Equal(RunState.Cancelled, export.Results.State);
     }
 
+    private string WriteEnvironments(params TestEnvironment[] environments)
+    {
+        var path = Path.Combine(_directory, "environments.json");
+
+        // Written by hand rather than with EnvironmentFile.Write, which leaves secret values out as an export does.
+        File.WriteAllText(path, JsonSerializer.Serialize(new EnvironmentFile { Environments = [.. environments] }, PlanFile.JsonOptions));
+        return path;
+    }
+
+    private static TestEnvironment Environment(string name, params (string Name, string Value)[] variables) => new()
+    {
+        Name = name,
+        Variables = [.. variables.Select(v => new EnvironmentVariable { Name = v.Name, Value = v.Value })],
+    };
+
+    private static LoadTestPlan PlanWithVariables(string? environment = null)
+    {
+        var plan = Plan(requests: 3);
+        plan.Environment = environment;
+        plan.Requests[0].Url = "{{baseUrl}}/items";
+        plan.Requests[0].Headers = [new HeaderEntry { Name = "Authorization", Value = "Bearer {{token}}" }];
+        return plan;
+    }
+
+    [Fact]
+    public async Task EnvironmentFile_SuppliesTheTestsEnvironment()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var environments = WriteEnvironments(
+            Environment("Local", ("baseUrl", "http://local.test"), ("token", "l")),
+            Environment("Staging", ("baseUrl", "http://staging.test"), ("token", "s")));
+        var output = Path.Combine(_directory, "out.json");
+
+        var code = await Run(handler, "run", WriteFile(PlanWithVariables("Staging")), "--env-file", environments, "--out", output);
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.All(handler.Received, r => Assert.Equal("http://staging.test/items", r.Request.RequestUri!.ToString()));
+        var export = JsonSerializer.Deserialize<RunExport>(File.ReadAllText(output), PlanFile.JsonOptions)!;
+        Assert.Equal("Staging", export.Plan.Environment);
+    }
+
+    [Fact]
+    public async Task EnvOption_PicksAnotherEnvironment()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var environments = WriteEnvironments(
+            Environment("Local", ("baseUrl", "http://local.test"), ("token", "l")),
+            Environment("Staging", ("baseUrl", "http://staging.test"), ("token", "s")));
+
+        var code = await Run(handler, "run", WriteFile(PlanWithVariables("Staging")), "--env-file", environments, "--env", "local");
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.All(handler.Received, r => Assert.Equal("local.test", r.Request.RequestUri!.Host));
+    }
+
+    [Fact]
+    public async Task SecretsAndVars_FillVariablesAndSecretsStayOutOfTheResults()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var output = Path.Combine(_directory, "out.json");
+        var secrets = new Dictionary<string, string> { ["TOKEN"] = "s3cret-value" };
+
+        var code = await CliApp.RunAsync(
+            ["run", WriteFile(PlanWithVariables()), "--var", "baseUrl=http://vars.test", "--out", output],
+            new CliConsole(new StringReader(string.Empty), _out, _error, ErrorIsTerminal: false, secrets),
+            _ => new HttpMessageInvoker(handler, disposeHandler: false));
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.All(handler.Received, r =>
+        {
+            Assert.Equal("vars.test", r.Request.RequestUri!.Host);
+            Assert.Equal("Bearer s3cret-value", r.Request.Headers.Authorization!.ToString());
+        });
+        Assert.DoesNotContain("s3cret-value", File.ReadAllText(output));
+        Assert.DoesNotContain("s3cret-value", _out.ToString());
+    }
+
+    [Fact]
+    public async Task MissingVariable_ExitsWithTwoAndSaysWhereVariablesComeFrom()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+
+        var code = await Run(handler, "run", WriteFile(PlanWithVariables()));
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Empty(handler.Received);
+        Assert.Contains("baseUrl", _error.ToString());
+        Assert.Contains("--env-file", _error.ToString());
+    }
+
+    [Fact]
+    public async Task UnknownEnvironment_ExitsWithTwo()
+    {
+        var environments = WriteEnvironments(Environment("Local", ("baseUrl", "http://local.test")));
+
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.OK), "run", WriteFile(PlanWithVariables("Production")), "--env-file", environments);
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Contains("no environment named 'Production'", _error.ToString());
+    }
+
     [Theory]
     [InlineData(new string[0], "Missing command.")]
     [InlineData(new[] { "go" }, "Unknown command 'go'.")]
@@ -222,6 +323,7 @@ public sealed class CliAppTests : IDisposable
     [InlineData(new[] { "run", "a.json", "--max-error-rate", "150" }, "--max-error-rate must be a percentage between 0 and 100.")]
     [InlineData(new[] { "run", "a.json", "--out" }, "--out needs a value.")]
     [InlineData(new[] { "run", "a.json", "--fast" }, "Unknown option '--fast'.")]
+    [InlineData(new[] { "run", "a.json", "--var", "novalue" }, "--var needs a name and a value")]
     public void Parse_RejectsInvalidArguments(string[] args, string expected)
     {
         Assert.Null(CliOptions.Parse(args, out var error));

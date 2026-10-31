@@ -8,7 +8,19 @@ namespace FalconLoad.Cli;
 
 /// <summary>Where the CLI reads and writes. Tests pass string readers and writers instead of the console.</summary>
 /// <param name="ErrorIsTerminal">When true, live progress rewrites one line; otherwise it prints a line now and then.</param>
-internal sealed record CliConsole(TextReader In, TextWriter Out, TextWriter Error, bool ErrorIsTerminal);
+/// <param name="Secrets">
+/// Secret variables from the process environment (<c>FALCON_LOAD_TOKEN</c> supplies <c>{{token}}</c>), by variable name.
+/// </param>
+internal sealed record CliConsole(
+    TextReader In,
+    TextWriter Out,
+    TextWriter Error,
+    bool ErrorIsTerminal,
+    IReadOnlyDictionary<string, string>? Secrets = null)
+{
+    /// <summary>Environment variables with this prefix supply secret values, so a CI job can pass tokens without a file.</summary>
+    public const string SecretPrefix = "FALCON_LOAD_";
+}
 
 /// <summary>Runs the tests in an exported plan file without the web UI, for CI pipelines and containers.</summary>
 internal static class CliApp
@@ -50,7 +62,7 @@ internal static class CliApp
             return InvalidInput;
         }
 
-        var outputs = OutputPaths(options.Out, plans);
+        var outputs = OutputPaths(options.Out, plans.Select(p => p.Plan).ToList());
         var machine = string.IsNullOrWhiteSpace(options.Machine) ? Environment.MachineName : options.Machine;
         var exitCode = Passed;
         for (var i = 0; i < plans.Count; i++)
@@ -60,12 +72,13 @@ internal static class CliApp
                 break;
             }
 
-            var plan = plans[i];
+            var (plan, environment) = plans[i];
             var invoker = createInvoker?.Invoke(plan);
             var startedAt = DateTimeOffset.UtcNow;
             LoadTestSnapshot snapshot;
             ResultHistograms histograms;
-            await using (var runner = new LoadTestRunner(plan, invoker))
+            LoadTestPlan ran;
+            await using (var runner = new LoadTestRunner(plan, invoker, environment))
             {
                 if (plans.Count > 1 || !options.Quiet)
                 {
@@ -76,6 +89,9 @@ internal static class CliApp
                 await runner.RunAsync(progress is null ? null : progress.Report, progressInterval ?? TimeSpan.FromSeconds(1), cancellationToken);
                 progress?.Finish();
                 (snapshot, histograms) = runner.GetResults();
+
+                // The runner's copy records the environment's name (never its values) for the export.
+                ran = runner.Plan;
             }
 
             invoker?.Dispose();
@@ -90,7 +106,7 @@ internal static class CliApp
                     Id = Guid.NewGuid(),
                     StartedAt = startedAt,
                     Machine = machine,
-                    Plan = plan,
+                    Plan = ran,
                     Results = snapshot,
                     Histograms = histograms,
                 };
@@ -142,8 +158,32 @@ internal static class CliApp
         return failures;
     }
 
-    private static async Task<IReadOnlyList<LoadTestPlan>?> LoadPlansAsync(CliOptions options, CliConsole console)
+    private static async Task<IReadOnlyList<(LoadTestPlan Plan, TestEnvironment? Environment)>?> LoadPlansAsync(CliOptions options, CliConsole console)
     {
+        IReadOnlyList<TestEnvironment> environments = [];
+        if (options.EnvironmentFile is { } environmentFile)
+        {
+            string environmentJson;
+            try
+            {
+                environmentJson = await File.ReadAllTextAsync(environmentFile);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                await console.Error.WriteLineAsync($"falcon-load: Can't read '{environmentFile}': {ex.Message}");
+                return null;
+            }
+
+            var read = EnvironmentFile.Read(environmentJson);
+            if (!read.Succeeded)
+            {
+                await WriteProblemsAsync(console, $"'{environmentFile}' can't be used:", read.Problems);
+                return null;
+            }
+
+            environments = read.Environments;
+        }
+
         string json;
         try
         {
@@ -174,19 +214,100 @@ internal static class CliApp
         }
 
         var problems = new List<string>();
+        var runs = new List<(LoadTestPlan, TestEnvironment?)>();
         foreach (var plan in plans)
         {
             ApplyOverrides(plan.Profile, options);
-            problems.AddRange(plan.Validate().Select(p => plans.Count == 1 ? p : $"{plan.Name}: {p}"));
+            var environment = PickEnvironment(plan, environments, options, console.Secrets, out var problem);
+            if (problem is not null)
+            {
+                problems.Add(problem);
+                continue;
+            }
+
+            problems.AddRange(plan.ValidateForRun(environment).Select(p => plans.Count == 1 ? p : $"{plan.Name}: {p}"));
+            runs.Add((plan, environment));
         }
 
         if (problems.Count > 0)
         {
-            await WriteProblemsAsync(console, "The options make the test invalid:", problems);
+            await WriteProblemsAsync(console, "The test can't run:", problems);
+            if (problems.Any(p => p.Contains("No value for", StringComparison.Ordinal)))
+            {
+                await console.Error.WriteLineAsync(
+                    $"Variables come from --env-file, --var name=value, or {CliConsole.SecretPrefix}<name> environment variables for secrets.");
+            }
+
             return null;
         }
 
-        return plans;
+        return runs;
+    }
+
+    /// <summary>
+    /// The environment a plan runs with: the one named by --env or the plan, from the environments file, with secrets from
+    /// the process environment and --var values laid over it. Returns null when nothing supplies any variable.
+    /// </summary>
+    internal static TestEnvironment? PickEnvironment(
+        LoadTestPlan plan,
+        IReadOnlyList<TestEnvironment> environments,
+        CliOptions options,
+        IReadOnlyDictionary<string, string>? secrets,
+        out string? problem)
+    {
+        problem = null;
+        var name = options.Environment ?? plan.Environment;
+        TestEnvironment? environment = null;
+        if (name is not null)
+        {
+            environment = environments.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase))?.Clone();
+            if (environment is null && (options.Environment is not null || environments.Count > 0))
+            {
+                problem = environments.Count == 0
+                    ? $"{plan.Name}: the environment '{name}' needs an environments file; pass --env-file."
+                    : $"{plan.Name}: there is no environment named '{name}' in the environments file. It holds: {string.Join(", ", environments.Select(e => e.Name))}.";
+                return null;
+            }
+        }
+        else if (environments.Count == 1)
+        {
+            // With a single environment in the file there is nothing to choose between.
+            environment = environments[0].Clone();
+        }
+
+        if ((secrets is null || secrets.Count == 0) && options.Variables.Count == 0)
+        {
+            return environment;
+        }
+
+        environment ??= new TestEnvironment { Name = name ?? "command line" };
+        foreach (var (key, value) in secrets ?? new Dictionary<string, string>())
+        {
+            Set(environment, key, value, secret: true);
+        }
+
+        foreach (var (key, value) in options.Variables)
+        {
+            Set(environment, key, value, secret: false);
+        }
+
+        return environment;
+
+        static void Set(TestEnvironment environment, string name, string value, bool secret)
+        {
+            var variable = environment.Variables.FirstOrDefault(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (variable is null)
+            {
+                environment.Variables.Add(new EnvironmentVariable { Name = name, Value = value, Secret = secret });
+            }
+            else
+            {
+                variable.Value = value;
+
+                // A value that was a secret in the file stays masked, whichever way it is overridden.
+                variable.Secret |= secret;
+            }
+        }
     }
 
     private static void ApplyOverrides(LoadProfile profile, CliOptions options)

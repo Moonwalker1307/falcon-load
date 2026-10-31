@@ -26,10 +26,16 @@ internal sealed record CliOptions
           --duration <seconds>        Run each test for this long instead of the file's stop condition.
           --requests <n>              Send this many requests per test instead of the file's stop condition.
           --max-error-rate <percent>  Fail a test when more than this percentage of its requests fail. Default: 0.
+          --env-file <path>           An environments file exported from the web UI, for tests that use {{variables}}.
+          --env <name>                The environment to use. Default: the test's own environment, or the only one in the file.
+          --var <name>=<value>        Set a variable, overriding the environment. Can be repeated.
           --machine <name>            The machine name recorded in the results. Default: this machine's name.
           --quiet                     Print only the summary, without live progress.
           -h, --help                  Show this help.
           --version                   Show the version.
+
+        Secrets: an environment variable FALCON_LOAD_<name> sets the secret variable <name>, such as FALCON_LOAD_token
+        for {{token}}. Its value is masked in the output, and exports never contain it.
 
         Exit codes: 0 every test passed, 1 a test failed, 2 the command line or the file is invalid,
         130 the run was interrupted.
@@ -53,6 +59,15 @@ internal sealed record CliOptions
     public double MaxErrorRate { get; init; }
 
     public string? Machine { get; init; }
+
+    /// <summary>The environments file given with --env-file.</summary>
+    public string? EnvironmentFile { get; init; }
+
+    /// <summary>The environment named with --env.</summary>
+    public string? Environment { get; init; }
+
+    /// <summary>Variables set with --var, in the order given; a later one wins.</summary>
+    public IReadOnlyList<KeyValuePair<string, string>> Variables { get; init; } = [];
 
     public bool Quiet { get; init; }
 
@@ -146,6 +161,22 @@ internal sealed record CliOptions
                 case "--machine":
                     options = options with { Machine = value };
                     break;
+                case "--env-file":
+                    options = options with { EnvironmentFile = value };
+                    break;
+                case "--env":
+                    options = options with { Environment = value };
+                    break;
+                case "--var":
+                    var split = value.IndexOf('=');
+                    if (split <= 0)
+                    {
+                        error = "--var needs a name and a value, such as --var baseUrl=http://localhost:5000.";
+                        return null;
+                    }
+
+                    options = options with { Variables = [.. options.Variables, new(value[..split], value[(split + 1)..])] };
+                    break;
                 case "--concurrency":
                     if (!TryPositive(name, value, out var concurrency, out error))
                     {
@@ -202,7 +233,7 @@ internal sealed record CliOptions
     }
 
     private static readonly HashSet<string> ValueOptions =
-        ["--test", "--out", "--machine", "--concurrency", "--duration", "--requests", "--max-error-rate"];
+        ["--test", "--out", "--machine", "--env-file", "--env", "--var", "--concurrency", "--duration", "--requests", "--max-error-rate"];
 
     private static bool TryPositive(string name, string value, out int result, out string? error)
     {
