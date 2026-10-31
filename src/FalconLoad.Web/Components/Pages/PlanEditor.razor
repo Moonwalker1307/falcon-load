@@ -303,6 +303,7 @@
                         <select class="protocol" @bind="request.Protocol" @bind:after="() => SetProtocol(request)" aria-label="Protocol" title="How this request talks to the server">
                             <option value="@RequestProtocol.Http">HTTP</option>
                             <option value="@RequestProtocol.GraphQL">GraphQL</option>
+                            <option value="@RequestProtocol.WebSocket">WebSocket</option>
                         </select>
                         @if (request.Protocol == RequestProtocol.Http)
                         {
@@ -324,6 +325,10 @@
                         {
                             <span>The GraphQL endpoint. The query on the Query tab is sent to it as a POST with a JSON body. </span>
                         }
+                        else if (request.Protocol == RequestProtocol.WebSocket)
+                        {
+                            <span>A <code>ws://</code> or <code>wss://</code> address. Each virtual user opens its own connection and keeps it open for its later messages. </span>
+                        }
                         Dynamic values such as <code>{{$guid}}</code> and environment variables such as <code>{{baseUrl}}</code> work here too.
                     </div>
 
@@ -332,7 +337,7 @@
                             Headers<span class="count">@request.Headers.Count(h => h.Enabled)</span>
                         </button>
                         <button role="tab" id="@idp-tab-body" aria-selected="@(tab == "body" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "body"'>
-                            @(request.Protocol == RequestProtocol.GraphQL ? "Query" : "Body")
+                            @BodyTabName(request.Protocol)
                             @if (!string.IsNullOrEmpty(request.Body))
                             {
                                 <span class="dot" aria-label="has a body"></span>
@@ -349,7 +354,11 @@
                     <div role="tabpanel" id="@idp-panel" aria-labelledby="@idp-tab-@tab">
                         @if (tab == "headers")
                         {
-                            @if (request.Headers.Count == 0)
+                            @if (request.Headers.Count == 0 && request.Protocol == RequestProtocol.WebSocket)
+                            {
+                                <div class="hint">No headers yet. They are sent with the handshake that opens the connection: <code>Authorization: Bearer …</code>, or <code>Sec-WebSocket-Protocol</code> to ask for a sub-protocol.</div>
+                            }
+                            else if (request.Headers.Count == 0)
                             {
                                 <div class="hint">No headers yet. Common ones: <code>Authorization: Bearer …</code>, <code>Accept: application/json</code>, <code>X-Api-Key</code>.</div>
                             }
@@ -383,6 +392,24 @@
                                     </span>
                                 </div>
                             }
+                        }
+                        else if (tab == "body" && request.Protocol == RequestProtocol.WebSocket)
+                        {
+                            var webSocket = request.WebSocket ??= new WebSocketOptions();
+                            <label for="@idp-bodytext">Message <span class="optional">(optional)</span></label>
+                            <textarea id="@idp-bodytext" class="mono" placeholder='{ "action": "subscribe", "channel": "orders-{{$vu}}" }' spellcheck="false" @bind="request.Body" @bind:event="oninput"></textarea>
+                            <label class="check">
+                                <input type="checkbox" @bind="webSocket.WaitForReply" />
+                                <span>Wait for a reply<span class="hint">The request is timed until the server's next message arrives, and checks and extractions read that message. Untick for fire-and-forget messages.</span></span>
+                            </label>
+                            <label class="check">
+                                <input type="checkbox" @bind="webSocket.CloseAfter" />
+                                <span>Close the connection afterwards<span class="hint">Otherwise the virtual user keeps it open for its later messages and iterations, like a browser tab would.</span></span>
+                            </label>
+                            <div class="hint">
+                                The message is sent as text. Leave it empty to only wait for the next message the server pushes.
+                                A connection is opened by the first message that needs it, which includes the handshake in its time, like the first HTTP request on a connection.
+                            </div>
                         }
                         else if (tab == "body" && request.Protocol == RequestProtocol.GraphQL)
                         {
@@ -434,7 +461,10 @@
                                     <input type="text" class="mono" placeholder="token" aria-label="Extraction @n variable name" spellcheck="false" @bind="rule.Variable" @bind:event="oninput" />
                                     <select aria-label="Extraction @n source" @bind="rule.Source">
                                         <option value="@ExtractionSource.JsonPath">JSON path</option>
-                                        <option value="@ExtractionSource.Header">Header</option>
+                                        @if (request.Protocol != RequestProtocol.WebSocket || rule.Source == ExtractionSource.Header)
+                                        {
+                                            <option value="@ExtractionSource.Header">Header</option>
+                                        }
                                         <option value="@ExtractionSource.Regex">Regex</option>
                                     </select>
                                     <input type="text" class="mono x-expr" placeholder="@ExpressionPlaceholder(rule.Source)" aria-label="Extraction @n @SourceLabel(rule.Source)" spellcheck="false"
@@ -451,11 +481,18 @@
                         }
                         else
                         {
-                            <div class="field field-narrow">
-                                <label for="@idp-codes">Expected status codes</label>
-                                <input id="@idp-codes" type="text" class="mono" placeholder="200-399 (default)" aria-describedby="@idp-codes-hint" @bind="request.ExpectedStatusCodes" />
-                                <div class="hint" id="@idp-codes-hint">Comma separated codes or ranges, e.g. <code>200,201</code> or <code>200-299,404</code>. Any other status counts as an error.</div>
-                            </div>
+                            @if (request.Protocol != RequestProtocol.WebSocket)
+                            {
+                                <div class="field field-narrow">
+                                    <label for="@idp-codes">Expected status codes</label>
+                                    <input id="@idp-codes" type="text" class="mono" placeholder="200-399 (default)" aria-describedby="@idp-codes-hint" @bind="request.ExpectedStatusCodes" />
+                                    <div class="hint" id="@idp-codes-hint">Comma separated codes or ranges, e.g. <code>200,201</code> or <code>200-299,404</code>. Any other status counts as an error.</div>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="hint">A WebSocket reply has no status code or headers; its text is what the checks look at. A connection the server closes counts as an error.</div>
+                            }
 
                             <div class="label-text" id="@idp-checks-label">Response checks</div>
                             @if (request.Assertions.Count == 0)
@@ -472,9 +509,12 @@
                                 <div class="check-row @(a.Enabled ? "" : "off")" role="group" aria-label="Check @n">
                                     <input type="checkbox" title="Run this check" aria-label="Run check @n" @bind="a.Enabled" />
                                     <select aria-label="Check @n looks at" @bind="a.Source" @bind:after="() => FixOperator(a)">
-                                        <option value="@AssertionSource.Body">Body</option>
+                                        <option value="@AssertionSource.Body">@(request.Protocol == RequestProtocol.WebSocket ? "Message" : "Body")</option>
                                         <option value="@AssertionSource.JsonPath">JSON path</option>
-                                        <option value="@AssertionSource.Header">Header</option>
+                                        @if (request.Protocol != RequestProtocol.WebSocket || a.Source == AssertionSource.Header)
+                                        {
+                                            <option value="@AssertionSource.Header">Header</option>
+                                        }
                                     </select>
                                     @if (a.Source == AssertionSource.Body)
                                     {
@@ -528,12 +568,25 @@
                                         <span class="status-err">@(failedChecks == 1 ? "1 check failed" : $"{failedChecks} checks failed")</span>
                                     }
                                 }
+                                else if (probe.StatusLabel is { } label)
+                                {
+                                    <strong class="status-2xx">@label</strong>
+                                    <span>@Format.Ms(probe.Latency.TotalMilliseconds)</span>
+                                    @if (label == RequestResult.ReplyStatus)
+                                    {
+                                        <span>@Format.Bytes(probe.BodyBytes)</span>
+                                    }
+                                    @if (probe.Checks.Count(c => !c.Passed) is > 0 and var failedReplyChecks)
+                                    {
+                                        <span class="status-err">@(failedReplyChecks == 1 ? "1 check failed" : $"{failedReplyChecks} checks failed")</span>
+                                    }
+                                }
                                 else
                                 {
                                     <strong class="status-err">Request failed</strong>
                                     <span>@probe.Error</span>
                                 }
-                                @if (probe.StatusCode is not null && probe.Error is not null)
+                                @if (probe.HasResponse && probe.Error is not null)
                                 {
                                     <span class="status-err">@probe.Error</span>
                                 }
@@ -558,10 +611,13 @@
                                     }
                                 </ul>
                             }
-                            @if (probe.StatusCode is not null)
+                            @if (probe.HasResponse)
                             {
-                                <span class="probe-label">Response headers</span>
-                                <pre>@string.Join("\n", probe.Headers.Select(h => $"{h.Key}: {h.Value}"))</pre>
+                                @if (probe.Headers.Count > 0)
+                                {
+                                    <span class="probe-label">@(probe.StatusLabel is null ? "Response headers" : "Handshake response headers")</span>
+                                    <pre>@string.Join("\n", probe.Headers.Select(h => $"{h.Key}: {h.Value}"))</pre>
+                                }
                                 @if (probe.Extractions is { Count: > 0 } extractions)
                                 {
                                     <span class="probe-label">Extracted</span>
@@ -584,7 +640,7 @@
                                 }
                                 @if (!string.IsNullOrEmpty(probe.BodyPreview))
                                 {
-                                    <span class="probe-label">Body</span>
+                                    <span class="probe-label">@(probe.StatusLabel is null ? "Body" : "Reply")</span>
                                     <pre>@probe.BodyPreview</pre>
                                 }
                             }
@@ -1145,20 +1201,30 @@
     private static string UrlPlaceholder(RequestProtocol protocol) => protocol switch
     {
         RequestProtocol.GraphQL => "https://api.example.com/graphql",
+        RequestProtocol.WebSocket => "wss://api.example.com/socket",
         _ => "https://api.example.com/items",
     };
 
+    private static string BodyTabName(RequestProtocol protocol) => protocol switch
+    {
+        RequestProtocol.GraphQL => "Query",
+        RequestProtocol.WebSocket => "Message",
+        _ => "Body",
+    };
+
     // A request keeps its protocol's own settings only while it uses that protocol, so a plan saved as HTTP has no
-    // GraphQL leftovers. The body, headers, checks and extractions stay, since a query is a body too.
+    // GraphQL or WebSocket leftovers. The body, headers, checks and extractions stay, since a query or message is a body too.
     private void SetProtocol(RequestDefinition request)
     {
-        if (request.Protocol == RequestProtocol.GraphQL)
+        request.GraphQL = request.Protocol == RequestProtocol.GraphQL ? request.GraphQL ?? new GraphQLOptions() : null;
+        request.WebSocket = request.Protocol == RequestProtocol.WebSocket ? request.WebSocket ?? new WebSocketOptions() : null;
+        if (request.Protocol == RequestProtocol.WebSocket && request.Url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
-            request.GraphQL ??= new GraphQLOptions();
+            request.Url = "ws" + request.Url[4..];
         }
-        else
+        else if (request.Protocol != RequestProtocol.WebSocket && request.Url.StartsWith("ws", StringComparison.OrdinalIgnoreCase))
         {
-            request.GraphQL = null;
+            request.Url = "http" + request.Url[2..];
         }
 
         if (request.Protocol != RequestProtocol.Http && _tabs.GetValueOrDefault(request, "headers") == "headers" && string.IsNullOrEmpty(request.Body))
@@ -1226,6 +1292,7 @@
             Url = last?.Url ?? "https://",
             Protocol = last?.Protocol ?? RequestProtocol.Http,
             GraphQL = last?.Protocol == RequestProtocol.GraphQL ? new GraphQLOptions() : null,
+            WebSocket = last?.Protocol == RequestProtocol.WebSocket ? new WebSocketOptions() : null,
         });
     }
 

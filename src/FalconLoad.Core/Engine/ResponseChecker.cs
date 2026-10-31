@@ -46,7 +46,7 @@ internal sealed class ResponseChecker
 
     /// <summary>Runs every check and returns a mask with bit <c>i</c> set when check <c>i</c> failed.</summary>
     /// <param name="body">The body, or empty when it was too large to keep (<paramref name="bodyTooLarge"/>).</param>
-    public ulong Evaluate(HttpResponseMessage response, ReadOnlyMemory<byte> body, bool bodyTooLarge)
+    public ulong Evaluate(HttpResponseMessage? response, ReadOnlyMemory<byte> body, bool bodyTooLarge)
     {
         ulong failed = 0;
         JsonDocument? json = null;
@@ -83,7 +83,7 @@ internal sealed class ResponseChecker
     }
 
     /// <summary>Runs every check and reports what each one saw. Slower than <see cref="Evaluate"/>; for single requests.</summary>
-    public IReadOnlyList<CheckOutcome> Explain(HttpResponseMessage response, ReadOnlyMemory<byte> body)
+    public IReadOnlyList<CheckOutcome> Explain(HttpResponseMessage? response, ReadOnlyMemory<byte> body)
     {
         var outcomes = new List<CheckOutcome>(_checks.Length);
         JsonDocument? json = null;
@@ -137,9 +137,10 @@ internal sealed class ResponseChecker
         return json;
     }
 
-    private static string? HeaderValue(HttpResponseMessage response, string name)
+    /// <param name="response">Null for a protocol without response headers, such as a WebSocket message.</param>
+    private static string? HeaderValue(HttpResponseMessage? response, string name)
     {
-        if (response.Headers.TryGetValues(name, out var values) || response.Content.Headers.TryGetValues(name, out values))
+        if (response is not null && (response.Headers.TryGetValues(name, out var values) || response.Content.Headers.TryGetValues(name, out values)))
         {
             return values is string[] { Length: 1 } single ? single[0] : string.Join(", ", values);
         }

@@ -49,7 +49,7 @@ public sealed class MetricsCollector
 
             // Every response runs all of its request's checks, so one count per request gives each check's total.
             var checkFailures = _checkFailures[result.StepIndex];
-            if (result.StatusCode is not null && checkFailures.Length > 0)
+            if (result.HasResponse && checkFailures.Length > 0)
             {
                 _checkedResponses[result.StepIndex]++;
                 for (var failed = result.FailedChecks; failed != 0; failed &= failed - 1)
@@ -58,7 +58,7 @@ public sealed class MetricsCollector
                 }
             }
 
-            var code = result.StatusCode?.ToString() ?? "No response";
+            var code = result.StatusCode?.ToString() ?? result.StatusLabel ?? RequestResult.NoResponseStatus;
             _statusCodes[code] = _statusCodes.GetValueOrDefault(code) + 1;
 
             if (result.Success)

@@ -2,7 +2,7 @@
 
 ![falcon-load](docs/logo/falcon-load-logo.png)
 
-An API load tester with a web UI. Configure the HTTP or GraphQL requests you want to hammer, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update live.
+An API load tester with a web UI. Configure the HTTP, GraphQL or WebSocket requests you want to hammer, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update live.
 
 Built with .NET 10: an ASP.NET Core host with an interactive Blazor Server UI, and a standalone load engine library.
 
@@ -30,6 +30,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Request editor**: method, URL, headers, body and content type, with a "Send once" button to check the response before you load test. Problems are shown next to the request or setting they belong to, and the editor warns before you leave with unsaved changes.
 - **Multi-step scenarios**: add several requests; each virtual user runs them in order and loops.
 - **GraphQL**: switch a request to GraphQL and write the query, its variables and the operation name instead of a body. A response that reports errors counts as a failed request, even with status 200. See [Protocols](#protocols).
+- **WebSocket**: send a message on a connection each virtual user keeps open, and time it until the server's reply arrives. Checks and extractions read the reply, so a subscribe message can feed the messages after it.
 - **Dynamic values** in URLs, headers and bodies: `{{$guid}}`, `{{$randomInt}}`, `{{$randomInt:1:100}}`, `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$vu}}`, `{{$iteration}}`.
 - **Parameter lists**: name a list of values, such as `userIds` = 17, 42, 99, and write `{{userIds}}` in a URL, header value or body. Each iteration of a virtual user takes one value from every list, so all requests in that iteration use the same value. A list hands out its values in order, shared by all virtual users and starting over at the end, or picks one at random. "Send once" uses the first value. Placeholders that match no list are sent as written.
 - **Data files**: upload a CSV file or a JSON array of objects, such as a list of test users, and each column becomes a variable (`{{email}}`, `{{password}}`). Every iteration of a virtual user takes one whole row, so an email and its password always belong together. See [Data files](#data-files).
@@ -233,7 +234,7 @@ curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' 
 
 ## Protocols
 
-Every request has a protocol, chosen next to the URL. Plans saved before protocols existed are plain HTTP. A test can mix protocols, and checks, extractions, thresholds, the command line and agents work the same for all of them.
+Every request has a protocol, chosen next to the URL. Plans saved before protocols existed are plain HTTP. A test can mix protocols, so a scenario can log in over HTTP and then talk over a WebSocket, and checks, extractions, thresholds, the command line and agents work the same for all of them.
 
 - **HTTP** is the default: method, URL, headers and body.
 - **GraphQL** sends an operation to the endpoint URL as an HTTP POST with the JSON body `{ "query": …, "variables": …, "operationName": … }`. The Query tab holds the query, its variables as a JSON object (checked when the test is saved) and the optional operation name; dynamic values and `{{variables}}` work in all three, in a string or as a bare number such as `"first": {{$randomInt:1:50}}`. GraphQL servers answer errors with status 200, so a response whose `errors` array has an entry counts as a failed request, named after the first error's message (`GraphQL error: Not authorised`), as does a response that isn't a JSON object. Checks and extractions read the response as usual: `$.data.products[0].id`. In the JSON, a request gets `"protocol": "GraphQL"`, the query in `body` and `"graphQL": { "variables": "{ … }", "operationName": "…" }`; the `method` is ignored.
@@ -248,6 +249,21 @@ curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' 
     "assertions": [{ "source": "JsonPath", "target": "$.data.products", "operator": "Exists" }]
   }],
   "profile": { "concurrency": 20, "stopCondition": "Duration", "durationSeconds": 30 }
+}'
+```
+
+- **WebSocket** sends a text message on a connection to a `ws://` or `wss://` address (`http://` and `https://` work too). Each virtual user opens its own connection the first time a message needs it and keeps it open across its requests and iterations, like a browser tab, so virtual users never share a socket and each one's replies stay in order; "Close the connection afterwards" closes it after the request instead. With **Wait for a reply** (the default) the request is timed from sending until the server's next message has fully arrived, and checks and extractions read that message, as its `Body` or by JSON path. Untick it for a fire-and-forget message, which is done once sent; a reply the server sends anyway is read by the next message that waits. Leave the message empty to only wait for the next message the server pushes. The first message on a connection includes the handshake in its time, like the first HTTP request on a connection does. The request's headers are sent with the handshake, along with the test's OAuth2 token when it has one, and `Sec-WebSocket-Protocol` asks for sub-protocols. A WebSocket request has no status code: the status table counts `Reply` and `Sent` instead, and a connection the server closes, a failed handshake or a reply that doesn't arrive within the timeout counts as an error. Header checks and extractions don't apply. In the JSON, a request gets `"protocol": "WebSocket"`, the message in `body` and `"webSocket": { "waitForReply": true, "closeAfter": false }`.
+
+```bash
+curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' -d '{
+  "name": "Order feed",
+  "requests": [
+    { "protocol": "WebSocket", "url": "wss://localhost:5001/feed", "body": "{ \"subscribe\": \"orders\" }", "oncePerVirtualUser": true,
+      "extractions": [{ "variable": "channel", "source": "JsonPath", "expression": "$.channel" }] },
+    { "protocol": "WebSocket", "url": "wss://localhost:5001/feed", "body": "{ \"publish\": \"{{channel}}\", \"id\": \"{{$guid}}\" }",
+      "assertions": [{ "source": "JsonPath", "target": "$.ack", "operator": "Equals", "value": "true" }] }
+  ],
+  "profile": { "concurrency": 100, "stopCondition": "Duration", "durationSeconds": 60, "rampUpSeconds": 10 }
 }'
 ```
 
@@ -457,7 +473,7 @@ Dockerfile, Dockerfile.cli   Container images for the web app and the CLI
 docs/monitoring              Grafana dashboard and a Docker Compose stack with Prometheus and Grafana
 ```
 
-How the engine works: each virtual user is a task that loops over the plan's requests through a shared `SocketsHttpHandler`, with its own extracted variables. A request is timed until its full response body has been read. Latencies go into a fixed-size log-linear histogram (about 1% precision), so percentiles stay cheap and memory stays flat however long a test runs. Requests still in flight when a test stops are discarded rather than counted as errors.
+How the engine works: each virtual user is a task that loops over the plan's requests through a shared `SocketsHttpHandler`, with its own extracted variables and its own WebSocket connections. A request is timed until its full response body has been read. Latencies go into a fixed-size log-linear histogram (about 1% precision), so percentiles stay cheap and memory stays flat however long a test runs. Requests still in flight when a test stops are discarded rather than counted as errors.
 
 How combining works: an export holds the run's summary plus its latency histograms (overall, per request and per second), along with the machine's name. Counts are added up, and the histograms are merged bucket by bucket, so the combined percentiles are exactly what one machine would have measured had it sent every request. Each machine's per-second timeline is placed by its start time, so keep the machines' clocks in sync (NTP is enough). Throughput is averaged from the first machine's start to the last one's end; the page warns when runs didn't overlap, because that average then understates the load. Files exported before this feature have no histograms and can't be combined; export the run again if it is still in memory.
 

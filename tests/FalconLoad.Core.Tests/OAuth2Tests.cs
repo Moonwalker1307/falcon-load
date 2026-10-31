@@ -141,6 +141,22 @@ public class OAuth2Tests
         new(Auth().Resolve(null), new HttpMessageInvoker(server.Handler), TimeSpan.FromSeconds(5), time: time);
 
     [Fact]
+    public async Task WebSocketHandshake_CarriesTheToken()
+    {
+        var server = new FakeAuthServer();
+        var sockets = new FakeWebSocketConnector(m => m);
+        var plan = Plan(requests: 3, concurrency: 1);
+        plan.Requests[0] = new RequestDefinition { Protocol = RequestProtocol.WebSocket, Url = "ws://api.test/feed", Body = "hi", WebSocket = new WebSocketOptions() };
+        await using var runner = new LoadTestRunner(plan, new HttpMessageInvoker(server.Handler), webSockets: sockets);
+
+        var snapshot = await runner.RunAsync(cancellationToken: CancellationToken.None);
+
+        Assert.Equal(3, snapshot.SuccessfulRequests);
+        var (_, headers) = Assert.Single(sockets.Connections);
+        Assert.Contains(headers, h => h.Key == "Authorization" && h.Value == "Bearer tok-1");
+    }
+
+    [Fact]
     public async Task Run_FetchesOneTokenAndSendsItWithEveryRequest()
     {
         var server = new FakeAuthServer();
