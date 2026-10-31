@@ -1,0 +1,19 @@
+@* The run's progress bar, with the pixel falcon riding its leading edge. It flaps and trails speed lines while the run is active. *@
+<div class="flight @(Flying ? "flying" : "")" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="@Percent">
+    <div class="flight-bird" style="left:@Css%;transform:translateX(-@Css%)">
+        <img src="@(Flying ? "falcon-flying.svg" : "falcon.svg")" alt="" width="118" height="66" />
+    </div>
+    <div class="progress"><div style="width:@Css%"></div></div>
+</div>
+
+@code {
+    /// <summary>Progress from 0 to 1.</summary>
+    [Parameter, EditorRequired] public double Value { get; set; }
+
+    /// <summary>Whether the falcon should be flying (the run is pending or running).</summary>
+    [Parameter] public bool Flying { get; set; }
+
+    private int Percent => (int)Math.Round(Math.Clamp(Value, 0, 1) * 100);
+
+    private string Css => (Math.Clamp(Value, 0, 1) * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}

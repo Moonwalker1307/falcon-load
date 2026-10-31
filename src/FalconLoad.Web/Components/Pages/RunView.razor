@@ -55,9 +55,7 @@
     <div class="alert alert-error">The run failed: @s.FailureReason</div>
 }
 
-<div class="progress" title="@Math.Round(Progress(s, profile) * 100)%">
-    <div style="width:@((Progress(s, profile) * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"></div>
-</div>
+<FlightProgress Value="Progress(s, profile)" Flying="!s.IsFinished" />
 
 <div class="stats">
     <div class="stat">
