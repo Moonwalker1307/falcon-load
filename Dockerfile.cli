@@ -1,0 +1,24 @@
+# The headless CLI. Build from the repository root:
+#   docker build -f Dockerfile.cli -t falcon-load-cli .
+#   docker run --rm -v "$PWD:/work" --user "$(id -u):$(id -g)" falcon-load-cli run tests.json --out results.json
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Restore on its own layer, so a code change doesn't download the packages again.
+COPY global.json ./
+COPY src/FalconLoad.Core/FalconLoad.Core.csproj src/FalconLoad.Core/
+COPY src/FalconLoad.Cli/FalconLoad.Cli.csproj src/FalconLoad.Cli/
+RUN dotnet restore src/FalconLoad.Cli/FalconLoad.Cli.csproj
+
+COPY src/FalconLoad.Core/ src/FalconLoad.Core/
+COPY src/FalconLoad.Cli/ src/FalconLoad.Cli/
+RUN dotnet publish src/FalconLoad.Cli/FalconLoad.Cli.csproj -c Release -o /app --no-restore
+
+FROM mcr.microsoft.com/dotnet/runtime:10.0
+COPY --from=build /app /app
+
+# Test files and results are read and written relative to /work, so mount the folder that holds them there.
+WORKDIR /work
+USER $APP_UID
+ENTRYPOINT ["dotnet", "/app/falcon-load.dll"]
+CMD ["--help"]

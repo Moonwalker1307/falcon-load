@@ -14,6 +14,15 @@ dotnet run --project src/FalconLoad.Web
 
 Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profile https`).
 
+### With Docker
+
+```bash
+docker build -t falcon-load .
+docker run --rm -p 127.0.0.1:5299:8080 -v falcon-load-data:/data falcon-load
+```
+
+Then open http://localhost:5299. The app listens on port 8080 inside the container and keeps saved tests in `/data`, so the volume keeps them when the container is replaced. Publishing the port on `127.0.0.1` keeps the app reachable only from your own machine. From inside a container, `localhost` is the container itself: to test an API running on your machine, use `host.docker.internal` (add `--add-host=host.docker.internal:host-gateway` on Linux), or put both containers on the same Docker network and use the API container's name.
+
 > Only load test APIs you own or have permission to test. falcon-load sends real traffic and is meant to run on your own machine or a private network. Don't expose it publicly: it will send requests to any URL it's given.
 
 ## Features
@@ -33,7 +42,56 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 - **Export and import tests** to share them between machines: "Export" on a test (or "Export all" on the dashboard) downloads a JSON file, and "Import…" on another machine loads it. Imported tests get new ids, so an import never overwrites a saved test, and a file is only imported when every test in it is valid. The file includes any header you typed in directly, such as `Authorization: Bearer abc`, so treat it like the tokens in it, or keep the token in an environment as a secret and write `{{token}}` in the header, which exports as `{{token}}`. The editor warns when a header like `Authorization` holds a plain value.
 - **Import requests** from a pasted curl command, a Postman collection (v2.0/v2.1) or an OpenAPI 3 spec (JSON or YAML) on the Import page, then create a new test or add them to an existing one. See [Importing requests](#importing-requests).
 - **Combine results from several machines**: when one machine can't generate enough load, run the same test on several machines at the same time, export each run, and add the files on the Combine page. It shows the combined throughput, error rate, latency percentiles, status codes and errors, with a per-machine breakdown and a throughput line per machine.
+- **Command line runner** that runs exported tests in CI, prints a summary, writes the results as JSON and fails the build when too many requests fail.
+- **Docker images** for the web app and the command line runner.
 - **JSON API** for scripting and CI.
+
+## Command line
+
+The `falcon-load` CLI runs exported tests without the web UI, for CI pipelines and machines without a browser. Export a test with "Export" in the editor (or "Export all" on the dashboard, or `/api/plans/export`), then:
+
+```bash
+dotnet run --project src/FalconLoad.Cli -- run tests.json --out results.json
+```
+
+It runs every test in the file in order, shows live progress on standard error, prints a summary of each test (requests, throughput, error rate, latency percentiles, status codes, per-request breakdown and errors) on standard output, and exits with:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Every test passed |
+| `1` | A test failed: one of its thresholds wasn't met, or, for a test without thresholds, any request failed (or more than `--max-error-rate` allows), or it couldn't run |
+| `2` | The command line or the test file is invalid; nothing was sent |
+| `130` | Interrupted with Ctrl+C or `docker stop`; the results so far are still printed and written |
+
+| Option | Purpose |
+| --- | --- |
+| `--test <name>` | Run only the test with this name |
+| `--out <path>` | Write the results as JSON, in the same format as "Export" on a run in the UI, so they can be added on the Combine page. With several tests, `<path>` is a directory that gets one file per test |
+| `--concurrency <n>` | Use this many virtual users instead of the file's setting |
+| `--duration <seconds>` | Run for this long instead of the file's stop condition |
+| `--requests <n>` | Send this many requests instead of the file's stop condition |
+| `--max-error-rate <percent>` | Fail a test when more than this share of its requests fail, e.g. `1` or `0.5%`. With thresholds this is checked as well as them |
+| `--env-file <path>` | An environments file exported from the Environments page, for tests that use `{{variables}}` |
+| `--env <name>` | The environment to run with. Default: the test's own environment, or the only one in the file |
+| `--var <name>=<value>` | Set a variable, overriding the environment's value. Can be repeated |
+| `--machine <name>` | The machine name recorded in the results; useful in containers, whose host names are random |
+| `--quiet` | Print only the summary |
+
+A test passes or fails on the same verdict as in the web UI: when it has thresholds, the summary lists each one with its measured value, and the test passes when they all hold. A test without thresholds passes when no request failed.
+
+Environment exports never contain secret values, so give secrets to the CLI as environment variables: `FALCON_LOAD_token` (or `FALCON_LOAD_TOKEN`) sets `{{token}}`. They are masked in the output like secrets in the web app, and a result file records only the environment's name. A value given with `--var` is not treated as a secret, and it is visible to other users of the machine in the process list.
+
+Pass `-` instead of a file name to read the test from standard input. Publish a standalone build with `dotnet publish src/FalconLoad.Cli -c Release -o out`, which gives an `out/falcon-load` executable.
+
+To run the CLI from Docker, mount the folder with the test file on `/work`:
+
+```bash
+docker build -f Dockerfile.cli -t falcon-load-cli .
+docker run --rm -v "$PWD:/work" --user "$(id -u):$(id -g)" -e FALCON_LOAD_token \
+  falcon-load-cli run tests.json --env-file environments.json --out results.json --machine runner-1
+```
+
+The `--user` option lets the container write the results file into your folder. Combined with `--machine`, this makes it easy to run the same test from several machines at once and add their result files on the Combine page.
 
 ## JSON API
 
@@ -95,7 +153,7 @@ Check sources are `Body`, `JsonPath` and `Header`; operators are `Contains`, `No
 
 ### In CI
 
-Start a saved test, wait for it to finish and fail the job unless it passed its thresholds:
+The [command line](#command-line) runner is the simplest way: `falcon-load run tests.json` exits non-zero unless every test passes. To use a running web app instead, start a saved test, wait for it to finish and fail the job unless it passed its thresholds:
 
 ```bash
 run=$(curl -fsS -X POST http://localhost:5299/api/plans/$PLAN_ID/run | jq -r .id)
@@ -131,7 +189,10 @@ An environment is a named set of variables, kept on the **Environments** page. A
 ```
 src/FalconLoad.Core          Load engine: plan model, runner, metrics (no web dependencies)
 src/FalconLoad.Web           ASP.NET Core host, Blazor UI and JSON API
+src/FalconLoad.Cli           Headless command line runner (falcon-load run tests.json)
 tests/FalconLoad.Core.Tests  xUnit tests for the engine and metrics
+tests/FalconLoad.Cli.Tests   xUnit tests for the command line runner
+Dockerfile, Dockerfile.cli   Container images for the web app and the CLI
 ```
 
 How the engine works: each virtual user is a task that loops over the plan's requests through a shared `SocketsHttpHandler`, with its own extracted variables. A request is timed until its full response body has been read. Latencies go into a fixed-size log-linear histogram (about 1% precision), so percentiles stay cheap and memory stays flat however long a test runs. Requests still in flight when a test stops are discarded rather than counted as errors.
