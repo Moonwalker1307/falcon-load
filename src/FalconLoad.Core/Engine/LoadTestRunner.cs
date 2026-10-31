@@ -59,6 +59,10 @@ public sealed class LoadTestRunner : IAsyncDisposable
     public LoadTestSnapshot GetSnapshot() =>
         _metrics.Snapshot(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
 
+    /// <summary>A snapshot together with the latency histograms behind it, for an exported result.</summary>
+    public (LoadTestSnapshot Snapshot, ResultHistograms Histograms) GetResults() =>
+        _metrics.SnapshotWithHistograms(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
+
     /// <summary>Runs the load test to completion. Cancelling <paramref name="cancellationToken"/> stops it early.</summary>
     /// <param name="onProgress">Invoked with a fresh snapshot every <paramref name="reportInterval"/> while running.</param>
     public async Task<LoadTestSnapshot> RunAsync(

@@ -19,6 +19,13 @@
     --series-1: #FFD52A;
     --series-2: #A8B0C4;
     --series-3: #F07171;
+    /* One colour per machine on the Combine page, distinct from the series colours above. */
+    --machine-1: #5CCFE6;
+    --machine-2: #B392F0;
+    --machine-3: #78C99A;
+    --machine-4: #F28FAD;
+    --machine-5: #FFA759;
+    --machine-6: #73B8FF;
     --grid: #343846;
     --radius: 10px;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -343,7 +350,7 @@ td.actions .btn-group { justify-content: flex-end; }
 .step-num { display: inline-grid; place-items: center; flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: .8rem; }
 .add-request { width: 100%; padding: var(--space-4); border-style: dashed; background: transparent; color: var(--muted); }
 .add-request:hover:not(:disabled) { color: var(--text); }
-.section-title { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; margin: var(--space-5) 0 var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--border); }
+.subsection-label { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; margin: var(--space-5) 0 var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--border); }
 .vars-table td { padding: .45rem .5rem; }
 .vars-table td:first-child { white-space: nowrap; }
 
@@ -402,6 +409,16 @@ td.actions .btn-group { justify-content: flex-end; }
 
 /* A label styled as a button opens the file picker inside it. The input stays focusable for keyboard users. */
 label.btn { margin: 0; font-size: .92rem; font-weight: 500; color: var(--text); }
+label.btn-primary { color: #1b1300; font-weight: 650; }
 .file-button { cursor: pointer; position: relative; }
 .file-button input[type=file] { position: absolute; inset: 0; opacity: 0; width: 1px; height: 1px; overflow: hidden; }
 .file-button:focus-within { box-shadow: var(--focus-ring); }
+
+/* Combine results */
+.combine-add { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.combine-add select { width: auto; max-width: 22rem; }
+.section-title { margin: 1.5rem 0 .75rem; font-size: 1.25rem; }
+.grid-2 + .stack { margin-top: 1.25rem; }
+.grid-2 + .stack > .card { margin-bottom: 0; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: .45rem; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

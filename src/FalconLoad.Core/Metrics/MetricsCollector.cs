@@ -82,40 +82,75 @@ public sealed class MetricsCollector
     {
         lock (_gate)
         {
-            // Only full seconds are charted, so the per-second numbers stay comparable and the chart doesn't
-            // dip at the end. A run shorter than one second still shows its single (partial) second.
-            var lastSecond = (int)elapsed.TotalSeconds - 1;
-            if (lastSecond < 0 && state != RunState.Running && _timeline.Count > 0)
-            {
-                lastSecond = 0;
-            }
-
-            var timeline = new List<TimelinePoint>(Math.Max(lastSecond + 1, 0));
-            for (var s = 0; s <= lastSecond; s++)
-            {
-                timeline.Add(_timeline.TryGetValue(s, out var b)
-                    ? new TimelinePoint(s, b.Histogram.Count, b.Failures, b.Histogram.MeanMs, b.Histogram.Percentile(95))
-                    : new TimelinePoint(s, 0, 0, 0, 0));
-            }
-
-            return new LoadTestSnapshot
-            {
-                State = state,
-                Elapsed = elapsed,
-                TotalRequests = _successful + _failed,
-                SuccessfulRequests = _successful,
-                FailedRequests = _failed,
-                ActiveVirtualUsers = activeVirtualUsers,
-                BytesSent = _bytesSent,
-                BytesReceived = _bytesReceived,
-                Latency = _overall.ToStats(),
-                StatusCodes = new SortedDictionary<string, long>(_statusCodes),
-                Errors = _errors.OrderByDescending(e => e.Value).Select(e => new ErrorCount(e.Key, e.Value)).ToList(),
-                Steps = _steps.Select((h, i) => new StepStats(i, _stepNames[i], h.Count, _stepFailures[i], h.ToStats())).ToList(),
-                Timeline = timeline,
-                FailureReason = failureReason,
-            };
+            return SnapshotLocked(state, elapsed, activeVirtualUsers, failureReason);
         }
+    }
+
+    /// <summary>
+    /// A snapshot and the latency histograms behind it, taken together so their counts agree. The histograms are what
+    /// lets results from several machines be merged exactly.
+    /// </summary>
+    public (LoadTestSnapshot Snapshot, ResultHistograms Histograms) SnapshotWithHistograms(
+        RunState state, TimeSpan elapsed, int activeVirtualUsers, string? failureReason = null)
+    {
+        lock (_gate)
+        {
+            return (SnapshotLocked(state, elapsed, activeVirtualUsers, failureReason), HistogramsLocked(state, elapsed));
+        }
+    }
+
+    private LoadTestSnapshot SnapshotLocked(RunState state, TimeSpan elapsed, int activeVirtualUsers, string? failureReason)
+    {
+        var lastSecond = LastChartedSecond(state, elapsed);
+        var timeline = new List<TimelinePoint>(Math.Max(lastSecond + 1, 0));
+        for (var s = 0; s <= lastSecond; s++)
+        {
+            timeline.Add(_timeline.TryGetValue(s, out var b)
+                ? new TimelinePoint(s, b.Histogram.Count, b.Failures, b.Histogram.MeanMs, b.Histogram.Percentile(95))
+                : new TimelinePoint(s, 0, 0, 0, 0));
+        }
+
+        return new LoadTestSnapshot
+        {
+            State = state,
+            Elapsed = elapsed,
+            TotalRequests = _successful + _failed,
+            SuccessfulRequests = _successful,
+            FailedRequests = _failed,
+            ActiveVirtualUsers = activeVirtualUsers,
+            BytesSent = _bytesSent,
+            BytesReceived = _bytesReceived,
+            Latency = _overall.ToStats(),
+            StatusCodes = new SortedDictionary<string, long>(_statusCodes),
+            Errors = _errors.OrderByDescending(e => e.Value).Select(e => new ErrorCount(e.Key, e.Value)).ToList(),
+            Steps = _steps.Select((h, i) => new StepStats(i, _stepNames[i], h.Count, _stepFailures[i], h.ToStats())).ToList(),
+            Timeline = timeline,
+            FailureReason = failureReason,
+        };
+    }
+
+    private ResultHistograms HistogramsLocked(RunState state, TimeSpan elapsed)
+    {
+        var lastSecond = LastChartedSecond(state, elapsed);
+        return new ResultHistograms(
+            _overall.ToData(),
+            _steps.Select(h => h.ToData()).ToList(),
+            _timeline.Where(t => t.Key <= lastSecond)
+                .Select(t => new SecondHistogram(t.Key, t.Value.Failures, t.Value.Histogram.ToData()))
+                .ToList());
+    }
+
+    // Only full seconds are charted, so the per-second numbers stay comparable and the chart doesn't
+    // dip at the end. A run shorter than one second still shows its single (partial) second.
+    private int LastChartedSecond(RunState state, TimeSpan elapsed)
+    {
+        var lastSecond = (int)elapsed.TotalSeconds - 1;
+        if (lastSecond < 0 && state != RunState.Running && _timeline.Count > 0)
+        {
+            lastSecond = 0;
+        }
+
+        return lastSecond;
     }
 
     private sealed class SecondBucket
