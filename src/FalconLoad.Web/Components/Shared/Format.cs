@@ -24,6 +24,14 @@ public static class Format
 
     public static string Percent(double fraction) => fraction == 0 ? "0%" : fraction < 0.001 ? "<0.1%" : $"{fraction:0.#%}";
 
+    /// <summary>A threshold's limit or measured value in its unit: milliseconds, percent or requests per second.</summary>
+    public static string Measured(double value, string unit) => unit switch
+    {
+        "ms" => Ms(value),
+        "%" => value == 0 ? "0%" : value < 0.1 ? $"{value:0.###}%" : $"{value:0.##}%",
+        _ => $"{Rate(value)} {unit}",
+    };
+
     public static string Bytes(long bytes) => bytes switch
     {
         >= 1L << 30 => $"{bytes / (double)(1L << 30):0.##} GB",

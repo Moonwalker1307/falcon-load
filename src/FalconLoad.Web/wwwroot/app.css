@@ -434,3 +434,29 @@ label.btn-primary { color: #1b1300; font-weight: 650; }
 .grid-2 + .stack > .card { margin-bottom: 0; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: .45rem; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Checks and thresholds */
+.badges { display: inline-flex; gap: var(--space-1); flex-wrap: wrap; }
+.badge-passed { background: var(--ok-soft); color: var(--ok); }
+.check-row, .threshold-row { display: grid; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }
+.check-row { grid-template-columns: auto 120px minmax(0, 1fr) 150px minmax(0, 1fr) auto; }
+.threshold-row { grid-template-columns: auto minmax(0, 1.2fr) minmax(0, 1.2fr) 64px minmax(0, 1fr) auto; }
+.check-row input[type=checkbox], .threshold-row input[type=checkbox] { width: 1rem; height: 1rem; margin: 0 .25rem; }
+.check-row.off > :not(input[type=checkbox]):not(button), .threshold-row.off > :not(input[type=checkbox]):not(button) { opacity: .5; }
+.threshold-row select.mono { font-weight: 700; text-align: center; padding-right: 1.6rem; background-position: right .45rem center; }
+.check-subject { padding: 0 .2rem; }
+.check-empty { margin-bottom: var(--space-3); }
+.probe-checks { list-style: none; margin: 0; padding: var(--space-2) var(--space-3) var(--space-3); display: grid; gap: var(--space-1); font-size: .85rem; }
+.probe-checks li { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+.verdict h2 { display: flex; align-items: center; gap: var(--space-2); margin: 0; }
+.verdict-pass { border-color: color-mix(in srgb, var(--ok) 55%, var(--border)); }
+.verdict-pass h2 { color: var(--ok); }
+.verdict-fail { border-color: color-mix(in srgb, var(--bad) 55%, var(--border)); }
+.verdict-fail h2 { color: var(--bad); }
+.verdict td .icon { width: 1em; height: 1em; vertical-align: -.15em; }
+@media (max-width: 640px) {
+    .check-row, .threshold-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+    .check-row > :not(input[type=checkbox]):not(button), .threshold-row > :not(input[type=checkbox]):not(button) { grid-column: 2; }
+    .check-row > button, .threshold-row > button { grid-column: 3; grid-row: 1; }
+    .check-row, .threshold-row { padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
+}

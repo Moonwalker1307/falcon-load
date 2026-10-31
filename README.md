@@ -24,6 +24,8 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 - **Parameter lists**: name a list of values, such as `userIds` = 17, 42, 99, and write `{{userIds}}` in a URL, header value or body. Each iteration of a virtual user takes one value from every list, so all requests in that iteration use the same value. A list hands out its values in order, shared by all virtual users and starting over at the end, or picks one at random. "Send once" uses the first value. Placeholders that match no list are sent as written.
 - **Load profile**: virtual users (concurrency), stop after a duration or a request count, ramp-up, optional requests-per-second cap, per-request timeout, redirect and TLS options.
 - **Success criteria**: expected status codes per request (e.g. `200,201` or `200-299,404`); defaults to any 2xx/3xx.
+- **Response checks** per request, on the Checks tab: the body (contains, does not contain, equals, matches a regular expression), a JSON value found by a path such as `$.status`, `$.items[0].id`, `$.items[-1]` or `$.items.length` (exists, equals, contains, matches, is less or greater than a number, and their opposites), or a response header. A response that fails a check counts as an error, named after the check, and the results show how often each check passed. "Send once" shows what each check found. Checks run after the response is timed, so they don't add to its latency. Text comparisons are case-sensitive, and bodies over 8 MB are too large to check, so their body and JSON checks fail.
+- **Pass/fail thresholds** for the whole run, such as `p95 latency < 500 ms`, `error rate < 1%` or `throughput > 200 req/s`, for all requests or one of them. A run passes when it completes and every threshold holds; a stopped or failed run doesn't pass. The run page, the runs list and the JSON API show the verdict (`passed`: `true`, `false`, or `null` for a test without thresholds), so a CI job can fail on it. A threshold over requests that sent nothing fails.
 - **Live results**: a pixel-art falcon flies along the progress bar while a test runs. Requests, throughput, error rate, latency (mean, p50, p90, p95, p99, max), per-second throughput and latency charts, per-request breakdown, status code and error tables.
 - **Saved tests** persisted to `App_Data/plans.json` (change with the `FalconLoad:DataDirectory` setting). The last 50 runs are kept in memory and can be exported as JSON.
 - **Export and import tests** to share them between machines: "Export" on a test (or "Export all" on the dashboard) downloads a JSON file, and "Import…" on another machine loads it. Imported tests get new ids, so an import never overwrites a saved test, and a file is only imported when every test in it is valid. The file includes headers such as `Authorization`, so treat it like the tokens in it.
@@ -42,8 +44,8 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 | `DELETE` | `/api/plans/{id}` | Delete a saved test |
 | `POST` | `/api/plans/{id}/run` | Start a saved test |
 | `POST` | `/api/runs` | Start an ad-hoc test (plan in the body, not saved) |
-| `GET` | `/api/runs` | List recent runs |
-| `GET` | `/api/runs/{id}` | Live or final results |
+| `GET` | `/api/runs` | List recent runs, each with its `passed` verdict |
+| `GET` | `/api/runs/{id}` | Live or final results, with `results.passed`, `results.thresholds` and `results.checks` |
 | `GET` | `/api/runs/{id}/export` | Results as a JSON download, with the latency histograms needed to combine them |
 | `POST` | `/api/runs/{id}/stop` | Stop a running test |
 | `POST` | `/api/results/combine` | Combine an array of exported results from several machines |
@@ -58,11 +60,32 @@ curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' 
     { "method": "GET", "url": "https://localhost:5001/api/products?page={{$randomInt:1:20}}" },
     { "method": "POST", "url": "https://localhost:5001/api/orders",
       "headers": [{ "name": "Authorization", "value": "Bearer <token>" }],
-      "body": "{ \"id\": \"{{$guid}}\", \"userId\": {{userIds}} }", "expectedStatusCodes": "201" }
+      "body": "{ \"id\": \"{{$guid}}\", \"userId\": {{userIds}} }", "expectedStatusCodes": "201",
+      "assertions": [
+        { "source": "JsonPath", "target": "$.status", "operator": "Equals", "value": "created" },
+        { "source": "Header", "target": "Location", "operator": "Exists" }
+      ] }
+  ],
+  "thresholds": [
+    { "metric": "P95Latency", "operator": "LessThan", "value": 500 },
+    { "metric": "ErrorRate", "operator": "LessThan", "value": 1 },
+    { "metric": "P99Latency", "operator": "LessThanOrEqual", "value": 800, "requestIndex": 1 }
   ],
   "parameters": [{ "name": "userIds", "values": ["17", "42", "99"], "selection": "Sequential" }],
   "profile": { "concurrency": 50, "stopCondition": "Duration", "durationSeconds": 60, "rampUpSeconds": 10, "ignoreTlsErrors": true }
 }'
+```
+
+Check sources are `Body`, `JsonPath` and `Header`; operators are `Contains`, `NotContains`, `Equals`, `NotEquals`, `Matches`, `Exists`, `NotExists`, `LessThan` and `GreaterThan` (a `Body` check takes `Contains`, `NotContains`, `Equals` or `Matches`; `Exists` and `NotExists` need no `value`). Threshold metrics are `ErrorRate` (percent), `MeanLatency`, `P50Latency`, `P90Latency`, `P95Latency`, `P99Latency`, `MaxLatency` (milliseconds) and `RequestsPerSecond`; operators are `LessThan`, `LessThanOrEqual`, `GreaterThan` and `GreaterThanOrEqual`. `requestIndex` is the zero-based position of the request a threshold applies to; leave it out for all requests.
+
+### In CI
+
+Start a saved test, wait for it to finish and fail the job unless it passed its thresholds:
+
+```bash
+run=$(curl -fsS -X POST http://localhost:5299/api/plans/$PLAN_ID/run | jq -r .id)
+until curl -fsS http://localhost:5299/api/runs/$run | jq -e .results.isFinished > /dev/null; do sleep 2; done
+curl -fsS http://localhost:5299/api/runs/$run | jq -e '.results.passed == true' > /dev/null
 ```
 
 ## Project layout

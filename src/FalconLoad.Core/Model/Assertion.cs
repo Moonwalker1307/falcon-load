@@ -101,12 +101,7 @@ public sealed class Assertion
     {
         get
         {
-            var subject = Source switch
-            {
-                AssertionSource.Body => "body",
-                AssertionSource.Header => $"header {Target.Trim()}",
-                _ => Target.Trim(),
-            };
+            var subject = Subject;
             if (!NeedsValue(Operator))
             {
                 return $"{subject} {OperatorText(Operator)}";
@@ -118,6 +113,13 @@ public sealed class Assertion
             return $"{subject} {OperatorText(Operator)} {value}";
         }
     }
+
+    private string Subject => Source switch
+    {
+        AssertionSource.Body => "body",
+        AssertionSource.Header => $"header {Target.Trim()}",
+        _ => Target.Trim(),
+    };
 
     public IEnumerable<string> Validate()
     {
@@ -147,12 +149,12 @@ public sealed class Assertion
 
         if (Operator is AssertionOperator.Contains or AssertionOperator.NotContains or AssertionOperator.Matches && Value.Length == 0)
         {
-            yield return $"The check \"{Description}\" needs a value.";
+            yield return $"The check \"{Subject} {OperatorText(Operator)}\" needs a value.";
         }
 
         if (Operator is AssertionOperator.LessThan or AssertionOperator.GreaterThan && !TryParseNumber(Value, out _))
         {
-            yield return $"The check \"{Description}\" needs a number to compare with.";
+            yield return $"The check \"{Subject} {OperatorText(Operator)}\" needs a number to compare with.";
         }
 
         if (Operator == AssertionOperator.Matches && Value.Length > 0 && !TryCreateRegex(Value, out _))

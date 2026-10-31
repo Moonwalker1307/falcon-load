@@ -118,6 +118,9 @@ public static class ApiEndpoints
         run.Snapshot.FailedRequests,
         run.Snapshot.RequestsPerSecond,
         P95LatencyMs = run.Snapshot.Latency.P95Ms,
+
+        // The verdict against the plan's thresholds: null when it has none. CI scripts read this.
+        run.Snapshot.Passed,
     };
 
     private static object Detail(LoadTestRun run) => new
