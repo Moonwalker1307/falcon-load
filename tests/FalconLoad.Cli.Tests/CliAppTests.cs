@@ -392,6 +392,86 @@ public sealed class CliAppTests : IDisposable
         Assert.Contains("no environment named 'Production'", _error.ToString());
     }
 
+    private static LoadTestPlan PlanWithUsers(int requests = 4)
+    {
+        var plan = Plan(requests: requests);
+        plan.Profile.Concurrency = 1;
+        plan.Requests[0] = new RequestDefinition { Method = "POST", Url = "http://api.test/login", Body = "{{email}}:{{password}}" };
+        plan.DataFiles.Add(new DataFile { Name = "users.csv", Content = "email,password\nana@example.test,pw-ana\nbo@example.test,pw-bo\n" });
+        return plan;
+    }
+
+    [Fact]
+    public async Task DataFile_SavedInTheTest_FeedsTheRequests_AndStaysOutOfTheResults()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var output = Path.Combine(_directory, "out.json");
+
+        var code = await Run(handler, "run", WriteFile(PlanWithUsers()), "--out", output);
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.Equal(
+            ["ana@example.test:pw-ana", "bo@example.test:pw-bo", "ana@example.test:pw-ana", "bo@example.test:pw-bo"],
+            handler.Received.Select(r => r.Body));
+        var written = File.ReadAllText(output);
+        Assert.DoesNotContain("pw-ana", written);
+        Assert.DoesNotContain("pw-ana", _out.ToString() + _error);
+        var export = JsonSerializer.Deserialize<RunExport>(written, PlanFile.JsonOptions)!;
+        var file = Assert.Single(export.Plan.DataFiles);
+        Assert.Equal(2, file.OmittedRows);
+        Assert.Equal(string.Empty, file.Content);
+    }
+
+    [Fact]
+    public async Task DataOption_ReplacesTheRowsWithAFile()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var users = Path.Combine(_directory, "other-users.json");
+        File.WriteAllText(users, """[{"email": "cy@example.test", "password": "pw-cy"}]""");
+
+        var code = await Run(handler, "run", WriteFile(PlanWithUsers(2)), "--data", $"USERS.csv={users}");
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.Equal(["cy@example.test:pw-cy", "cy@example.test:pw-cy"], handler.Received.Select(r => r.Body));
+    }
+
+    [Fact]
+    public async Task DataOption_WithAnUnknownName_ExitsWithTwoAndListsTheNames()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var users = Path.Combine(_directory, "users.csv");
+        File.WriteAllText(users, "email,password\nx,y\n");
+
+        var code = await Run(handler, "run", WriteFile(PlanWithUsers()), "--data", $"user.csv={users}");
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Empty(handler.Received);
+        Assert.Contains("no test has a data file with that name. The data files are 'users.csv'", _error.ToString());
+    }
+
+    [Fact]
+    public async Task DataOption_WithAFileThatDoesNotFit_ExitsWithTwo()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var users = Path.Combine(_directory, "users.csv");
+        File.WriteAllText(users, "email,password\nonly-one\n");
+
+        var code = await Run(handler, "run", WriteFile(PlanWithUsers()), "--data", $"users.csv={users}");
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Empty(handler.Received);
+        Assert.Contains("line 2 has 1 value but the header has 2 columns", _error.ToString());
+    }
+
+    [Fact]
+    public async Task DataOption_WithAMissingFile_ExitsWithTwo()
+    {
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.OK), "run", WriteFile(PlanWithUsers()), "--data", $"users.csv={Path.Combine(_directory, "nope.csv")}");
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Contains("Can't read", _error.ToString());
+    }
+
     [Theory]
     [InlineData(new string[0], "Missing command.")]
     [InlineData(new[] { "go" }, "Unknown command 'go'.")]
@@ -403,6 +483,8 @@ public sealed class CliAppTests : IDisposable
     [InlineData(new[] { "run", "a.json", "--out" }, "--out needs a value.")]
     [InlineData(new[] { "run", "a.json", "--fast" }, "Unknown option '--fast'.")]
     [InlineData(new[] { "run", "a.json", "--var", "novalue" }, "--var needs a name and a value")]
+    [InlineData(new[] { "run", "a.json", "--data", "users.csv" }, "--data needs the name of a data file")]
+    [InlineData(new[] { "run", "a.json", "--data", "=users.csv" }, "--data needs the name of a data file")]
     public void Parse_RejectsInvalidArguments(string[] args, string expected)
     {
         Assert.Null(CliOptions.Parse(args, out var error));

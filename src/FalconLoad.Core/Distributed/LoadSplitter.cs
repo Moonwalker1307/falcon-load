@@ -84,6 +84,10 @@ public static class LoadSplitter
                 list.Values = list.Values.Where((_, k) => k % count == j).ToList();
             }
 
+            // Rows of a data file are dealt out the same way, so two agents never send the same row at the same time.
+            share.DataFiles = [.. share.DataFiles.Select(f =>
+                f.Selection == ParameterSelection.Sequential && f.TryGetTable(out var table, out _) && table.Rows.Count >= count ? f.TakeEvery(count, j) : f)];
+
             shares.Add(new Share(used[j], share));
         }
 

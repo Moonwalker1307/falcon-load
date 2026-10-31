@@ -64,9 +64,12 @@ public sealed class DistributedRunner
         _client = client;
         _options = options ?? new DistributedRunnerOptions();
         _agents = LoadSplitter.Split(_plan, weights).Select(s => new AgentState(agents[s.AgentIndex], s.Plan)).ToArray();
+        Plan = _plan.Clone();
+        Plan.DropDataRows();
     }
 
-    public LoadTestPlan Plan => _plan;
+    /// <summary>The test as it is reported with the results: without the rows of its data files, which went to the agents.</summary>
+    public LoadTestPlan Plan { get; }
 
     /// <summary>Each agent's results as last fetched, with the histograms that let them be combined again later.</summary>
     public IReadOnlyList<RunExport> GetAgentExports()

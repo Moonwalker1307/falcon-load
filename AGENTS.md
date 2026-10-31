@@ -50,7 +50,8 @@ engine works. It is the only user-facing documentation, so it has to stay true.
 ## Repo map
 
 - `src/FalconLoad.Core/`
-  - `Model/`: `LoadTestPlan` (requests plus profile, `Validate()`, `Clone()`), `TestEnvironment` and `SecretMasker`
+  - `Model/`: `LoadTestPlan` (requests plus profile, `Validate()`, `Clone()`), `DataFile` (CSV or JSON rows kept in the
+    plan; its columns become `{{column}}` variables through `ParameterSet`), `TestEnvironment` and `SecretMasker`
     (variable sets and hiding their secrets), `RequestDefinition`, `LoadProfile`
     (concurrency, stop condition, ramp-up, rate cap, timeout, TLS and redirect options, and optional `LoadStage`s that
     `StageSchedule` turns into load over time), `StagePresets` (step, spike and soak), `StatusCodeMatcher` (`200,201`

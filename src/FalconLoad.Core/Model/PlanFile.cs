@@ -124,6 +124,13 @@ public sealed class PlanFile
             list.Values ??= [];
         }
 
+        plan.DataFiles = plan.DataFiles?.OfType<DataFile>().ToList() ?? [];
+        foreach (var file in plan.DataFiles)
+        {
+            file.Name ??= string.Empty;
+            file.Content ??= string.Empty;
+        }
+
         foreach (var request in plan.Requests)
         {
             request.Name ??= string.Empty;

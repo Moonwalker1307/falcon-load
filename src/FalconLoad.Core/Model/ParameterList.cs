@@ -52,16 +52,19 @@ public sealed partial class ParameterList
 }
 
 /// <summary>
-/// The parameter lists of a plan, prepared for lookups while a test runs. One instance is shared by all virtual
-/// users, so sequential selection hands out values in order across all of them.
+/// The parameter lists and data files of a plan, prepared for lookups while a test runs. One instance is shared by all
+/// virtual users, so sequential selection hands out values in order across all of them. Every list and every column of
+/// a data file has a slot in the row an iteration works with; the columns of a data file are filled from one row of the
+/// file, so values that belong together stay together.
 /// </summary>
 public sealed class ParameterSet
 {
     private readonly ParameterList[] _lists;
+    private readonly (DataTable Table, ParameterSelection Selection, int FirstSlot)[] _tables;
     private readonly Dictionary<string, int> _indexByName;
     private readonly long[] _counters;
 
-    public ParameterSet(IEnumerable<ParameterList> lists)
+    public ParameterSet(IEnumerable<ParameterList> lists, IEnumerable<DataFile>? dataFiles = null)
     {
         _lists = [.. lists];
         _indexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -73,14 +76,37 @@ public sealed class ParameterSet
             }
         }
 
-        _counters = new long[_lists.Length];
+        // A file that can't be read is left out; the plan reports it when it is validated.
+        var slot = _lists.Length;
+        var tables = new List<(DataTable, ParameterSelection, int)>();
+        foreach (var file in dataFiles ?? [])
+        {
+            if (!file.TryGetTable(out var table, out _) || table.Rows.Count == 0)
+            {
+                continue;
+            }
+
+            tables.Add((table, file.Selection, slot));
+            foreach (var column in table.Columns)
+            {
+                _indexByName.TryAdd(column, slot++);
+            }
+        }
+
+        _tables = [.. tables];
+        Count = slot;
+        _counters = new long[_lists.Length + _tables.Length];
     }
 
-    public int Count => _lists.Length;
+    /// <summary>The size of the row <see cref="Next"/> fills: one value per list and per data column.</summary>
+    public int Count { get; }
+
+    /// <summary>The names of the variables the lists and data columns supply.</summary>
+    public IEnumerable<string> Names => _indexByName.Keys;
 
     internal bool TryGetIndex(string name, out int index) => _indexByName.TryGetValue(name, out index);
 
-    /// <summary>Fills <paramref name="row"/> with the next value of every list, for one iteration.</summary>
+    /// <summary>Fills <paramref name="row"/> with the next value of every list and the next row of every data file, for one iteration.</summary>
     public void Next(string[] row)
     {
         for (var i = 0; i < _lists.Length; i++)
@@ -91,10 +117,33 @@ public sealed class ParameterSet
                 : (int)((Interlocked.Increment(ref _counters[i]) - 1) % values.Count);
             row[i] = values[index];
         }
+
+        for (var t = 0; t < _tables.Length; t++)
+        {
+            var (table, selection, firstSlot) = _tables[t];
+            var index = selection == ParameterSelection.Random
+                ? System.Random.Shared.Next(table.Rows.Count)
+                : (int)((Interlocked.Increment(ref _counters[_lists.Length + t]) - 1) % table.Rows.Count);
+            table.Rows[index].CopyTo(row, firstSlot);
+        }
     }
 
-    /// <summary>The first value of every list, used for validation and for sending a single request.</summary>
-    public ParameterValues First() => new(this, [.. _lists.Select(l => l.Values.Count > 0 ? l.Values[0] : string.Empty)]);
+    /// <summary>The first value of every list and the first row of every data file, used for validation and for sending a single request.</summary>
+    public ParameterValues First()
+    {
+        var row = new string[Count];
+        for (var i = 0; i < _lists.Length; i++)
+        {
+            row[i] = _lists[i].Values.Count > 0 ? _lists[i].Values[0] : string.Empty;
+        }
+
+        foreach (var (table, _, firstSlot) in _tables)
+        {
+            table.Rows[0].CopyTo(row, firstSlot);
+        }
+
+        return new ParameterValues(this, row);
+    }
 }
 
 /// <summary>The values one iteration uses, one per list of a <see cref="ParameterSet"/>.</summary>

@@ -226,6 +226,11 @@ internal static class CliApp
         }
 
         var problems = new List<string>();
+        if (!await ApplyDataFilesAsync(plans, options, console, problems))
+        {
+            return null;
+        }
+
         var runs = new List<(LoadTestPlan, TestEnvironment?)>();
         foreach (var plan in plans)
         {
@@ -260,6 +265,46 @@ internal static class CliApp
         }
 
         return runs;
+    }
+
+    /// <summary>
+    /// Replaces the rows of the data files named with --data by the contents of the given files. A name that no test
+    /// uses is a mistake, such as a misspelling, so it is reported rather than ignored.
+    /// </summary>
+    private static async Task<bool> ApplyDataFilesAsync(List<LoadTestPlan> plans, CliOptions options, CliConsole console, List<string> problems)
+    {
+        foreach (var (name, path) in options.DataFiles)
+        {
+            var targets = plans.SelectMany(p => p.DataFiles).Where(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (targets.Count == 0)
+            {
+                var known = plans.SelectMany(p => p.DataFiles).Select(f => f.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                problems.Add(known.Count == 0
+                    ? $"--data {name}: no test in the file has a data file to replace."
+                    : $"--data {name}: no test has a data file with that name. The data files are {string.Join(", ", known.Select(k => $"'{k}'"))}.");
+                continue;
+            }
+
+            string content;
+            try
+            {
+                content = await File.ReadAllTextAsync(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                await console.Error.WriteLineAsync($"falcon-load: Can't read '{path}': {ex.Message}");
+                return false;
+            }
+
+            foreach (var file in targets)
+            {
+                file.Content = content;
+                file.Format = DataFile.DetectFormat(path, content);
+                file.OmittedRows = 0;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>

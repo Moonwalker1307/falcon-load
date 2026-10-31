@@ -42,14 +42,15 @@ public static class RequestProbe
         CancellationToken cancellationToken = default,
         IReadOnlyList<ParameterList>? parameters = null,
         Dictionary<string, string>? variables = null,
-        TestEnvironment? environment = null)
+        TestEnvironment? environment = null,
+        IReadOnlyList<DataFile>? dataFiles = null)
     {
-        var set = new ParameterSet(parameters ?? []);
+        var set = new ParameterSet(parameters ?? [], dataFiles);
         var masker = environment?.CreateMasker() ?? SecretMasker.None;
 
         // Parameter lists and variables already extracted win over an environment variable of the same name.
         var values = new Dictionary<string, string>(environment?.ToValues() ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
-        foreach (var name in (parameters ?? []).Select(p => p.Name).Concat(variables?.Keys ?? Enumerable.Empty<string>()))
+        foreach (var name in set.Names.Concat(variables?.Keys ?? Enumerable.Empty<string>()))
         {
             values.Remove(name);
         }
