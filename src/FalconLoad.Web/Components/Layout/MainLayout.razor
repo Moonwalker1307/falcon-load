@@ -1,20 +1,22 @@
 @inherits LayoutComponentBase
 
+<a class="skip-link" href="#main">Skip to content</a>
+
 <header class="topbar">
-    <a class="brand" href="/"><img src="falcon.svg" alt="" /><span class="brand-name">falcon<span>-load</span></span></a>
-    <nav>
+    <a class="brand" href="/" aria-label="falcon-load home"><img src="falcon.svg" alt="" /><span class="brand-name">falcon<span>-load</span></span></a>
+    <nav aria-label="Main">
         <NavLink href="/" Match="NavLinkMatch.All">Dashboard</NavLink>
-        <NavLink href="/plans/new">New test</NavLink>
         <NavLink href="/runs">Runs</NavLink>
     </nav>
+    <a class="btn btn-primary btn-sm" href="/plans/new"><Icon Name="plus" />New test</a>
 </header>
 
-<main>
+<main id="main" tabindex="-1">
     @Body
 </main>
 
-<div id="blazor-error-ui" data-nosnippet>
+<div id="blazor-error-ui" data-nosnippet role="alert">
     An unhandled error has occurred.
     <a href="." class="reload">Reload</a>
-    <span class="dismiss">🗙</span>
+    <button type="button" class="dismiss btn-ghost btn-icon" aria-label="Dismiss">✕</button>
 </div>

@@ -9,98 +9,125 @@
 <div class="page-header">
     <div>
         <h1>Dashboard</h1>
-        <div class="muted">Configure API requests, then hit them hard and watch how they hold up.</div>
+        <div class="subtitle">Configure API requests, then hit them hard and watch how they hold up.</div>
     </div>
     <div class="actions">
         <label class="btn file-button" title="Load tests from a file exported by falcon-load">
-            Import…
+            <Icon Name="upload" />Import…
             <InputFile accept=".json,application/json" OnChange="Import" />
         </label>
         @if (_plans.Count > 0)
         {
-            <a class="btn" href="api/plans/export" download title="Download every saved test as one file">Export all</a>
+            <a class="btn" href="api/plans/export" download title="Download every saved test as one file"><Icon Name="download" />Export all</a>
         }
-        <a class="btn btn-primary" href="plans/new">+ New load test</a>
+        <a class="btn btn-primary" href="plans/new"><Icon Name="plus" />New load test</a>
     </div>
 </div>
 
 @if (_error is not null)
 {
-    <div class="alert alert-error">@_error</div>
+    <div class="alert alert-error" role="alert"><Icon Name="alert" /><div>@_error</div></div>
 }
 
 @if (_importProblems.Count > 0)
 {
-    <div class="alert alert-error">
-        Couldn't import @_importFileName:
-        <ul>
-            @foreach (var problem in _importProblems)
-            {
-                <li>@problem</li>
-            }
-        </ul>
+    <div class="alert alert-error" role="alert">
+        <Icon Name="alert" />
+        <div>
+            <strong>Couldn't import @_importFileName.</strong> Nothing was saved.
+            <ul>
+                @foreach (var problem in _importProblems)
+                {
+                    <li>@problem</li>
+                }
+            </ul>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn-ghost btn-icon btn-sm" aria-label="Dismiss" @onclick="() => _importProblems = []"><Icon Name="x" /></button>
     </div>
 }
 
 @if (_importMessage is not null)
 {
-    <div class="alert alert-info">@_importMessage</div>
+    <div class="alert alert-info" role="status">
+        <Icon Name="check" /><div>@_importMessage</div>
+        <span class="spacer"></span>
+        <button class="btn-ghost btn-icon btn-sm" aria-label="Dismiss" @onclick="() => _importMessage = null"><Icon Name="x" /></button>
+    </div>
 }
 
-<div class="card">
-    <div class="card-header"><h2>Saved tests</h2></div>
-    @if (_plans.Count == 0)
-    {
-        <div class="empty">
-            <div>You have no saved load tests yet.</div>
-            <a class="btn btn-primary" href="plans/new">Create your first test</a>
+@if (_plans.Count == 0)
+{
+    <section class="card empty" aria-labelledby="welcome-title">
+        <img class="empty-icon" src="falcon.svg" alt="" />
+        <h2 id="welcome-title">Set up your first load test</h2>
+        <p>A test is a list of HTTP requests plus how hard to send them. It takes about a minute.</p>
+        <ol class="steps">
+            <li><strong>Describe the requests</strong><span>Method, URL, headers and body. Use "Send once" to check each one works.</span></li>
+            <li><strong>Choose the load</strong><span>How many virtual users, for how long, and an optional rate cap.</span></li>
+            <li><strong>Watch it live</strong><span>Throughput, latency percentiles, status codes and errors, every second.</span></li>
+        </ol>
+        <div class="actions actions-center">
+            <a class="btn btn-primary" href="plans/new"><Icon Name="plus" />Create a test</a>
         </div>
-    }
-    else
-    {
+        <p class="hint">Got a file from another machine? Use <strong>Import…</strong> above.</p>
+    </section>
+}
+else
+{
+    <section class="card card-flush" aria-labelledby="saved-title">
+        <div class="card-header">
+            <h2 id="saved-title">Saved tests</h2>
+            <span class="muted small">@_plans.Count @(_plans.Count == 1 ? "test" : "tests")</span>
+        </div>
         <div class="table-wrap">
-            <table>
+            <table class="table-hover stack-sm">
                 <thead>
                     <tr>
-                        <th>Name</th>
-                        <th>Requests</th>
-                        <th class="num">Virtual users</th>
-                        <th>Runs for</th>
-                        <th>Updated</th>
-                        <th></th>
+                        <th scope="col">Test</th>
+                        <th scope="col">Load</th>
+                        <th scope="col" class="hide-sm">Updated</th>
+                        <th scope="col"><span class="sr-only">Actions</span></th>
                     </tr>
                 </thead>
                 <tbody>
                     @foreach (var plan in _plans)
                     {
                         <tr>
-                            <td><a href="plans/@plan.Id">@plan.Name</a></td>
                             <td>
+                                <a class="row-title" href="plans/@plan.Id">@plan.Name</a>
                                 @foreach (var r in plan.Requests.Take(2))
                                 {
-                                    <div class="small"><span class="method">@r.Method</span> <span class="mono muted">@r.Url</span></div>
+                                    <div class="request-line"><span class="@Format.MethodClass(r.Method)">@r.Method</span><span class="mono muted" title="@r.Url">@r.Url</span></div>
                                 }
                                 @if (plan.Requests.Count > 2)
                                 {
                                     <div class="small muted">+ @(plan.Requests.Count - 2) more</div>
                                 }
                             </td>
-                            <td class="num">@plan.Profile.Concurrency</td>
-                            <td>@Format.StopSummary(plan.Profile)</td>
-                            <td class="muted">@Format.When(plan.UpdatedAt)</td>
+                            <td class="load-cell">
+                                <div>@plan.Profile.Concurrency @(plan.Profile.Concurrency == 1 ? "user" : "users")</div>
+                                <div class="small muted">@Format.StopSummary(plan.Profile)</div>
+                            </td>
+                            <td class="hide-sm muted nowrap">@Format.When(plan.UpdatedAt)</td>
                             <td class="actions">
-                                <button class="btn-sm btn-primary" @onclick="() => Run(plan)">▶ Run</button>
-                                <a class="btn btn-sm" href="plans/@plan.Id">Edit</a>
-                                <button class="btn-sm" @onclick="() => Duplicate(plan)">Duplicate</button>
-                                <a class="btn btn-sm" href="api/plans/@plan.Id/export" download>Export</a>
                                 @if (_confirmDelete == plan.Id)
                                 {
-                                    <button class="btn-sm btn-danger" @onclick="() => Delete(plan)">Confirm delete</button>
-                                    <button class="btn-sm" @onclick="() => _confirmDelete = null">Cancel</button>
+                                    <div class="btn-group" role="group" aria-label="Confirm delete">
+                                        <span class="small muted">Delete this test?</span>
+                                        <button class="btn-sm btn-danger-solid" @onclick="() => Delete(plan)">Delete</button>
+                                        <button class="btn-sm" @onclick="() => _confirmDelete = null">Keep</button>
+                                    </div>
                                 }
                                 else
                                 {
-                                    <button class="btn-sm btn-danger" @onclick="() => _confirmDelete = plan.Id">Delete</button>
+                                    <div class="btn-group">
+                                        <button class="btn-sm btn-primary" @onclick="() => Run(plan)" aria-label="Run @plan.Name"><Icon Name="play" />Run</button>
+                                        <a class="btn btn-sm" href="plans/@plan.Id" aria-label="Edit @plan.Name"><Icon Name="edit" />Edit</a>
+                                        <button class="btn-sm btn-ghost btn-icon" @onclick="() => Duplicate(plan)" title="Duplicate" aria-label="Duplicate @plan.Name"><Icon Name="copy" /></button>
+                                        <a class="btn btn-sm btn-ghost btn-icon" href="api/plans/@plan.Id/export" download title="Export to a file" aria-label="Export @plan.Name"><Icon Name="download" /></a>
+                                        <button class="btn-sm btn-ghost btn-icon btn-danger" @onclick="() => _confirmDelete = plan.Id" title="Delete" aria-label="Delete @plan.Name"><Icon Name="trash" /></button>
+                                    </div>
                                 }
                             </td>
                         </tr>
@@ -108,16 +135,16 @@
                 </tbody>
             </table>
         </div>
-    }
-</div>
+    </section>
+}
 
-<div class="card">
+<section class="card card-flush" aria-labelledby="recent-title">
     <div class="card-header">
-        <h2>Recent runs</h2>
+        <h2 id="recent-title">Recent runs</h2>
         <a href="runs" class="small">All runs →</a>
     </div>
     <RunsTable Limit="10" />
-</div>
+</section>
 
 @code {
     private IReadOnlyList<LoadTestPlan> _plans = [];

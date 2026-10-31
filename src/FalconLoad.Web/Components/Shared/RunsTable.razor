@@ -3,21 +3,23 @@
 
 @if (_runs.Count == 0)
 {
-    <div class="empty">No runs yet. Run a saved test to see results here.</div>
+    <div class="empty">
+        <p>No runs yet. Press <strong>Run</strong> on a saved test and its live results show up here.</p>
+    </div>
 }
 else
 {
     <div class="table-wrap">
-        <table>
+        <table class="table-hover">
             <thead>
                 <tr>
-                    <th>Test</th>
-                    <th>Started</th>
-                    <th>State</th>
-                    <th class="num">Requests</th>
-                    <th class="num">Req/s</th>
-                    <th class="num">p95</th>
-                    <th class="num">Errors</th>
+                    <th scope="col">Test</th>
+                    <th scope="col" class="hide-sm">Started</th>
+                    <th scope="col">State</th>
+                    <th scope="col" class="num hide-sm">Requests</th>
+                    <th scope="col" class="num">Req/s</th>
+                    <th scope="col" class="num">p95</th>
+                    <th scope="col" class="num">Errors</th>
                 </tr>
             </thead>
             <tbody>
@@ -25,10 +27,10 @@ else
                 {
                     var s = run.Snapshot;
                     <tr>
-                        <td><a href="runs/@run.Id">@run.Plan.Name</a></td>
-                        <td class="muted">@Format.When(run.StartedAt)</td>
+                        <td><a class="row-title" href="runs/@run.Id">@run.Plan.Name</a></td>
+                        <td class="muted nowrap hide-sm">@Format.When(run.StartedAt)</td>
                         <td><RunStateBadge State="s.State" /></td>
-                        <td class="num">@s.TotalRequests.ToString("#,0")</td>
+                        <td class="num hide-sm">@s.TotalRequests.ToString("#,0")</td>
                         <td class="num">@Format.Rate(s.RequestsPerSecond)</td>
                         <td class="num">@Format.Ms(s.Latency.P95Ms)</td>
                         <td class="num @(s.FailedRequests > 0 ? "status-err" : "")">@Format.Percent(s.ErrorRate)</td>

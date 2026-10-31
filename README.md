@@ -18,7 +18,7 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 
 ## Features
 
-- **Request editor**: method, URL, headers, body and content type, with a "Send once" button to check the response before you load test.
+- **Request editor**: method, URL, headers, body and content type, with a "Send once" button to check the response before you load test. Problems are shown next to the request or setting they belong to, and the editor warns before you leave with unsaved changes.
 - **Multi-step scenarios**: add several requests; each virtual user runs them in order and loops.
 - **Dynamic values** in URLs, headers and bodies: `{{$guid}}`, `{{$randomInt}}`, `{{$randomInt:1:100}}`, `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$vu}}`, `{{$iteration}}`.
 - **Load profile**: virtual users (concurrency), stop after a duration or a request count, ramp-up, optional requests-per-second cap, per-request timeout, redirect and TLS options.

@@ -1,5 +1,5 @@
 @* The run's progress bar, with the pixel falcon riding its leading edge. It flaps and trails speed lines while the run is active. *@
-<div class="flight @(Flying ? "flying" : "")" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="@Percent">
+<div class="flight @(Flying ? "flying" : "")" role="progressbar" aria-label="Test progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="@Percent">
     <div class="flight-bird" style="left:@Css%;transform:translateX(-@Css%)">
         <img src="@(Flying ? "falcon-flying.svg" : "falcon.svg")" alt="" width="118" height="66" />
     </div>
