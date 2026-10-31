@@ -21,6 +21,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
     private readonly bool _keepsBodies;
     private readonly bool _hasOnceRequests;
     private readonly SecretMasker _masker;
+    private readonly OAuth2TokenSource? _tokens;
     private readonly HttpMessageInvoker _invoker;
     private readonly bool _ownsInvoker;
     private readonly MetricsCollector _metrics;
@@ -46,6 +47,12 @@ public sealed class LoadTestRunner : IAsyncDisposable
     /// secret values are hidden from error messages. The run is recorded against its name, not its values.
     /// </param>
     public LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker = null, TestEnvironment? environment = null)
+        : this(plan, invoker, environment, null)
+    {
+    }
+
+    /// <param name="time">The clock that decides when an OAuth2 token is replaced; tests pass one they can move on.</param>
+    internal LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker, TestEnvironment? environment, TimeProvider? time)
     {
         var problems = plan.ValidateForRun(environment);
         if (problems.Count > 0)
@@ -61,7 +68,8 @@ public sealed class LoadTestRunner : IAsyncDisposable
         _stagedRate = _schedule is not null && _plan.Profile.StageMode == StageMode.RequestRate;
         _slotIterations = new long[_plan.Profile.PeakVirtualUsers];
         var variables = _plan.EnvironmentValues(environment);
-        _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables)).ToArray();
+        var auth = _plan.Auth is { IsEnabled: true };
+        _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables, auth)).ToArray();
 
         // The parameter set holds the rows; the plan that is reported with the results doesn't need them as well.
         _plan.DropDataRows();
@@ -81,6 +89,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         {
             _invoker = invoker;
         }
+
+        // Token requests go through the same handler, so they honour the profile's TLS and redirect options.
+        _tokens = OAuth2TokenSource.For(_plan, environment, _invoker, _masker, time);
     }
 
     public LoadTestPlan Plan => _plan;
@@ -89,14 +100,14 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
     public LoadTestSnapshot GetSnapshot() => ThresholdEvaluator.Apply(
         _plan.Thresholds,
-        _metrics.Snapshot(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason));
+        _metrics.Snapshot(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason) with { Auth = _tokens?.Stats });
 
     /// <summary>A snapshot together with the latency histograms behind it, for an exported result.</summary>
     public (LoadTestSnapshot Snapshot, ResultHistograms Histograms) GetResults()
     {
         var (snapshot, histograms) = _metrics.SnapshotWithHistograms(
             _state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
-        return (ThresholdEvaluator.Apply(_plan.Thresholds, snapshot), histograms);
+        return (ThresholdEvaluator.Apply(_plan.Thresholds, snapshot with { Auth = _tokens?.Stats }), histograms);
     }
 
     /// <summary>Runs the load test to completion. Cancelling <paramref name="cancellationToken"/> stops it early.</summary>
@@ -119,6 +130,25 @@ public sealed class LoadTestRunner : IAsyncDisposable
         _rateIntervalTicks = profile.MaxRequestsPerSecond > 0 && !_stagedRate
             ? Math.Max(1, (long)(Stopwatch.Frequency / profile.MaxRequestsPerSecond))
             : 0;
+
+        // The first token is fetched before the clock starts, so it isn't part of the run's duration or throughput. A test
+        // that can't get one fails at once with the token endpoint's answer, rather than sending requests it knows are unauthenticated.
+        if (_tokens is not null)
+        {
+            try
+            {
+                await _tokens.FetchFirstAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is OAuth2TokenException or OperationCanceledException)
+            {
+                _state = ex is OAuth2TokenException ? RunState.Failed : RunState.Cancelled;
+                _failureReason = ex is OAuth2TokenException ? ex.Message : null;
+                _finalElapsed = TimeSpan.Zero;
+                var ended = GetSnapshot();
+                onProgress?.Invoke(ended);
+                return ended;
+            }
+        }
 
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (staged)
@@ -151,7 +181,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _failureReason = _masker.Apply(ex.Message);
+            _failureReason = Mask(ex.Message);
             _state = RunState.Failed;
         }
         finally
@@ -395,6 +425,22 @@ public sealed class LoadTestRunner : IAsyncDisposable
         var keep = extractor is { NeedsBody: true } || checker.NeedsBody ? kept : null;
         // Checks need the whole body, up to their limit; extraction only reads the start of it.
         keep?.Reset(checker.NeedsBody ? Assertion.MaxBodyBytes : ResponseExtractor.MaxBodyBytes);
+
+        // The token is in hand before the clock starts. It is almost always ready at once; only after it expired or was
+        // rejected does a request wait for the new one, and that wait is the token endpoint's time, not the API's.
+        OAuth2TokenSource.Token? token = null;
+        if (_tokens is not null && prepared.UsesAuth)
+        {
+            try
+            {
+                token = await _tokens.GetAsync(stop).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+        }
+
         var startedAt = _clock.Elapsed;
         var start = Stopwatch.GetTimestamp();
         long bytesSent = 0;
@@ -404,7 +450,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
         try
         {
-            using var request = prepared.Build(context, out bytesSent);
+            using var request = prepared.Build(context, out bytesSent, token?.Header);
             using var response = await _invoker.SendAsync(request, timeout.Token).ConfigureAwait(false);
 
             long received = 0;
@@ -421,6 +467,11 @@ public sealed class LoadTestRunner : IAsyncDisposable
             // The clock stops once the body is read; checks and extraction are not part of the request's latency.
             var latency = Stopwatch.GetElapsedTime(start);
             var code = (int)response.StatusCode;
+            if (code == 401 && token is not null)
+            {
+                _tokens!.Reject(token);
+            }
+
             var statusMatches = prepared.Matcher.IsMatch(code);
             var keptBody = keep?.Memory ?? ReadOnlyMemory<byte>.Empty;
             var failedChecks = checker.Count == 0 ? 0 : checker.Evaluate(response, keptBody, keep?.TooLarge ?? false);
@@ -452,7 +503,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 latency,
                 code,
                 error is null,
-                _masker.Apply(error),
+                Mask(error),
                 bytesSent,
                 received,
                 failedChecks);
@@ -476,8 +527,11 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
 
         RequestResult Failure(string error) =>
-            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, _masker.Apply(error), bytesSent, 0);
+            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, Mask(error), bytesSent, 0);
     }
+
+    /// <summary>Hides secrets, and the OAuth2 tokens of the run, in text that people will see.</summary>
+    private string? Mask(string? text) => text is null ? null : _tokens?.Mask(text) ?? _masker.Apply(text);
 
     private static readonly string TooLargeToCheck =
         $"Response body over {Assertion.MaxBodyBytes / (1024 * 1024)} MB is too large to check";
@@ -495,6 +549,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _tokens?.Dispose();
         if (_ownsInvoker)
         {
             _invoker.Dispose();

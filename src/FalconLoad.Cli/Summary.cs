@@ -16,6 +16,11 @@ internal static class Summary
         text.AppendLine(Invariant($"  Requests      {s.TotalRequests:#,0} ({Rate(s.RequestsPerSecond)}/s), {s.FailedRequests:#,0} failed ({Percent(s.ErrorRate)})"));
         text.AppendLine(Invariant($"  Latency       mean {Ms(s.Latency.MeanMs)}, p50 {Ms(s.Latency.P50Ms)}, p90 {Ms(s.Latency.P90Ms)}, p95 {Ms(s.Latency.P95Ms)}, p99 {Ms(s.Latency.P99Ms)}, max {Ms(s.Latency.MaxMs)}"));
         text.AppendLine(Invariant($"  Data          {Bytes(s.BytesSent)} sent, {Bytes(s.BytesReceived)} received"));
+        if (s.Auth is { } auth)
+        {
+            var failed = auth.FailedFetches == 0 ? string.Empty : Invariant($", {auth.FailedFetches:#,0} token requests failed (last: {auth.LastError})");
+            text.AppendLine(Invariant($"  OAuth2        {auth.TokensFetched:#,0} {(auth.TokensFetched == 1 ? "token" : "tokens")} fetched{failed}"));
+        }
 
         if (s.StatusCodes.Count > 0)
         {

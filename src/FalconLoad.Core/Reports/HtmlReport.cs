@@ -65,6 +65,11 @@ public static class HtmlReport
         {
             yield return $"Machine {E(export.Machine)}";
         }
+
+        if (s.Auth is { } auth)
+        {
+            yield return FormattableString.Invariant($"OAuth2, {auth.TokensFetched:#,0} {(auth.TokensFetched == 1 ? "token" : "tokens")} fetched{(auth.FailedFetches > 0 ? $", {auth.FailedFetches:#,0} token requests failed" : string.Empty)}");
+        }
     }
 
     private static string State(RunState state) => state switch

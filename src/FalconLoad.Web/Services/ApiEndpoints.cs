@@ -271,15 +271,22 @@ public static class ApiEndpoints
                 : Results.Ok(ResultCombiner.Combine(results));
         });
 
-        api.MapPost("/probe", async (RequestDefinition request, bool? ignoreTlsErrors, string? environment, EnvironmentStore environments, CancellationToken ct) =>
+        // ?planId= sends the request with that saved test's auth, such as its OAuth2 token, and its environment by default.
+        api.MapPost("/probe", async (RequestDefinition request, bool? ignoreTlsErrors, string? environment, Guid? planId, EnvironmentStore environments, PlanStore plans, CancellationToken ct) =>
         {
-            if (!environments.TryResolve(environment, out var resolved, out var problem))
+            LoadTestPlan? plan = null;
+            if (planId is { } id && (plan = plans.Get(id)) is null)
+            {
+                return Results.NotFound();
+            }
+
+            if (!environments.TryResolve(environment ?? plan?.Environment, out var resolved, out var problem))
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = [problem!] });
             }
 
-            var profile = new LoadProfile { IgnoreTlsErrors = ignoreTlsErrors ?? false };
-            return Results.Ok(await RequestProbe.SendAsync(request, profile, cancellationToken: ct, environment: resolved));
+            var profile = new LoadProfile { IgnoreTlsErrors = ignoreTlsErrors ?? plan?.Profile.IgnoreTlsErrors ?? false };
+            return Results.Ok(await RequestProbe.SendAsync(request, profile, cancellationToken: ct, environment: resolved, auth: plan?.Auth));
         });
 
         MapAgents(api);

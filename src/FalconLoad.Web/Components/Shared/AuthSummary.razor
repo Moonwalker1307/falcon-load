@@ -1,0 +1,28 @@
+@* What the run's OAuth2 token requests did: how many tokens were fetched, how long they last and the last failure. *@
+@if (Stats is { } a)
+{
+    <div class="auth-summary @(a.FailedFetches > 0 ? "has-failures" : "")" role="note">
+        <Icon Name="lock" />
+        <span>
+            OAuth2: @Fetched(a)@Lifetime(a).
+            @if (a.FailedFetches > 0)
+            {
+                <span class="auth-failures">@(a.FailedFetches == 1 ? "1 token request failed" : $"{a.FailedFetches:#,0} token requests failed")@(a.LastError is null ? "." : ": " + a.LastError)</span>
+            }
+        </span>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public AuthStats? Stats { get; set; }
+
+    private static string Fetched(AuthStats a) => a.TokensFetched switch
+    {
+        0 => "no token yet",
+        1 => "1 token fetched",
+        var n => $"{n:#,0} tokens fetched",
+    };
+
+    private static string Lifetime(AuthStats a) =>
+        a.TokenLifetimeSeconds is { } seconds ? $", each valid for {Format.Seconds((int)Math.Round(seconds))}" : string.Empty;
+}

@@ -142,6 +142,105 @@
             </div>
         </section>
 
+        @{
+            var auth = _plan.Auth;
+            var oauth = auth is { Type: AuthType.OAuth2ClientCredentials };
+            var authProblems = _showProblems && auth is not null ? auth.Validate().ToList() : [];
+        }
+        <section class="card @(authProblems.Count > 0 ? "has-error" : "")" aria-labelledby="auth-title">
+            <div class="card-header">
+                <h2 id="auth-title">Authentication</h2>
+                <div class="segmented" role="group" aria-label="How requests are authenticated">
+                    <button aria-pressed="@(oauth ? "false" : "true")" title="Send requests with the headers you give them" @onclick="() => SetAuthType(AuthType.None)">None</button>
+                    <button aria-pressed="@(oauth ? "true" : "false")" title="Get a token from an OAuth2 server and send it with every request" @onclick="() => SetAuthType(AuthType.OAuth2ClientCredentials)">OAuth2 client credentials</button>
+                </div>
+            </div>
+            @if (!oauth)
+            {
+                <div class="small muted">
+                    For an API that takes OAuth2 tokens, choose <em>OAuth2 client credentials</em>: falcon-load gets a token before the test starts,
+                    sends it with every request and gets a new one before it expires, however long the test runs.
+                </div>
+            }
+            else
+            {
+                @if (authProblems.Count > 0)
+                {
+                    <ul class="field-error">
+                        @foreach (var problem in authProblems)
+                        {
+                            <li>@problem</li>
+                        }
+                    </ul>
+                }
+                <div class="auth-grid">
+                    <div class="field auth-wide">
+                        <label for="auth-url">Token URL</label>
+                        <input id="auth-url" type="text" class="mono" placeholder="https://login.example.com/oauth2/token" spellcheck="false" autocomplete="off" @bind="auth!.TokenUrl" @bind:event="oninput" />
+                    </div>
+                    <div class="field">
+                        <label for="auth-id">Client id</label>
+                        <input id="auth-id" type="text" class="mono" spellcheck="false" autocomplete="off" @bind="auth.ClientId" @bind:event="oninput" />
+                    </div>
+                    <div class="field">
+                        <label for="auth-secret">Client secret</label>
+                        <input id="auth-secret" type="@(TemplateRenderer.HasVariables(auth.ClientSecret) ? "text" : "password")" class="mono" placeholder="{{clientSecret}}" spellcheck="false" autocomplete="off"
+                               @bind="auth.ClientSecret" @bind:event="oninput" />
+                    </div>
+                    <div class="field">
+                        <label for="auth-scope">Scope <span class="optional">(optional)</span></label>
+                        <input id="auth-scope" type="text" class="mono" placeholder="orders.read orders.write" spellcheck="false" autocomplete="off" @bind="auth.Scope" @bind:event="oninput" />
+                    </div>
+                    <div class="field">
+                        <label for="auth-audience">Audience <span class="optional">(optional)</span></label>
+                        <input id="auth-audience" type="text" class="mono" placeholder="https://api.example.com" spellcheck="false" autocomplete="off" @bind="auth.Audience" @bind:event="oninput" />
+                    </div>
+                    <div class="field">
+                        <label for="auth-method">Send the client id and secret</label>
+                        <select id="auth-method" @bind="auth.ClientAuthentication">
+                            <option value="@ClientAuthentication.BasicHeader">In a Basic auth header</option>
+                            <option value="@ClientAuthentication.RequestBody">In the request body</option>
+                        </select>
+                    </div>
+                    <div class="field auth-test">
+                        <button @onclick="GetToken" disabled="@_gettingToken" title="Ask the token endpoint for a token now, without sending any requests">
+                            <Icon Name="send" />@(_gettingToken ? "Asking…" : "Get a token")
+                        </button>
+                    </div>
+                </div>
+                @if (_tokenResult is { } t)
+                {
+                    <div class="auth-result @(t.Success ? "ok" : "bad")" role="status">
+                        <Icon Name="@(t.Success ? "check" : "alert")" />
+                        <span>
+                            @if (t.Success)
+                            {
+                                @($"Got a token in {Format.Ms(t.Latency.TotalMilliseconds)}")@(t.LifetimeSeconds is { } life ? $", valid for {Format.Seconds((int)Math.Round(life))}." : ", with no expiry time; it is replaced when the API rejects it.")
+                            }
+                            else
+                            {
+                                @t.Error
+                            }
+                        </span>
+                    </div>
+                }
+                <div class="hint">
+                    Every request is sent with <code>Authorization: Bearer …</code> and the token, unless it has its own <code>Authorization</code> header.
+                    The token is replaced shortly before it expires, and after the API answers 401. These fields can use the environment's variables.
+                </div>
+                @if (auth.ClientSecret.Trim().Length > 0 && !TemplateRenderer.HasVariables(auth.ClientSecret))
+                {
+                    <div class="hint hint-warn">
+                        <Icon Name="lock" />
+                        <span>
+                            The client secret is typed straight into the test, so it is saved in the test and included when you export it.
+                            Store it as a secret in an <a href="environments">environment</a> and write <code>{{clientSecret}}</code> here instead.
+                        </span>
+                    </div>
+                }
+            }
+        </section>
+
         @for (var i = 0; i < _plan.Requests.Count; i++)
         {
             var index = i;
@@ -253,6 +352,14 @@
                                 </div>
                             }
                             <button class="btn-sm" @onclick="() => request.Headers.Add(new HeaderEntry())"><Icon Name="plus" />Add header</button>
+                            @if (oauth)
+                            {
+                                <div class="hint">
+                                    @(request.Headers.Any(h => h.Enabled && string.Equals(h.Name.Trim(), "Authorization", StringComparison.OrdinalIgnoreCase))
+                                        ? "This request's own Authorization header is sent instead of the OAuth2 token."
+                                        : "The OAuth2 token is added as the Authorization header.")
+                                </div>
+                            }
                             @if (request.Headers.FirstOrDefault(IsPlainCredential) is { } credential)
                             {
                                 <div class="hint hint-warn">
@@ -863,6 +970,8 @@
     private int _agentCount;
     private bool _showProblems;
     private string? _savedMessage;
+    private bool _gettingToken;
+    private TokenProbeResult? _tokenResult;
     private string _baseline = string.Empty;
     private double _peak = 50;
     private List<LoadStage>? _stashedStages;
@@ -894,6 +1003,35 @@
     private static bool IsPlainCredential(HeaderEntry header) =>
         header.Enabled && CredentialHeaders.Contains(header.Name.Trim()) && header.Value.Trim().Length > 0 && !TemplateRenderer.HasVariables(header.Value);
 
+    private void SetAuthType(AuthType type)
+    {
+        if (_plan.Auth is null && type == AuthType.None)
+        {
+            return;
+        }
+
+        // Switching auth off keeps the settings, so switching it back on doesn't lose them.
+        _plan.Auth ??= new AuthSettings { ClientSecret = "{{clientSecret}}" };
+        _plan.Auth.Type = type;
+        _tokenResult = null;
+    }
+
+    private async Task GetToken()
+    {
+        _gettingToken = true;
+        _tokenResult = null;
+        try
+        {
+            _tokenResult = EnvironmentStore.TryResolve(_plan.Environment, out var environment, out var missing)
+                ? await RequestProbe.GetTokenAsync(_plan.Auth!, _plan.Profile, environment)
+                : new TokenProbeResult(false, missing, TimeSpan.Zero, null);
+        }
+        finally
+        {
+            _gettingToken = false;
+        }
+    }
+
     private void SetEnvironment(string? name)
     {
         _plan.Environment = string.IsNullOrWhiteSpace(name) ? null : name;
@@ -915,6 +1053,7 @@
         _environments = [.. EnvironmentStore.GetAll().Select(e => e.Redacted())];
         _probeResults.Clear();
         _probeVariables.Clear();
+        _tokenResult = null;
         _collapsed.Clear();
         if (Id is { } id)
         {
@@ -938,6 +1077,7 @@
         {
             plan.Name,
             plan.Environment,
+            plan.Auth,
             plan.Requests,
             plan.Parameters,
             plan.Profile,
@@ -1209,7 +1349,7 @@
         {
             if (EnvironmentStore.TryResolve(_plan.Environment, out var environment, out var missing))
             {
-                _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables, environment: environment, dataFiles: _plan.DataFiles);
+                _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables, environment: environment, dataFiles: _plan.DataFiles, auth: _plan.Auth);
             }
             else
             {
