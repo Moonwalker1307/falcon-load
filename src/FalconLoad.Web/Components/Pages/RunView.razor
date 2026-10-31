@@ -2,6 +2,7 @@
 @implements IDisposable
 @inject RunManager RunManager
 @inject PlanStore PlanStore
+@inject EnvironmentStore EnvironmentStore
 @inject NavigationManager Nav
 
 <PageTitle>@(_run?.Plan.Name ?? "Run") · falcon-load</PageTitle>
@@ -31,6 +32,10 @@
         </div>
         <div class="meta">
             <span>Started @_run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</span>
+            @if (!string.IsNullOrWhiteSpace(_run.EnvironmentName))
+            {
+                <span>Environment <strong>@_run.EnvironmentName</strong></span>
+            }
             <span>@profile.Concurrency virtual @(profile.Concurrency == 1 ? "user" : "users")</span>
             <span>Stops after @Format.StopSummary(profile)</span>
             @if (profile.RampUpSeconds > 0)
@@ -62,6 +67,11 @@
 
 @* Announce state changes only; the numbers change every second and would be too noisy to read out. *@
 <div class="sr-only" role="status" aria-live="polite">@StateMessage(s)</div>
+
+@if (_startError is not null)
+{
+    <div class="alert alert-error" role="alert"><Icon Name="alert" /><div><strong>Couldn't run it again.</strong> @_startError</div></div>
+}
 
 @if (s.FailureReason is not null)
 {
@@ -219,6 +229,7 @@
 @code {
     private LoadTestRun? _run;
     private bool _planSaved;
+    private string? _startError;
 
     [Parameter] public Guid Id { get; set; }
 
@@ -308,10 +319,24 @@
             return;
         }
 
-        // Prefer the latest saved version of the test, if it still exists.
+        // Prefer the latest saved version of the test, if it still exists, and the environment this run used.
+        _startError = null;
         var plan = PlanStore.Get(_run.Plan.Id) ?? _run.Plan;
-        var next = RunManager.Start(plan);
-        Nav.NavigateTo($"runs/{next.Id}");
+        if (!EnvironmentStore.TryResolve(_run.EnvironmentName, out var environment, out var missing))
+        {
+            _startError = missing;
+            return;
+        }
+
+        try
+        {
+            var next = RunManager.Start(plan, environment);
+            Nav.NavigateTo($"runs/{next.Id}");
+        }
+        catch (ArgumentException ex)
+        {
+            _startError = ex.Message;
+        }
     }
 
     public void Dispose()
