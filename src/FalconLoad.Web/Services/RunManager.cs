@@ -26,7 +26,11 @@ public sealed class LoadTestRun
     /// <summary>The name of the environment the run used, if any. Its values are not kept with the run.</summary>
     public string? EnvironmentName => Plan.Environment;
 
-    public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
+    /// <summary>When the virtual users started. A run that waits for a shared start time is stamped when the wait ends.</summary>
+    public DateTimeOffset StartedAt { get; private set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>The controller that asked this agent to run its share of a test, or null for a run started here.</summary>
+    public string? Controller { get; init; }
 
     public LoadTestSnapshot Snapshot { get; private set; }
 
@@ -36,6 +40,8 @@ public sealed class LoadTestRun
     internal CancellationToken CancellationToken => _cancel.Token;
 
     public void Stop() => _cancel.Cancel();
+
+    internal void MarkStarted() => StartedAt = DateTimeOffset.UtcNow;
 
     /// <summary>
     /// The run as an exportable result, with the latency histograms that let it be combined with runs from other
@@ -58,10 +64,19 @@ public sealed class LoadTestRun
     }
 
     /// <summary>Keeps the final results' compact histograms and lets go of the runner and its metrics.</summary>
-    internal void Finish(LoadTestRunner runner)
+    /// <param name="state">The state to report when the runner never ran, e.g. a run stopped while waiting to start.</param>
+    internal void Finish(LoadTestRunner runner, RunState? state = null)
     {
-        _final = runner.GetResults();
+        var (snapshot, histograms) = runner.GetResults();
+        if (state is { } s && snapshot.State != s)
+        {
+            snapshot = snapshot with { State = s };
+        }
+
+        _final = (snapshot, histograms);
         _runner = null;
+        Snapshot = snapshot;
+        Updated?.Invoke(this);
     }
 
     internal void Publish(LoadTestSnapshot snapshot)
@@ -85,14 +100,19 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
 
     public LoadTestRun? Get(Guid id) => _runs.GetValueOrDefault(id);
 
+    /// <summary>How far ahead a controller may schedule a start; later than this is most likely a clock that is off.</summary>
+    public static readonly TimeSpan MaxStartDelay = TimeSpan.FromMinutes(1);
+
     /// <summary>
     /// Validates and starts <paramref name="plan"/> with the variables of <paramref name="environment"/>, if any.
     /// Throws <see cref="ArgumentException"/> if it is invalid.
     /// </summary>
-    public LoadTestRun Start(LoadTestPlan plan, TestEnvironment? environment = null)
+    /// <param name="startAt">Waits until this time before sending anything, so agents of a distributed test start together.</param>
+    /// <param name="controller">The controller that asked for the run, when it is a share of a distributed test.</param>
+    public LoadTestRun Start(LoadTestPlan plan, TestEnvironment? environment = null, DateTimeOffset? startAt = null, string? controller = null)
     {
         var runner = new LoadTestRunner(plan, environment: environment);
-        var run = new LoadTestRun(runner);
+        var run = new LoadTestRun(runner) { Controller = controller };
         _runs[run.Id] = run;
         Trim();
 
@@ -102,12 +122,24 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
             {
                 try
                 {
+                    var wait = startAt is { } at ? at - DateTimeOffset.UtcNow : TimeSpan.Zero;
+                    if (wait > TimeSpan.Zero)
+                    {
+                        await Task.Delay(wait > MaxStartDelay ? MaxStartDelay : wait, run.CancellationToken);
+                    }
+
+                    run.MarkStarted();
                     logger.LogInformation("Starting load test {RunId} '{Name}' (environment: {Environment})", run.Id, plan.Name, environment?.Name ?? "none");
                     var final = await runner.RunAsync(run.Publish, TimeSpan.FromMilliseconds(500), run.CancellationToken);
                     run.Finish(runner);
                     logger.LogInformation(
                         "Load test {RunId} {State}: {Requests} requests, {Rps:F1} req/s, {Errors} errors",
                         run.Id, final.State, final.TotalRequests, final.RequestsPerSecond, final.FailedRequests);
+                }
+                catch (OperationCanceledException) when (run.CancellationToken.IsCancellationRequested)
+                {
+                    // Stopped while waiting for the shared start time: nothing was sent.
+                    run.Finish(runner, RunState.Cancelled);
                 }
                 catch (Exception ex)
                 {

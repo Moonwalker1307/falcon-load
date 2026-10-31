@@ -42,6 +42,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Export and import tests** to share them between machines: "Export" on a test (or "Export all" on the dashboard) downloads a JSON file, and "Import…" on another machine loads it. Imported tests get new ids, so an import never overwrites a saved test, and a file is only imported when every test in it is valid. The file includes any header you typed in directly, such as `Authorization: Bearer abc`, so treat it like the tokens in it, or keep the token in an environment as a secret and write `{{token}}` in the header, which exports as `{{token}}`. The editor warns when a header like `Authorization` holds a plain value.
 - **Import requests** from a pasted curl command, a Postman collection (v2.0/v2.1) or an OpenAPI 3 spec (JSON or YAML) on the Import page, then create a new test or add them to an existing one. See [Importing requests](#importing-requests).
 - **Combine results from several machines**: when one machine can't generate enough load, run the same test on several machines at the same time, export each run, and add the files on the Combine page. It shows the combined throughput, error rate, latency percentiles, status codes and errors, with a per-machine breakdown and a throughput line per machine.
+- **Agents**: or let one falcon-load drive the others. Register the other machines on the Agents page, and a test started with "Run on agents" is split between them by weight, started on all of them at the same moment, shown live with their results merged, and stopped on all of them with one button. See [Run a test from several machines](#run-a-test-from-several-machines-agents).
 - **Command line runner** that runs exported tests in CI, prints a summary, writes the results as JSON and fails the build when too many requests fail.
 - **Docker images** for the web app and the command line runner.
 - **JSON API** for scripting and CI.
@@ -120,6 +121,22 @@ The `--user` option lets the container write the results file into your folder. 
 | `POST` | `/api/runs/{id}/stop` | Stop a running test |
 | `POST` | `/api/results/combine` | Combine an array of exported results from several machines |
 | `POST` | `/api/probe` | Send a single request and return the response, with what its extraction rules found. Takes `?environment=Name` |
+| `POST` | `/api/probe` | Send a single request and return the response |
+| `GET` | `/api/agents` | List registered agents with their last check (tokens are never returned) |
+| `POST` | `/api/agents` | Register or update an agent (`name`, `url`, `token`, `enabled`, `weight`); an update without a token keeps the saved one |
+| `DELETE` | `/api/agents/{id}` | Remove an agent |
+| `POST` | `/api/agents/check`, `/api/agents/{id}/check` | Contact every agent, or one, and report reachability, version and clock offset |
+| `POST` | `/api/distributed/runs` | Start a test on the agents: `{ "planId": … }` or `{ "plan": … }`, optionally `"agentIds": […]` |
+| `GET` | `/api/distributed/runs` | List distributed runs |
+| `GET` | `/api/distributed/runs/{id}` | Live or final merged results, with each agent's state |
+| `GET` | `/api/distributed/runs/{id}/export` | The merged results plus every agent's export, as a JSON download |
+| `POST` | `/api/distributed/runs/{id}/stop` | Stop the test on every agent |
+| `GET` | `/api/agent` | *Agent mode.* What this machine says about itself to a controller, including its clock |
+| `POST` | `/api/agent/runs` | *Agent mode.* Start a share of a test (`plan`, optional `startAt`, `controller`) |
+| `GET` | `/api/agent/runs/{id}` | *Agent mode.* The share's results with histograms, for merging |
+| `POST` | `/api/agent/runs/{id}/stop` | *Agent mode.* Stop the share |
+
+The agent-mode endpoints only work when `FalconLoad:AgentToken` is set, and every call needs `Authorization: Bearer <that token>`; see below.
 
 Example:
 
@@ -183,6 +200,25 @@ An environment is a named set of variables, kept on the **Environments** page. A
 - **Secrets are write-only.** After saving, a secret's value is not shown again in the app or returned by the API (it comes back as `null`, meaning "set but hidden"); type a new value to replace it, or send `null` to keep it. The engine replaces secret values with `******` in the errors of a run and in the response a "Send once" shows, in case a server echoes a token back. Values shorter than three characters are not searched for, since they would garble ordinary text.
 - **Exports never contain secrets.** The environments file lists the secret's name with no value, so whoever imports it fills the secrets in. A run's export holds the environment's name, not its variables, and a test that uses `{{token}}` exports `{{token}}`. The Combine page warns when the runs used different environments.
 - **Where they are stored.** Environments are saved to `environments.json` next to `plans.json`, in plain text like the headers of saved tests, and on Unix only your user can read the file. Don't commit it or copy it between machines; use an export for that.
+## Run a test from several machines (agents)
+
+When one machine can't send enough load, falcon-load can run a test from several machines at once and show the result as one. One falcon-load is the controller: the one whose UI you use. The others are agents: ordinary falcon-loads started with agent mode on.
+
+1. **Start an agent** on each extra machine, with a token and an address the controller can reach. By default falcon-load listens on localhost only, so give it the machine's address or all interfaces:
+
+   ```bash
+   FalconLoad__AgentToken=<a long random token> dotnet run --project src/FalconLoad.Web --urls http://0.0.0.0:5299
+   ```
+
+   Agent mode is off until a token is set, and every request from a controller must carry it as a bearer token (`FalconLoad:AgentToken` in `appsettings.json` works too). Use the plain `http://` address or a certificate the controller trusts, and only do this on a private network: anyone with the token can send load from that machine. The agent's own UI still works, and the shares it runs show up on its Runs page, marked with the controller's name.
+
+   A test that uses an environment runs with the controller's environment: its variables, secrets included, are sent to the agents along with their shares, so the agents need no environments of their own. The agents keep only the environment's name with the run.
+
+2. **Register the agents** on the controller's Agents page: a name, the URL and the token. "Check" contacts the agent and shows its machine name, version, how many tests it is running and how far its clock is from the controller's. Agents are saved in `App_Data/agents.json` next to the saved tests, tokens included, so treat the file like a saved test with an `Authorization` header. Give a bigger machine a higher weight to send it a bigger share.
+
+3. **Run a test on the agents** with "Save & run on agents" in the editor, the "Agents" button next to a saved test, or the Agents page. The controller splits the test by weight: the virtual users, the request count and the rate cap are divided between the enabled agents (every agent used gets at least one virtual user, and a test never uses more agents than it has virtual users), while the duration, ramp-up and timeout apply on each agent as they are. `{{$vu}}` keeps numbering virtual users on from one agent to the next, so every virtual user in the whole test has its own number. A parameter list handed out in order is dealt round-robin to the agents, so no two agents use the same value at the same time and every value is still used once per pass; random and very short lists are sent whole.
+
+The controller first contacts every agent and measures its clock against its own, then tells all of them to start at the same moment a couple of seconds ahead, each on its own clock, so the agents start together even when their clocks differ. If an agent can't be reached or refuses its share, nothing starts, or the agents that did start are stopped again, because part of the load would say little. While the test runs, the controller fetches every agent's results once a second and merges them exactly as the Combine page does, with the histograms, so the live percentiles are those of one test. The run page shows each agent's share and state, the merged numbers and charts with a throughput line per agent, and warnings about clocks that are off by a second or more. "Stop on all agents" stops every share, and the controller waits for their final results. An agent that stops answering is given up on after twenty seconds; its results up to then stay in the total, and the run is reported as failed with the reason. The export of a distributed run holds the merged results and every agent's own export, so the agents' runs can be combined again on the Combine page later. Distributed runs live in memory like other runs and disappear on restart.
 
 ## Project layout
 

@@ -53,6 +53,14 @@ public static class Format
             : at.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
     }
 
+    /// <summary>A clock offset such as "+12 ms" or "-1.3 s"; the sign says whether the other clock is ahead.</summary>
+    public static string SignedMs(TimeSpan t)
+    {
+        var sign = t < TimeSpan.Zero ? "-" : "+";
+        var ms = Math.Abs(t.TotalMilliseconds);
+        return ms < 1000 ? $"{sign}{ms:0} ms" : $"{sign}{ms / 1000:0.0} s";
+    }
+
     public static string StateBadge(RunState state) => "badge badge-" + state.ToString().ToLowerInvariant();
 
     public static string MethodClass(string method) => "method method-" + method.ToLowerInvariant();

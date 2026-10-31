@@ -35,6 +35,12 @@ public sealed class LoadProfile
 
     public bool FollowRedirects { get; set; } = true;
 
+    /// <summary>
+    /// Added to the virtual user numbers that <c>{{$vu}}</c> reports. A controller sets it on each agent's share of a
+    /// distributed test, so every virtual user across all agents has its own number. 0 for a test on one machine.
+    /// </summary>
+    public int VirtualUserOffset { get; set; }
+
     public IEnumerable<string> Validate()
     {
         if (Concurrency is < 1 or > 10_000)
@@ -65,6 +71,11 @@ public sealed class LoadProfile
         if (MaxRequestsPerSecond < 0)
         {
             yield return "Max requests per second cannot be negative.";
+        }
+
+        if (VirtualUserOffset < 0)
+        {
+            yield return "The virtual user offset cannot be negative.";
         }
     }
 }

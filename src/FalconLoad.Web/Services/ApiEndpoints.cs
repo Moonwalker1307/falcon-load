@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using FalconLoad.Core.Distributed;
 using FalconLoad.Core.Engine;
 using FalconLoad.Core.Import;
 using FalconLoad.Core.Metrics;
@@ -205,7 +206,166 @@ public static class ApiEndpoints
             var profile = new LoadProfile { IgnoreTlsErrors = ignoreTlsErrors ?? false };
             return Results.Ok(await RequestProbe.SendAsync(request, profile, cancellationToken: ct, environment: resolved));
         });
+
+        MapAgents(api);
+        MapDistributedRuns(api);
     }
+
+    /// <summary>The agents this controller runs tests on. Tokens are never returned; an update without a token keeps the saved one.</summary>
+    private static void MapAgents(RouteGroupBuilder api)
+    {
+        api.MapGet("/agents", (AgentRegistry agents) => agents.GetAll().Select(a => Summarize(a, agents.GetStatus(a.Id))));
+
+        api.MapGet("/agents/{id:guid}", (Guid id, AgentRegistry agents) =>
+            agents.Get(id) is { } agent ? Results.Ok(Summarize(agent, agents.GetStatus(id))) : Results.NotFound());
+
+        api.MapPost("/agents", (AgentDefinition agent, AgentRegistry agents) =>
+        {
+            if (string.IsNullOrWhiteSpace(agent.Token) && agents.Get(agent.Id) is { } existing)
+            {
+                agent.Token = existing.Token;
+            }
+
+            var problems = agent.Validate().ToList();
+            if (problems.Count > 0)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["agent"] = [.. problems] });
+            }
+
+            var saved = agents.Save(agent);
+            return Results.Created($"/api/agents/{saved.Id}", Summarize(saved, null));
+        });
+
+        api.MapDelete("/agents/{id:guid}", (Guid id, AgentRegistry agents) =>
+            agents.Delete(id) ? Results.NoContent() : Results.NotFound());
+
+        api.MapPost("/agents/check", async (AgentRegistry agents, CancellationToken ct) =>
+        {
+            await agents.CheckAllAsync(ct);
+            return agents.GetAll().Select(a => Summarize(a, agents.GetStatus(a.Id)));
+        });
+
+        api.MapPost("/agents/{id:guid}/check", async (Guid id, AgentRegistry agents, CancellationToken ct) =>
+        {
+            if (agents.Get(id) is not { } agent)
+            {
+                return Results.NotFound();
+            }
+
+            var status = await agents.CheckAsync(agent, ct);
+            return Results.Ok(Summarize(agent, status));
+        });
+    }
+
+    private static void MapDistributedRuns(RouteGroupBuilder api)
+    {
+        // Start a saved test (by id) or an ad-hoc one (in the body) on every enabled agent, or on the agents given.
+        api.MapPost("/distributed/runs", (DistributedStartRequest request, PlanStore store, AgentRegistry agents, EnvironmentStore environments, DistributedRunManager runs) =>
+        {
+            var plan = request.Plan ?? (request.PlanId is { } planId ? store.Get(planId) : null);
+            if (plan is null)
+            {
+                return request.PlanId is null
+                    ? Results.ValidationProblem(new Dictionary<string, string[]> { ["plan"] = ["Give a plan or the id of a saved test."] })
+                    : Results.NotFound();
+            }
+
+            if (!environments.TryResolve(string.IsNullOrWhiteSpace(request.Environment) ? plan.Environment : request.Environment, out var environment, out var missing))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = [missing!] });
+            }
+
+            var problems = plan.ValidateForRun(environment);
+            if (problems.Count > 0)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["plan"] = [.. problems] });
+            }
+
+            IReadOnlyList<AgentDefinition>? selected = null;
+            if (request.AgentIds is { Count: > 0 } ids)
+            {
+                selected = ids.Select(agents.Get).OfType<AgentDefinition>().ToList();
+                if (selected.Count != ids.Count)
+                {
+                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["agentIds"] = ["Not every agent id is registered."] });
+                }
+            }
+
+            try
+            {
+                var run = runs.Start(plan, environment, selected);
+                return Results.Accepted($"/api/distributed/runs/{run.Id}", Summarize(run));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["agents"] = [ex.Message] });
+            }
+        });
+
+        api.MapGet("/distributed/runs", (DistributedRunManager runs) => runs.GetAll().Select(Summarize));
+
+        api.MapGet("/distributed/runs/{id:guid}", (Guid id, DistributedRunManager runs) =>
+            runs.Get(id) is { } run ? Results.Ok(new { run.Id, run.StartedAt, run.Plan, run.Snapshot }) : Results.NotFound());
+
+        api.MapGet("/distributed/runs/{id:guid}/export", (Guid id, DistributedRunManager runs) =>
+            runs.Get(id) is { } run
+                ? Results.Json(run.ToExport(), PlanStore.JsonOptions, statusCode: 200)
+                    .WithDownloadName($"falcon-load-{Slug(run.Plan.Name)}-agents-{run.StartedAt:yyyyMMdd-HHmmss}.json")
+                : Results.NotFound());
+
+        api.MapPost("/distributed/runs/{id:guid}/stop", (Guid id, DistributedRunManager runs) =>
+        {
+            if (runs.Get(id) is not { } run)
+            {
+                return Results.NotFound();
+            }
+
+            run.Stop();
+            return Results.Accepted($"/api/distributed/runs/{id}");
+        });
+    }
+
+    /// <param name="Plan">An ad-hoc test; or give <paramref name="PlanId"/> for a saved one.</param>
+    /// <param name="AgentIds">The agents to use. Empty means every enabled agent.</param>
+    /// <param name="Environment">The environment to run with; defaults to the test's own.</param>
+    public sealed record DistributedStartRequest(LoadTestPlan? Plan, Guid? PlanId, List<Guid>? AgentIds, string? Environment);
+
+    private static object Summarize(AgentDefinition agent, AgentStatus? status) => new
+    {
+        agent.Id,
+        agent.Name,
+        agent.Url,
+        agent.Enabled,
+        agent.Weight,
+        HasToken = !string.IsNullOrEmpty(agent.Token),
+        Status = status is null ? null : new
+        {
+            status.IsReachable,
+            status.Error,
+            status.CheckedAt,
+            Machine = status.Probe?.Info.Machine,
+            Version = status.Probe?.Info.Version,
+            RunningRuns = status.Probe?.Info.RunningRuns,
+            RoundTripMs = status.Probe?.RoundTrip.TotalMilliseconds,
+            ClockOffsetMs = status.Probe?.ClockOffset.TotalMilliseconds,
+        },
+    };
+
+    private static object Summarize(DistributedRun run) => new
+    {
+        run.Id,
+        PlanId = run.Plan.Id,
+        PlanName = run.Plan.Name,
+        run.StartedAt,
+        run.EnvironmentName,
+        Agents = run.AgentNames,
+        run.Snapshot.State,
+        run.Snapshot.Elapsed,
+        run.Snapshot.Results.TotalRequests,
+        run.Snapshot.Results.FailedRequests,
+        run.Snapshot.Results.RequestsPerSecond,
+        P95LatencyMs = run.Snapshot.Results.Latency.P95Ms,
+    };
 
     private static IResult StartRun(LoadTestPlan plan, string? environmentName, EnvironmentStore environments, RunManager runs)
     {
