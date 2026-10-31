@@ -44,7 +44,7 @@ public static class ApiEndpoints
 
         api.MapGet("/runs/{id:guid}/export", (Guid id, RunManager runs) =>
             runs.Get(id) is { } run
-                ? Results.Json(Detail(run), PlanStore.JsonOptions, statusCode: 200)
+                ? Results.Json(run.ToExport(), PlanStore.JsonOptions, statusCode: 200)
                     .WithDownloadName($"falcon-load-{Slug(run.Plan.Name)}-{run.StartedAt:yyyyMMdd-HHmmss}.json")
                 : Results.NotFound());
 
@@ -57,6 +57,15 @@ public static class ApiEndpoints
 
             run.Stop();
             return Results.Accepted($"/api/runs/{id}");
+        });
+
+        // Combine results exported from several machines into one view.
+        api.MapPost("/results/combine", (RunExport[] results) =>
+        {
+            var problems = ResultCombiner.Validate(results);
+            return problems.Count > 0
+                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["results"] = [.. problems] })
+                : Results.Ok(ResultCombiner.Combine(results));
         });
 
         api.MapPost("/probe", async (RequestDefinition request, bool? ignoreTlsErrors, CancellationToken ct) =>

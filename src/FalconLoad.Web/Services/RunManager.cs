@@ -9,11 +9,14 @@ namespace FalconLoad.Web.Services;
 public sealed class LoadTestRun
 {
     private readonly CancellationTokenSource _cancel = new();
+    private LoadTestRunner? _runner;
+    private (LoadTestSnapshot Snapshot, ResultHistograms Histograms)? _final;
 
-    internal LoadTestRun(LoadTestPlan plan, LoadTestSnapshot initial)
+    internal LoadTestRun(LoadTestRunner runner)
     {
-        Plan = plan;
-        Snapshot = initial;
+        _runner = runner;
+        Plan = runner.Plan;
+        Snapshot = runner.GetSnapshot();
     }
 
     public Guid Id { get; } = Guid.NewGuid();
@@ -30,6 +33,33 @@ public sealed class LoadTestRun
     internal CancellationToken CancellationToken => _cancel.Token;
 
     public void Stop() => _cancel.Cancel();
+
+    /// <summary>
+    /// The run as an exportable result, with the latency histograms that let it be combined with runs from other
+    /// machines. A finished run keeps only its compact histograms, not the runner.
+    /// </summary>
+    public RunExport ToExport()
+    {
+        // A finished run keeps its final results and their histograms; a live one is read from the runner in one go
+        // so the two agree.
+        var (snapshot, histograms) = _final is { } final ? final : _runner?.GetResults() ?? _final!.Value;
+        return new RunExport
+        {
+            Id = Id,
+            StartedAt = StartedAt,
+            Machine = Environment.MachineName,
+            Plan = Plan,
+            Results = snapshot,
+            Histograms = histograms,
+        };
+    }
+
+    /// <summary>Keeps the final results' compact histograms and lets go of the runner and its metrics.</summary>
+    internal void Finish(LoadTestRunner runner)
+    {
+        _final = runner.GetResults();
+        _runner = null;
+    }
 
     internal void Publish(LoadTestSnapshot snapshot)
     {
@@ -56,7 +86,7 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
     public LoadTestRun Start(LoadTestPlan plan)
     {
         var runner = new LoadTestRunner(plan);
-        var run = new LoadTestRun(runner.Plan, runner.GetSnapshot());
+        var run = new LoadTestRun(runner);
         _runs[run.Id] = run;
         Trim();
 
@@ -68,6 +98,7 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
                 {
                     logger.LogInformation("Starting load test {RunId} '{Name}'", run.Id, plan.Name);
                     var final = await runner.RunAsync(run.Publish, TimeSpan.FromMilliseconds(500), run.CancellationToken);
+                    run.Finish(runner);
                     logger.LogInformation(
                         "Load test {RunId} {State}: {Requests} requests, {Rps:F1} req/s, {Errors} errors",
                         run.Id, final.State, final.TotalRequests, final.RequestsPerSecond, final.FailedRequests);

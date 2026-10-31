@@ -23,6 +23,7 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 - **Success criteria**: expected status codes per request (e.g. `200,201` or `200-299,404`); defaults to any 2xx/3xx.
 - **Live results**: requests, throughput, error rate, latency (mean, p50, p90, p95, p99, max), per-second throughput and latency charts, per-request breakdown, status code and error tables.
 - **Saved tests** persisted to `App_Data/plans.json` (change with the `FalconLoad:DataDirectory` setting). The last 50 runs are kept in memory and can be exported as JSON.
+- **Combine results from several machines**: when one machine can't generate enough load, run the same test on several machines at the same time, export each run, and add the files on the Combine page. It shows the combined throughput, error rate, latency percentiles, status codes and errors, with a per-machine breakdown and a throughput line per machine.
 - **JSON API** for scripting and CI.
 
 ## JSON API
@@ -36,8 +37,9 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 | `POST` | `/api/runs` | Start an ad-hoc test (plan in the body, not saved) |
 | `GET` | `/api/runs` | List recent runs |
 | `GET` | `/api/runs/{id}` | Live or final results |
-| `GET` | `/api/runs/{id}/export` | Results as a JSON download |
+| `GET` | `/api/runs/{id}/export` | Results as a JSON download, with the latency histograms needed to combine them |
 | `POST` | `/api/runs/{id}/stop` | Stop a running test |
+| `POST` | `/api/results/combine` | Combine an array of exported results from several machines |
 | `POST` | `/api/probe` | Send a single request and return the response |
 
 Example:
@@ -64,6 +66,8 @@ tests/FalconLoad.Core.Tests  xUnit tests for the engine and metrics
 ```
 
 How the engine works: each virtual user is a task that loops over the plan's requests through a shared `SocketsHttpHandler`. A request is timed until its full response body has been read. Latencies go into a fixed-size log-linear histogram (about 1% precision), so percentiles stay cheap and memory stays flat however long a test runs. Requests still in flight when a test stops are discarded rather than counted as errors.
+
+How combining works: an export holds the run's summary plus its latency histograms (overall, per request and per second), along with the machine's name. Counts are added up, and the histograms are merged bucket by bucket, so the combined percentiles are exactly what one machine would have measured had it sent every request. Each machine's per-second timeline is placed by its start time, so keep the machines' clocks in sync (NTP is enough). Throughput is averaged from the first machine's start to the last one's end; the page warns when runs didn't overlap, because that average then understates the load. Files exported before this feature have no histograms and can't be combined; export the run again if it is still in memory.
 
 ## Development
 

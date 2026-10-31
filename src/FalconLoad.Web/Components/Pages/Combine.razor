@@ -1,0 +1,437 @@
+@page "/combine"
+@implements IDisposable
+@using System.Text.Json
+@inject RunManager RunManager
+
+<PageTitle>Combine results · falcon-load</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Combine results</h1>
+        <div class="muted">
+            When one machine can't create enough load, run the same test on several machines at the same time, export
+            each run with <strong>Export JSON</strong>, and add the files here for the full picture.
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>Results</h2>
+        <div class="combine-add">
+            <label class="btn btn-primary">
+                Add exported files…
+                <InputFile OnChange="AddFilesAsync" multiple accept=".json,application/json" class="visually-hidden" />
+            </label>
+            @if (_localRuns.Count > 0)
+            {
+                <select @bind="_localRunId" aria-label="A run from this machine">
+                    <option value="">A run from this machine…</option>
+                    @foreach (var run in _localRuns)
+                    {
+                        <option value="@run.Id">@run.Plan.Name · @run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</option>
+                    }
+                </select>
+                <button class="btn" disabled="@(_localRunId == "")" @onclick="AddLocalRun">Add</button>
+            }
+        </div>
+    </div>
+
+    @foreach (var problem in _problems)
+    {
+        <div class="alert alert-error">@problem</div>
+    }
+
+    @if (_loading)
+    {
+        <div class="muted">Reading files…</div>
+    }
+    else if (_sources.Count == 0)
+    {
+        <div class="empty">
+            No results yet. Exported files stay in this page only; nothing is uploaded or saved.
+        </div>
+    }
+
+    @if (_result is { } result)
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Machine</th>
+                        <th>Test</th>
+                        <th>Started</th>
+                        <th class="num">Users</th>
+                        <th class="num">Requests</th>
+                        <th class="num">Req/s</th>
+                        <th class="num">Errors</th>
+                        <th class="num">p50</th>
+                        <th class="num">p95</th>
+                        <th class="num">p99</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @for (var i = 0; i < result.Machines.Count; i++)
+                    {
+                        var index = i;
+                        var machine = result.Machines[i];
+                        var m = machine.Results;
+                        <tr>
+                            <td>
+                                <span class="swatch" style="background:@MachineColor(i)"></span>@machine.Name
+                                <div class="small muted">@_sources[i].Origin</div>
+                            </td>
+                            <td>@machine.PlanName <RunStateBadge State="m.State" /></td>
+                            <td class="muted">
+                                @machine.StartedAt.ToLocalTime().ToString("HH:mm:ss")
+                                @if (machine.OffsetSeconds > 0)
+                                {
+                                    <span> (+@(machine.OffsetSeconds)s)</span>
+                                }
+                            </td>
+                            <td class="num">@machine.Concurrency</td>
+                            <td class="num">@m.TotalRequests.ToString("#,0")</td>
+                            <td class="num">@Format.Rate(m.RequestsPerSecond)</td>
+                            <td class="num @(m.FailedRequests > 0 ? "status-err" : "")">@Format.Percent(m.ErrorRate)</td>
+                            <td class="num">@Format.Ms(m.Latency.P50Ms)</td>
+                            <td class="num">@Format.Ms(m.Latency.P95Ms)</td>
+                            <td class="num">@Format.Ms(m.Latency.P99Ms)</td>
+                            <td class="actions"><button class="btn btn-sm btn-icon" title="Remove" aria-label="Remove @machine.Name" @onclick="() => Remove(index)">✕</button></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@if (_result is { } r)
+{
+    var s = r.Combined;
+    var users = r.Machines.Sum(m => m.Concurrency);
+
+    <h2 class="section-title">Combined <RunStateBadge State="s.State" /></h2>
+
+    @foreach (var warning in r.Warnings)
+    {
+        <div class="alert alert-info">@warning</div>
+    }
+
+    @if (s.FailureReason is not null)
+    {
+        <div class="alert alert-error">A run failed. @s.FailureReason</div>
+    }
+
+    <div class="stats">
+        <div class="stat">
+            <div class="label">Requests</div>
+            <div class="value">@Format.Number(s.TotalRequests)</div>
+            <div class="sub">in @Format.Duration(s.Elapsed)</div>
+        </div>
+        <div class="stat">
+            <div class="label">Throughput</div>
+            <div class="value">@Format.Rate(s.RequestsPerSecond)<span class="small muted"> req/s</span></div>
+            <div class="sub">peak @Format.Rate(s.Timeline.Select(t => (double)t.Requests).DefaultIfEmpty(0).Max()) req/s</div>
+        </div>
+        <div class="stat @(s.FailedRequests > 0 ? "bad" : "")">
+            <div class="label">Errors</div>
+            <div class="value">@Format.Percent(s.ErrorRate)</div>
+            <div class="sub">@s.FailedRequests.ToString("#,0") failed</div>
+        </div>
+        <div class="stat">
+            <div class="label">Median</div>
+            <div class="value">@Format.Ms(s.Latency.P50Ms)</div>
+            <div class="sub">mean @Format.Ms(s.Latency.MeanMs)</div>
+        </div>
+        <div class="stat">
+            <div class="label">p95</div>
+            <div class="value">@Format.Ms(s.Latency.P95Ms)</div>
+            <div class="sub">p90 @Format.Ms(s.Latency.P90Ms)</div>
+        </div>
+        <div class="stat">
+            <div class="label">p99</div>
+            <div class="value">@Format.Ms(s.Latency.P99Ms)</div>
+            <div class="sub">max @Format.Ms(s.Latency.MaxMs)</div>
+        </div>
+        <div class="stat">
+            <div class="label">Machines</div>
+            <div class="value">@r.Machines.Count</div>
+            <div class="sub">@users virtual users in all</div>
+        </div>
+        <div class="stat">
+            <div class="label">Data received</div>
+            <div class="value">@Format.Bytes(s.BytesReceived)</div>
+            <div class="sub">sent @Format.Bytes(s.BytesSent)</div>
+        </div>
+    </div>
+
+    <div class="grid-2">
+        <div class="card">
+            <h2>Throughput <span class="muted small">(requests per second)</span></h2>
+            <LineChart AriaLabel="Combined and per-machine requests per second over time" Series="ThroughputSeries(r)" />
+        </div>
+        <div class="card">
+            <h2>Latency</h2>
+            <LineChart AriaLabel="Combined latency over time" FormatValue="Format.Ms" Series="LatencySeries(s)" />
+        </div>
+    </div>
+
+    <div class="stack">
+        <div class="card">
+            <h2>Requests</h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Request</th>
+                            <th class="num">Count</th>
+                            <th class="num">Errors</th>
+                            <th class="num">Mean</th>
+                            <th class="num">p50</th>
+                            <th class="num">p95</th>
+                            <th class="num">p99</th>
+                            <th class="num">Max</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var step in s.Steps)
+                        {
+                            <tr>
+                                <td><span class="step-num">@(step.StepIndex + 1)</span></td>
+                                <td class="mono small">@step.Name</td>
+                                <td class="num">@step.Requests.ToString("#,0")</td>
+                                <td class="num @(step.Failures > 0 ? "status-err" : "")">@step.Failures.ToString("#,0")</td>
+                                <td class="num">@Format.Ms(step.Latency.MeanMs)</td>
+                                <td class="num">@Format.Ms(step.Latency.P50Ms)</td>
+                                <td class="num">@Format.Ms(step.Latency.P95Ms)</td>
+                                <td class="num">@Format.Ms(step.Latency.P99Ms)</td>
+                                <td class="num">@Format.Ms(step.Latency.MaxMs)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Status codes</h2>
+            @if (s.StatusCodes.Count == 0)
+            {
+                <div class="muted">No responses.</div>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Status</th>
+                                <th class="num">All</th>
+                                <th class="num"></th>
+                                @foreach (var machine in r.Machines)
+                                {
+                                    <th class="num">@machine.Name</th>
+                                }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var (statusCode, count) in s.StatusCodes)
+                            {
+                                <tr>
+                                    <td class="mono @Format.StatusClass(statusCode)">@statusCode</td>
+                                    <td class="num">@count.ToString("#,0")</td>
+                                    <td class="num muted">@Format.Percent((double)count / Math.Max(1, s.TotalRequests))</td>
+                                    @foreach (var machine in r.Machines)
+                                    {
+                                        <td class="num">@machine.Results.StatusCodes.GetValueOrDefault(statusCode).ToString("#,0")</td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+
+        <div class="card">
+            <h2>Errors</h2>
+            @if (s.Errors.Count == 0)
+            {
+                <div class="muted">No errors. 🎯</div>
+            }
+            else
+            {
+                <table>
+                    <tbody>
+                        @foreach (var error in s.Errors)
+                        {
+                            <tr>
+                                <td class="small">@error.Message</td>
+                                <td class="num">@error.Count.ToString("#,0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    // A one-hour run exports roughly ten megabytes, so this leaves plenty of room.
+    private const long MaxFileSize = 100L * 1024 * 1024;
+    private const int MaxFiles = 50;
+
+    private readonly List<Source> _sources = [];
+    private readonly List<string> _problems = [];
+    private List<LoadTestRun> _localRuns = [];
+    private string _localRunId = "";
+    private CombinedResult? _result;
+    private bool _loading;
+
+    protected override void OnInitialized()
+    {
+        RunManager.RunsChanged += OnRunsChanged;
+        LoadLocalRuns();
+    }
+
+    private void OnRunsChanged() => _ = InvokeAsync(() =>
+    {
+        LoadLocalRuns();
+        StateHasChanged();
+    });
+
+    private void LoadLocalRuns() =>
+        _localRuns = RunManager.GetAll().Where(r => r.Snapshot.IsFinished).ToList();
+
+    private async Task AddFilesAsync(InputFileChangeEventArgs e)
+    {
+        _problems.Clear();
+        if (e.FileCount > MaxFiles)
+        {
+            _problems.Add($"Add at most {MaxFiles} files at a time.");
+            return;
+        }
+
+        _loading = true;
+        foreach (var file in e.GetMultipleFiles(MaxFiles))
+        {
+            RunExport? export;
+            try
+            {
+                await using var stream = file.OpenReadStream(MaxFileSize);
+                export = await JsonSerializer.DeserializeAsync<RunExport>(stream, PlanStore.JsonOptions);
+            }
+            catch (JsonException)
+            {
+                _problems.Add($"{file.Name} isn't a falcon-load result export.");
+                continue;
+            }
+            catch (IOException ex)
+            {
+                _problems.Add($"{file.Name} couldn't be read: {ex.Message}");
+                continue;
+            }
+
+            if (export is null)
+            {
+                _problems.Add($"{file.Name} isn't a falcon-load result export.");
+                continue;
+            }
+
+            Add(new Source(file.Name, export));
+        }
+
+        _loading = false;
+        Recombine();
+    }
+
+    private void AddLocalRun()
+    {
+        _problems.Clear();
+        if (Guid.TryParse(_localRunId, out var id) && RunManager.Get(id) is { } run)
+        {
+            Add(new Source("Run on this machine", run.ToExport()));
+        }
+
+        _localRunId = "";
+        Recombine();
+    }
+
+    /// <summary>Adds a result unless it would make the set impossible to combine, e.g. an old file without histograms.</summary>
+    private void Add(Source source)
+    {
+        if (_sources.Any(s => s.Export.Id == source.Export.Id))
+        {
+            _problems.Add($"{source.Origin} is already in the list.");
+            return;
+        }
+
+        var problems = ResultCombiner.Validate([source.Export]);
+        if (problems.Count > 0)
+        {
+            _problems.Add($"{source.Origin} wasn't added. {string.Join(" ", problems)}");
+            return;
+        }
+
+        _sources.Add(source);
+    }
+
+    private void Remove(int index)
+    {
+        _sources.RemoveAt(index);
+        _problems.Clear();
+        Recombine();
+    }
+
+    private void Recombine() =>
+        _result = _sources.Count == 0 ? null : ResultCombiner.Combine(_sources.Select(s => s.Export).ToList());
+
+    private static string MachineColor(int index) => $"var(--machine-{index % 6 + 1})";
+
+    private static IReadOnlyList<ChartSeries> ThroughputSeries(CombinedResult r)
+    {
+        var length = r.Combined.Timeline.Count;
+        var series = new List<ChartSeries>
+        {
+            new("All machines", "var(--series-1)", r.Combined.Timeline.Select(t => (double)t.Requests).ToList(), Fill: true),
+        };
+
+        // With a single machine its line would only repeat the combined one.
+        if (r.Machines.Count > 1)
+        {
+            for (var i = 0; i < r.Machines.Count; i++)
+            {
+                var machine = r.Machines[i];
+                var values = new double[length];
+                foreach (var point in machine.Results.Timeline)
+                {
+                    var at = point.Second + machine.OffsetSeconds;
+                    if (at < length)
+                    {
+                        values[at] = point.Requests;
+                    }
+                }
+
+                series.Add(new(machine.Name, MachineColor(i), values));
+            }
+        }
+
+        series.Add(new("Errors/s", "var(--series-3)", r.Combined.Timeline.Select(t => (double)t.Failures).ToList()));
+        return series;
+    }
+
+    private static IReadOnlyList<ChartSeries> LatencySeries(LoadTestSnapshot s) =>
+    [
+        new("Mean", "var(--series-1)", s.Timeline.Select(t => t.MeanLatencyMs).ToList()),
+        new("p95", "var(--series-2)", s.Timeline.Select(t => t.P95LatencyMs).ToList()),
+    ];
+
+    public void Dispose() => RunManager.RunsChanged -= OnRunsChanged;
+
+    /// <param name="Origin">The file name, or where the run came from.</param>
+    private sealed record Source(string Origin, RunExport Export);
+}
