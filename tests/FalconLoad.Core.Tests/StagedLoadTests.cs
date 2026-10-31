@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
+using FalconLoad.Core.Distributed;
 using FalconLoad.Core.Engine;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
@@ -337,5 +338,33 @@ public class StagedLoadTests
         var result = await runner.RunAsync(cancellationToken: CancellationToken.None);
 
         Assert.InRange(result.TotalRequests, 1, 12);
+    }
+
+    [Fact]
+    public void Split_DividesEachStageTargetByWeightAndKeepsTheStageLengths()
+    {
+        var plan = Plan(StageMode.VirtualUsers, 1, Hold(10, 30), Ramp(40, 60), Hold(0, 15));
+
+        var shares = LoadSplitter.Split(plan, [1, 3]);
+
+        Assert.Equal([10 * 0.25, 10 * 0.75], shares.Select(s => s.Plan.Profile.Stages[0].Target));
+        Assert.Equal([40 * 0.25, 40 * 0.75], shares.Select(s => s.Plan.Profile.Stages[1].Target));
+        Assert.All(shares, s => Assert.Equal([30, 60, 15], s.Plan.Profile.Stages.Select(x => x.DurationSeconds)));
+        Assert.All(shares, s => Assert.Equal(0, s.Plan.Profile.Stages[2].Target));
+        Assert.Equal([10, 30], shares.Select(s => s.Plan.Profile.PeakVirtualUsers));
+        // Each agent's users are numbered after the ones of the agents before it, so {{$vu}} stays unique.
+        Assert.Equal([0, 10], shares.Select(s => s.Plan.Profile.VirtualUserOffset));
+        Assert.Equal(40, Assert.Single(plan.Profile.Stages, s => s.Ramp).Target);
+    }
+
+    [Fact]
+    public void Split_DividesARequestRateAndItsUserPool()
+    {
+        var plan = Plan(StageMode.RequestRate, 20, Hold(100, 30));
+
+        var shares = LoadSplitter.Split(plan, [1, 1]);
+
+        Assert.Equal([50, 50], shares.Select(s => s.Plan.Profile.Stages[0].Target));
+        Assert.Equal([10, 10], shares.Select(s => s.Plan.Profile.Concurrency));
     }
 }

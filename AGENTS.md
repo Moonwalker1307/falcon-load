@@ -67,8 +67,16 @@ engine works. It is the only user-facing documentation, so it has to stay true.
     `ApiEndpoints` (the `/api` minimal API group).
   - `Components/Pages/`: `Home` (dashboard), `PlanEditor`, `Environments` and `EnvironmentEditor`, `RunView` (live results), `Runs`.
     `Components/Shared/`: charts, the runs table, badges and `Format` helpers. `wwwroot/app.css` holds all styling.
+- `src/FalconLoad.Cli/`: the headless `falcon-load` command. `CliOptions` parses the arguments by hand (no package),
+  `CliApp` loads a `PlanFile`, runs each plan with `LoadTestRunner` and writes a `RunExport`, and `Summary` formats
+  the text output. Exit codes are part of its contract with CI scripts: 0 passed, 1 failed, 2 invalid input, 130
+  interrupted.
 - `tests/FalconLoad.Core.Tests/`: xUnit tests of the runner and metrics. `FakeHandler` stands in for the network.
-- `.github/workflows/ci.yml`: restore, build and test in Release on Ubuntu for every push to `main` and every PR.
+- `tests/FalconLoad.Cli.Tests/`: xUnit tests of the CLI, sharing `FakeHandler` with the engine tests.
+- `Dockerfile` (web app) and `Dockerfile.cli`: multi-stage images built from the repository root. A new project the
+  web app or the CLI references must also be copied in its Dockerfile.
+- `.github/workflows/ci.yml`: restore, build and test in Release on Ubuntu for every push to `main` and every PR, and
+  build both Docker images.
 
 ## Build and verify
 
@@ -77,6 +85,7 @@ dotnet build -c Release
 dotnet test -c Release --no-build
 dotnet test --filter "FullyQualifiedName~MetricsTests"   # one class
 dotnet run --project src/FalconLoad.Web                  # http://localhost:5299
+dotnet run --project src/FalconLoad.Cli -- run tests.json  # headless run of an exported file
 ```
 
 Before pushing, the build must be free of new warnings and the tests must pass. For a UI change, run the app and try it
@@ -98,6 +107,8 @@ also matches the shell that runs the command. Kill it by its process id instead.
   removed field breaks scripts that read it.
 - **A new or changed API endpoint**: keep it in the `/api` group in `ApiEndpoints`, return
   `Results.ValidationProblem` for invalid plans as the existing endpoints do, and update the README table.
+- **A new CLI option**: parse it in `CliOptions`, add it to the usage text, test it in `CliAppTests` and add it to the
+  README's option table.
 - **UI work**: follow the existing pages: plain HTML with the classes in `app.css`, no inline styles where a class
   exists, and components that dispose their event subscriptions.
 

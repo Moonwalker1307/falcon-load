@@ -24,6 +24,14 @@ public static class Format
 
     public static string Percent(double fraction) => fraction == 0 ? "0%" : fraction < 0.001 ? "<0.1%" : $"{fraction:0.#%}";
 
+    /// <summary>A threshold's limit or measured value in its unit: milliseconds, percent or requests per second.</summary>
+    public static string Measured(double value, string unit) => unit switch
+    {
+        "ms" => Ms(value),
+        "%" => value == 0 ? "0%" : value < 0.1 ? $"{value:0.###}%" : $"{value:0.##}%",
+        _ => $"{Rate(value)} {unit}",
+    };
+
     public static string Bytes(long bytes) => bytes switch
     {
         >= 1L << 30 => $"{bytes / (double)(1L << 30):0.##} GB",
@@ -43,6 +51,14 @@ public static class Format
             : age.TotalHours < 1 ? $"{(int)age.TotalMinutes} min ago"
             : age.TotalDays < 1 ? $"{(int)age.TotalHours} h ago"
             : at.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+    }
+
+    /// <summary>A clock offset such as "+12 ms" or "-1.3 s"; the sign says whether the other clock is ahead.</summary>
+    public static string SignedMs(TimeSpan t)
+    {
+        var sign = t < TimeSpan.Zero ? "-" : "+";
+        var ms = Math.Abs(t.TotalMilliseconds);
+        return ms < 1000 ? $"{sign}{ms:0} ms" : $"{sign}{ms / 1000:0.0} s";
     }
 
     public static string StateBadge(RunState state) => "badge badge-" + state.ToString().ToLowerInvariant();

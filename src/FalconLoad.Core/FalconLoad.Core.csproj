@@ -6,4 +6,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="FalconLoad.Core.Tests" />
+  </ItemGroup>
+
 </Project>

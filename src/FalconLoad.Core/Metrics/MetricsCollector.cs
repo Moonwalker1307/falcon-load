@@ -10,6 +10,9 @@ public sealed class MetricsCollector
     private readonly LatencyHistogram[] _steps;
     private readonly long[] _stepFailures;
     private readonly string[] _stepNames;
+    private readonly string[][] _checkNames;
+    private readonly long[][] _checkFailures;
+    private readonly long[] _checkedResponses;
     private readonly Dictionary<string, long> _statusCodes = new();
     private readonly Dictionary<string, long> _errors = new();
     private readonly SortedDictionary<int, SecondBucket> _timeline = new();
@@ -19,7 +22,8 @@ public sealed class MetricsCollector
     private long _bytesSent;
     private long _bytesReceived;
 
-    public MetricsCollector(IReadOnlyList<string> stepNames)
+    /// <param name="stepChecks">The names of each request's checks, in order; null when no request has any.</param>
+    public MetricsCollector(IReadOnlyList<string> stepNames, IReadOnlyList<IReadOnlyList<string>>? stepChecks = null)
     {
         _stepNames = [.. stepNames];
         _steps = new LatencyHistogram[stepNames.Count];
@@ -29,6 +33,9 @@ public sealed class MetricsCollector
         }
 
         _stepFailures = new long[stepNames.Count];
+        _checkNames = stepNames.Select((_, i) => stepChecks is null || i >= stepChecks.Count ? [] : stepChecks[i].ToArray()).ToArray();
+        _checkFailures = _checkNames.Select(names => new long[names.Length]).ToArray();
+        _checkedResponses = new long[stepNames.Count];
     }
 
     public void Record(in RequestResult result)
@@ -39,6 +46,17 @@ public sealed class MetricsCollector
             _steps[result.StepIndex].Record(result.Latency);
             _bytesSent += result.BytesSent;
             _bytesReceived += result.BytesReceived;
+
+            // Every response runs all of its request's checks, so one count per request gives each check's total.
+            var checkFailures = _checkFailures[result.StepIndex];
+            if (result.StatusCode is not null && checkFailures.Length > 0)
+            {
+                _checkedResponses[result.StepIndex]++;
+                for (var failed = result.FailedChecks; failed != 0; failed &= failed - 1)
+                {
+                    checkFailures[System.Numerics.BitOperations.TrailingZeroCount(failed)]++;
+                }
+            }
 
             var code = result.StatusCode?.ToString() ?? "No response";
             _statusCodes[code] = _statusCodes.GetValueOrDefault(code) + 1;
@@ -125,8 +143,24 @@ public sealed class MetricsCollector
             Errors = _errors.OrderByDescending(e => e.Value).Select(e => new ErrorCount(e.Key, e.Value)).ToList(),
             Steps = _steps.Select((h, i) => new StepStats(i, _stepNames[i], h.Count, _stepFailures[i], h.ToStats())).ToList(),
             Timeline = timeline,
+            Checks = CheckStatsLocked(),
             FailureReason = failureReason,
         };
+    }
+
+    private List<CheckStats> CheckStatsLocked()
+    {
+        var checks = new List<CheckStats>();
+        for (var step = 0; step < _checkNames.Length; step++)
+        {
+            for (var i = 0; i < _checkNames[step].Length; i++)
+            {
+                var failed = _checkFailures[step][i];
+                checks.Add(new CheckStats(step, _checkNames[step][i], _checkedResponses[step] - failed, failed));
+            }
+        }
+
+        return checks;
     }
 
     private ResultHistograms HistogramsLocked(RunState state, TimeSpan elapsed)

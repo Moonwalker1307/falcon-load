@@ -63,9 +63,11 @@ public sealed class LoadTestRunner : IAsyncDisposable
         var variables = _plan.EnvironmentValues(environment);
         _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables)).ToArray();
         _extracts = _requests.Any(r => r.Extractor is not null);
-        _keepsBodies = _requests.Any(r => r.Extractor is { NeedsBody: true });
+        _keepsBodies = _requests.Any(r => r.Extractor is { NeedsBody: true } || r.Checker.NeedsBody);
         _hasOnceRequests = _requests.Any(r => r.OncePerVirtualUser);
-        _metrics = new MetricsCollector(_plan.Requests.Select(r => r.DisplayName).ToList());
+        _metrics = new MetricsCollector(
+            _plan.Requests.Select(r => r.DisplayName).ToList(),
+            _requests.Any(r => r.Checker.Count > 0) ? _requests.Select(r => r.Checker.Names).ToList() : null);
 
         if (invoker is null)
         {
@@ -82,12 +84,17 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
     public RunState State => _state;
 
-    public LoadTestSnapshot GetSnapshot() =>
-        _metrics.Snapshot(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
+    public LoadTestSnapshot GetSnapshot() => ThresholdEvaluator.Apply(
+        _plan.Thresholds,
+        _metrics.Snapshot(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason));
 
     /// <summary>A snapshot together with the latency histograms behind it, for an exported result.</summary>
-    public (LoadTestSnapshot Snapshot, ResultHistograms Histograms) GetResults() =>
-        _metrics.SnapshotWithHistograms(_state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
+    public (LoadTestSnapshot Snapshot, ResultHistograms Histograms) GetResults()
+    {
+        var (snapshot, histograms) = _metrics.SnapshotWithHistograms(
+            _state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
+        return (ThresholdEvaluator.Apply(_plan.Thresholds, snapshot), histograms);
+    }
 
     /// <summary>Runs the load test to completion. Cancelling <paramref name="cancellationToken"/> stops it early.</summary>
     /// <param name="onProgress">Invoked with a fresh snapshot every <paramref name="reportInterval"/> while running.</param>
@@ -235,6 +242,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         Interlocked.Increment(ref _activeVirtualUsers);
         var buffer = new byte[16 * 1024];
 
+
         // Each virtual user refills its own row of parameter values per iteration, so lists cost no allocation per request.
         var row = _parameters is null ? null : new string[_parameters.Count];
         // A user that was stopped by a falling stage target carries on counting when its slot starts again.
@@ -243,14 +251,14 @@ public sealed class LoadTestRunner : IAsyncDisposable
         // Extracted variables belong to one virtual user and last across its iterations, so a token from a login
         // request sent once is reused by every later request. Each user also reuses one buffer for the bodies it keeps.
         var variables = _extracts ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) : null;
-        using var kept = _keepsBodies ? new MemoryStream() : null;
+        var kept = _keepsBodies ? new ResponseBuffer() : null;
         var done = _hasOnceRequests ? new bool[_requests.Length] : null;
         try
         {
             while (index < Volatile.Read(ref _desiredUsers))
             {
                 iteration++;
-                var context = new TemplateContext(index + 1, iteration, new ParameterValues(_parameters, row), variables);
+                var context = new TemplateContext(profile.VirtualUserOffset + index + 1, iteration, new ParameterValues(_parameters, row), variables);
                 var picked = false;
                 for (var step = 0; step < _requests.Length; step++)
                 {
@@ -369,19 +377,21 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
     /// <summary>Sends one request. Returns null when the run was stopped while the request was in flight.</summary>
     /// <param name="variables">The virtual user's extracted variables, the same ones <paramref name="context"/> reads.</param>
-    /// <param name="kept">The virtual user's buffer for bodies that extraction rules read, or null when none do.</param>
+    /// <param name="kept">The virtual user's buffer for bodies that checks or extraction rules read, or null when none do.</param>
     private async Task<RequestResult?> SendAsync(
         int step,
         TemplateContext context,
         byte[] buffer,
         Dictionary<string, string>? variables,
-        MemoryStream? kept,
+        ResponseBuffer? kept,
         CancellationToken stop)
     {
         var prepared = _requests[step];
         var extractor = prepared.Extractor;
-        var keep = extractor is { NeedsBody: true } ? kept : null;
-        keep?.SetLength(0);
+        var checker = prepared.Checker;
+        var keep = extractor is { NeedsBody: true } || checker.NeedsBody ? kept : null;
+        // Checks need the whole body, up to their limit; extraction only reads the start of it.
+        keep?.Reset(checker.NeedsBody ? Assertion.MaxBodyBytes : ResponseExtractor.MaxBodyBytes);
         var startedAt = _clock.Elapsed;
         var start = Stopwatch.GetTimestamp();
         long bytesSent = 0;
@@ -401,29 +411,48 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 while ((read = await body.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) > 0)
                 {
                     received += read;
-                    if (keep is not null && keep.Length < ResponseExtractor.MaxBodyBytes)
-                    {
-                        keep.Write(buffer, 0, (int)Math.Min(read, ResponseExtractor.MaxBodyBytes - keep.Length));
-                    }
+                    keep?.Append(buffer.AsSpan(0, read));
                 }
             }
 
-            // Extraction happens after the clock stops, so parsing a body doesn't add to the measured latency.
+            // The clock stops once the body is read; checks and extraction are not part of the request's latency.
             var latency = Stopwatch.GetElapsedTime(start);
             var code = (int)response.StatusCode;
-            var success = prepared.Matcher.IsMatch(code);
-            var error = success ? null : $"Unexpected status {code} {response.StatusCode}";
+            var statusMatches = prepared.Matcher.IsMatch(code);
+            var keptBody = keep?.Memory ?? ReadOnlyMemory<byte>.Empty;
+            var failedChecks = checker.Count == 0 ? 0 : checker.Evaluate(response, keptBody, keep?.TooLarge ?? false);
 
-            // A response that matches the status codes but lacks a value later requests need counts as an error, since
-            // those requests would otherwise fail in less obvious ways. Failed responses aren't searched at all.
-            if (success && extractor is not null)
+            string? error = null;
+            if (!statusMatches)
             {
-                var bodyBytes = keep is null ? default : keep.GetBuffer().AsSpan(0, (int)keep.Length);
-                error = extractor.Apply(response, bodyBytes, variables!);
-                success = error is null;
+                error = $"Unexpected status {code} {response.StatusCode}";
+            }
+            else if (failedChecks != 0)
+            {
+                error = checker.NeedsBody && keep!.TooLarge
+                    ? TooLargeToCheck
+                    : checker.FailureMessages[System.Numerics.BitOperations.TrailingZeroCount(failedChecks)];
             }
 
-            return new RequestResult(step, startedAt, latency, code, success, _masker.Apply(error), bytesSent, received);
+            // A response that matches the status codes but lacks a value later requests need counts as an error, since
+            // those requests would otherwise fail in less obvious ways. Responses with another status aren't searched.
+            // Extraction only reads the start of a body, up to its own limit.
+            if (statusMatches && extractor is not null)
+            {
+                var extractError = extractor.Apply(response, keptBody.Span[..Math.Min(keptBody.Length, ResponseExtractor.MaxBodyBytes)], variables!);
+                error ??= extractError;
+            }
+
+            return new RequestResult(
+                step,
+                startedAt,
+                latency,
+                code,
+                error is null,
+                _masker.Apply(error),
+                bytesSent,
+                received,
+                failedChecks);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -446,6 +475,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         RequestResult Failure(string error) =>
             new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, _masker.Apply(error), bytesSent, 0);
     }
+
+    private static readonly string TooLargeToCheck =
+        $"Response body over {Assertion.MaxBodyBytes / (1024 * 1024)} MB is too large to check";
 
     private static string DescribeTransportError(HttpRequestException ex)
     {

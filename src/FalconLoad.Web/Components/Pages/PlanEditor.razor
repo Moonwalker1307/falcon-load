@@ -3,6 +3,8 @@
 @inject PlanStore PlanStore
 @inject RunManager RunManager
 @inject EnvironmentStore EnvironmentStore
+@inject AgentRegistry Agents
+@inject DistributedRunManager DistributedRuns
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 
@@ -53,9 +55,14 @@
             <a class="btn btn-ghost" href="api/plans/@savedId/export" download title="Download the saved version of this test, to import on another machine"><Icon Name="download" /><span class="hide-sm">Export</span></a>
         }
         <button @onclick="Save"><Icon Name="save" />Save</button>
+        @if (_agentCount > 0)
+        {
+            <button @onclick="SaveAndRunOnAgents" title="Save, then split this test over the @_agentCount enabled @(_agentCount == 1 ? "agent" : "agents")"><Icon Name="agents" />Save &amp; run on agents</button>
+        }
         <button class="btn-primary" @onclick="SaveAndRun"><Icon Name="play" />Save &amp; run</button>
     </div>
 </div>
+
 
 @if (planProblems.Count > 0)
 {
@@ -167,7 +174,7 @@
                         <button class="btn-sm btn-ghost btn-icon" title="Move up" aria-label="Move request @(index + 1) up" disabled="@(index == 0)" @onclick="() => Move(index, -1)"><Icon Name="up" /></button>
                         <button class="btn-sm btn-ghost btn-icon" title="Move down" aria-label="Move request @(index + 1) down" disabled="@(index == _plan.Requests.Count - 1)" @onclick="() => Move(index, 1)"><Icon Name="down" /></button>
                         <button class="btn-sm btn-ghost btn-icon btn-danger" title="@(_plan.Requests.Count == 1 ? "A test needs at least one request" : "Remove request")" aria-label="Remove request @(index + 1)"
-                                disabled="@(_plan.Requests.Count == 1)" @onclick="() => _plan.Requests.RemoveAt(index)"><Icon Name="trash" /></button>
+                                disabled="@(_plan.Requests.Count == 1)" @onclick="() => RemoveRequest(index)"><Icon Name="trash" /></button>
                     </div>
                 </div>
 
@@ -218,7 +225,9 @@
                                 <span class="dot" aria-label="has a body"></span>
                             }
                         </button>
-                        <button role="tab" id="@idp-tab-checks" aria-selected="@(tab == "checks" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "checks"'>Success criteria</button>
+                        <button role="tab" id="@idp-tab-checks" aria-selected="@(tab == "checks" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "checks"'>
+                            Checks<span class="count">@request.Assertions.Count(a => a.Enabled)</span>
+                        </button>
                         <button role="tab" id="@idp-tab-extract" aria-selected="@(tab == "extract" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "extract"'>
                             Extract<span class="count">@request.Extractions.Count</span>
                         </button>
@@ -306,6 +315,57 @@
                                 <input id="@idp-codes" type="text" class="mono" placeholder="200-399 (default)" aria-describedby="@idp-codes-hint" @bind="request.ExpectedStatusCodes" />
                                 <div class="hint" id="@idp-codes-hint">Comma separated codes or ranges, e.g. <code>200,201</code> or <code>200-299,404</code>. Any other status counts as an error.</div>
                             </div>
+
+                            <div class="label-text" id="@idp-checks-label">Response checks</div>
+                            @if (request.Assertions.Count == 0)
+                            {
+                                <div class="hint check-empty">
+                                    No checks yet. A response that fails a check counts as an error, e.g. <code>$.status equals ok</code>,
+                                    <code>body contains "id"</code> or <code>header Content-Type contains json</code>.
+                                </div>
+                            }
+                            @for (var j = 0; j < request.Assertions.Count; j++)
+                            {
+                                var a = request.Assertions[j];
+                                var n = j + 1;
+                                <div class="check-row @(a.Enabled ? "" : "off")" role="group" aria-label="Check @n">
+                                    <input type="checkbox" title="Run this check" aria-label="Run check @n" @bind="a.Enabled" />
+                                    <select aria-label="Check @n looks at" @bind="a.Source" @bind:after="() => FixOperator(a)">
+                                        <option value="@AssertionSource.Body">Body</option>
+                                        <option value="@AssertionSource.JsonPath">JSON path</option>
+                                        <option value="@AssertionSource.Header">Header</option>
+                                    </select>
+                                    @if (a.Source == AssertionSource.Body)
+                                    {
+                                        <span class="check-subject muted small">whole response body</span>
+                                    }
+                                    else
+                                    {
+                                        <input type="text" class="mono" spellcheck="false" aria-label="Check @n @(a.Source == AssertionSource.Header ? "header name" : "JSON path")"
+                                               placeholder="@(a.Source == AssertionSource.Header ? "Content-Type" : "$.data.id")" @bind="a.Target" @bind:event="oninput" />
+                                    }
+                                    <select aria-label="Check @n comparison" @bind="a.Operator">
+                                        @foreach (var op in Assertion.OperatorsFor(a.Source))
+                                        {
+                                            <option value="@op">@Assertion.OperatorText(op)</option>
+                                        }
+                                    </select>
+                                    @if (Assertion.NeedsValue(a.Operator))
+                                    {
+                                        <input type="text" class="mono" spellcheck="false" aria-label="Check @n value" placeholder="@ValuePlaceholder(a.Operator)" @bind="a.Value" @bind:event="oninput" />
+                                    }
+                                    else
+                                    {
+                                        <span></span>
+                                    }
+                                    <button class="btn-sm btn-icon btn-ghost btn-danger c-remove" title="Remove check" aria-label="Remove check @n" @onclick="() => request.Assertions.Remove(a)"><Icon Name="x" /></button>
+                                </div>
+                            }
+                            <button class="btn-sm" disabled="@(request.Assertions.Count >= Assertion.MaxPerRequest)" @onclick="() => AddCheck(request)"><Icon Name="plus" />Add check</button>
+                            <div class="hint">
+                                JSON paths look like <code>$.items[0].id</code>, <code>$.items[-1]</code> (last) or <code>$.items.length</code>.
+                                Text comparisons are case-sensitive, and "matches" takes a regular expression. Use "Send once" to see what each check finds.
+                            </div>
                         }
                     </div>
 
@@ -318,9 +378,13 @@
                                     <strong class="@Format.StatusClass(statusCode.ToString())">@statusCode @probe.ReasonPhrase</strong>
                                     <span>@Format.Ms(probe.Latency.TotalMilliseconds)</span>
                                     <span>@Format.Bytes(probe.BodyBytes)</span>
-                                    @if (!probe.Success)
+                                    @if (!probe.StatusMatches)
                                     {
                                         <span class="status-err">Doesn't match the expected status codes</span>
+                                    }
+                                    else if (probe.Checks.Count(c => !c.Passed) is > 0 and var failedChecks)
+                                    {
+                                        <span class="status-err">@(failedChecks == 1 ? "1 check failed" : $"{failedChecks} checks failed")</span>
                                     }
                                 }
                                 else
@@ -331,6 +395,24 @@
                                 <span class="spacer"></span>
                                 <button class="btn-sm btn-ghost btn-icon" aria-label="Close response" title="Close" @onclick="() => _probeResults.Remove(request)"><Icon Name="x" /></button>
                             </div>
+                            @if (probe.Checks.Count > 0)
+                            {
+                                <span class="probe-label">Checks</span>
+                                <ul class="probe-checks">
+                                    @foreach (var check in probe.Checks)
+                                    {
+                                        <li class="@(check.Passed ? "status-2xx" : "status-err")">
+                                            <Icon Name="@(check.Passed ? "check" : "x")" />
+                                            <span class="sr-only">@(check.Passed ? "Passed:" : "Failed:")</span>
+                                            <span class="mono">@check.Name</span>
+                                            @if (check.Actual is not null)
+                                            {
+                                                <span class="muted mono">found @check.Actual</span>
+                                            }
+                                        </li>
+                                    }
+                                </ul>
+                            }
                             @if (probe.StatusCode is not null)
                             {
                                 <span class="probe-label">Response headers</span>
@@ -449,6 +531,63 @@
                 }
             </section>
         }
+
+        <section class="card" aria-labelledby="thresholds-title">
+            <div class="card-header">
+                <h2 id="thresholds-title">Pass/fail thresholds</h2>
+                <button class="btn-sm" @onclick="AddThreshold"><Icon Name="plus" />Add threshold</button>
+            </div>
+            @if (_plan.Thresholds.Count == 0)
+            {
+                <div class="small muted">
+                    Without thresholds a run has no verdict. Add rules such as <em>p95 latency &lt; 500 ms</em> or <em>error rate &lt; 1%</em>,
+                    and every run says whether it passed, in the results and in the JSON API for CI.
+                </div>
+            }
+            @for (var k = 0; k < _plan.Thresholds.Count; k++)
+            {
+                var t = _plan.Thresholds[k];
+                var n = k + 1;
+                <div class="threshold-row @(t.Enabled ? "" : "off")" role="group" aria-label="Threshold @n">
+                    <input type="checkbox" title="Use this threshold" aria-label="Use threshold @n" @bind="t.Enabled" />
+                    <select aria-label="Threshold @n metric" @bind="t.Metric">
+                        @foreach (var metric in Enum.GetValues<ThresholdMetric>())
+                        {
+                            <option value="@metric">@Threshold.MetricText(metric)</option>
+                        }
+                    </select>
+                    <select aria-label="Threshold @n applies to" @bind:get="@(t.RequestIndex?.ToString() ?? string.Empty)" @bind:set="value => t.RequestIndex = int.TryParse(value, out var i) ? i : null">
+                        <option value="">All requests</option>
+                        @for (var r = 0; r < _plan.Requests.Count; r++)
+                        {
+                            <option value="@r">Request @(r + 1)@(string.IsNullOrWhiteSpace(_plan.Requests[r].Name) ? "" : $": {_plan.Requests[r].Name}")</option>
+                        }
+                        @if (t.RequestIndex is { } missing && missing >= _plan.Requests.Count)
+                        {
+                            <option value="@missing">Request @(missing + 1) (removed)</option>
+                        }
+                    </select>
+                    <select aria-label="Threshold @n comparison" class="mono" @bind="t.Operator">
+                        @foreach (var op in Enum.GetValues<ThresholdOperator>())
+                        {
+                            <option value="@op">@Threshold.OperatorText(op)</option>
+                        }
+                    </select>
+                    <div class="input-suffix">
+                        <input type="number" min="0" step="any" aria-label="Threshold @n limit in @Threshold.Unit(t.Metric)" @bind="t.Value" @bind:event="oninput" />
+                        <span>@Threshold.Unit(t.Metric)</span>
+                    </div>
+                    <button class="btn-sm btn-icon btn-ghost btn-danger t-remove" title="Remove threshold" aria-label="Remove threshold @n" @onclick="() => _plan.Thresholds.Remove(t)"><Icon Name="trash" /></button>
+                </div>
+            }
+            @if (_plan.Thresholds.Count > 0)
+            {
+                <div class="hint">
+                    A run passes when it completes and every threshold holds. Latency is per request, the error rate counts failed checks and
+                    unexpected statuses, and throughput is the average over the run. A stopped run doesn't pass.
+                </div>
+            }
+        </section>
 
         <section class="card" aria-labelledby="vars-title">
             <h2 id="vars-title">Dynamic values</h2>
@@ -629,6 +768,7 @@
 @code {
     private LoadTestPlan _plan = new();
     private bool _notFound;
+    private int _agentCount;
     private bool _showProblems;
     private string? _savedMessage;
     private string _baseline = string.Empty;
@@ -668,6 +808,8 @@
         _runProblems = [];
     }
 
+    protected override void OnInitialized() => _agentCount = Agents.GetEnabled().Count;
+
     protected override void OnParametersSet()
     {
         if (Id is not null && Id == _plan.Id && !_notFound)
@@ -700,7 +842,7 @@
     }
 
     private static string Snapshot(LoadTestPlan plan) =>
-        System.Text.Json.JsonSerializer.Serialize(new { plan.Name, plan.Environment, plan.Requests, plan.Parameters, plan.Profile });
+        System.Text.Json.JsonSerializer.Serialize(new { plan.Name, plan.Environment, plan.Requests, plan.Parameters, plan.Profile, plan.Thresholds });
 
     private static string ProfileSummary(LoadProfile p)
     {
@@ -782,7 +924,52 @@
     {
         var target = index + delta;
         (_plan.Requests[index], _plan.Requests[target]) = (_plan.Requests[target], _plan.Requests[index]);
+
+        // Thresholds point at requests by position, so they follow the requests they were set on.
+        foreach (var t in _plan.Thresholds)
+        {
+            t.RequestIndex = t.RequestIndex == index ? target : t.RequestIndex == target ? index : t.RequestIndex;
+        }
     }
+
+    private void RemoveRequest(int index)
+    {
+        _plan.Requests.RemoveAt(index);
+
+        // A threshold on the removed request goes with it; those on later requests move up with theirs.
+        _plan.Thresholds.RemoveAll(t => t.RequestIndex == index);
+        foreach (var t in _plan.Thresholds.Where(t => t.RequestIndex > index))
+        {
+            t.RequestIndex--;
+        }
+    }
+
+    private static void AddCheck(RequestDefinition request) =>
+        request.Assertions.Add(request.Assertions.Count == 0
+            ? new Assertion { Source = AssertionSource.JsonPath, Operator = AssertionOperator.Exists }
+            : new Assertion());
+
+    // Switching to the body drops operators that only make sense for a single value.
+    private static void FixOperator(Assertion assertion)
+    {
+        if (!Assertion.OperatorsFor(assertion.Source).Contains(assertion.Operator))
+        {
+            assertion.Operator = AssertionOperator.Contains;
+        }
+    }
+
+    private static string ValuePlaceholder(AssertionOperator op) => op switch
+    {
+        AssertionOperator.Matches => "^\\d+$",
+        AssertionOperator.LessThan or AssertionOperator.GreaterThan => "100",
+        _ => "text",
+    };
+
+    // The first threshold is the usual latency rule, the second an error budget, then a tail latency rule.
+    private void AddThreshold() => _plan.Thresholds.Add(
+        _plan.Thresholds.Count == 0 ? new Threshold { Metric = ThresholdMetric.P95Latency, Value = 500 }
+        : _plan.Thresholds.All(t => t.Metric != ThresholdMetric.ErrorRate) ? new Threshold { Metric = ThresholdMetric.ErrorRate, Value = 1 }
+        : new Threshold { Metric = ThresholdMetric.P99Latency, Value = 1000 });
 
     private bool TrySave(out LoadTestPlan saved)
     {
@@ -835,6 +1022,38 @@
 
         var run = RunManager.Start(saved, environment);
         Nav.NavigateTo($"runs/{run.Id}");
+    }
+
+    private void SaveAndRunOnAgents()
+    {
+        _runProblems = [];
+        if (!TrySave(out var saved))
+        {
+            return;
+        }
+
+        if (!EnvironmentStore.TryResolve(saved.Environment, out var environment, out var missing))
+        {
+            _runProblems = [missing!];
+            return;
+        }
+
+        var problems = saved.ValidateForRun(environment);
+        if (problems.Count > 0)
+        {
+            _runProblems = problems;
+            return;
+        }
+
+        try
+        {
+            var run = DistributedRuns.Start(saved, environment);
+            Nav.NavigateTo($"distributed/{run.Id}");
+        }
+        catch (ArgumentException ex)
+        {
+            _runProblems = [ex.Message];
+        }
     }
 
     private async Task ConfirmLeave(LocationChangingContext context)

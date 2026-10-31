@@ -1,7 +1,8 @@
 @implements IDisposable
 @inject RunManager RunManager
+@inject DistributedRunManager DistributedRuns
 
-@if (_runs.Count == 0)
+@if (_rows.Count == 0)
 {
     <div class="empty">
         <p>No runs yet. Press <strong>Run</strong> on a saved test and its live results show up here.</p>
@@ -23,13 +24,23 @@ else
                 </tr>
             </thead>
             <tbody>
-                @foreach (var run in _runs.Take(Limit))
+                @foreach (var row in _rows.Take(Limit))
                 {
-                    var s = run.Snapshot;
+                    var s = row.Results;
                     <tr>
-                        <td><a class="row-title" href="runs/@run.Id">@run.Plan.Name</a></td>
-                        <td class="muted nowrap hide-sm">@Format.When(run.StartedAt)</td>
-                        <td><RunStateBadge State="s.State" /></td>
+                        <td>
+                            <a class="row-title" href="@row.Href">@row.Name</a>
+                            @if (row.Agents is { } agents)
+                            {
+                                <span class="badge badge-agents" title="@string.Join(", ", agents)"><Icon Name="agents" />@agents.Count @(agents.Count == 1 ? "agent" : "agents")</span>
+                            }
+                            else if (row.Controller is { } controller)
+                            {
+                                <span class="badge badge-agents" title="A share of a distributed test started by @controller"><Icon Name="agents" />from @controller</span>
+                            }
+                        </td>
+                        <td class="muted nowrap hide-sm">@Format.When(row.StartedAt)</td>
+                        <td><span class="badges"><RunStateBadge State="row.State" /><VerdictBadge Snapshot="s" /></span></td>
                         <td class="num hide-sm">@s.TotalRequests.ToString("#,0")</td>
                         <td class="num">@Format.Rate(s.RequestsPerSecond)</td>
                         <td class="num">@Format.Ms(s.Latency.P95Ms)</td>
@@ -42,35 +53,55 @@ else
 }
 
 @code {
-    private IReadOnlyList<LoadTestRun> _runs = [];
+    private IReadOnlyList<Row> _rows = [];
     private Timer? _timer;
 
     [Parameter] public int Limit { get; set; } = int.MaxValue;
 
     protected override void OnInitialized()
     {
-        _runs = RunManager.GetAll();
+        Reload();
         RunManager.RunsChanged += OnRunsChanged;
+        DistributedRuns.RunsChanged += OnRunsChanged;
 
         // Refresh live numbers of running tests once a second.
         _timer = new Timer(_ =>
         {
-            if (_runs.Any(r => !r.Snapshot.IsFinished))
+            if (_rows.Any(r => !r.IsFinished))
             {
-                _ = InvokeAsync(StateHasChanged);
+                _ = InvokeAsync(() =>
+                {
+                    Reload();
+                    StateHasChanged();
+                });
             }
         }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
     }
 
+    // Local runs and distributed ones are listed together, newest first, so a test is found where it was started.
+    private void Reload() => _rows = RunManager.GetAll()
+        .Select(r => new Row(r.Plan.Name, $"runs/{r.Id}", r.StartedAt, r.Snapshot.State, r.Snapshot, null, r.Controller))
+        .Concat(DistributedRuns.GetAll().Select(r => new Row(r.Plan.Name, $"distributed/{r.Id}", r.StartedAt, r.Snapshot.State, r.Snapshot.Results, r.AgentNames, null)))
+        .OrderByDescending(r => r.StartedAt)
+        .ToList();
+
     private void OnRunsChanged() => _ = InvokeAsync(() =>
     {
-        _runs = RunManager.GetAll();
+        Reload();
         StateHasChanged();
     });
 
     public void Dispose()
     {
         RunManager.RunsChanged -= OnRunsChanged;
+        DistributedRuns.RunsChanged -= OnRunsChanged;
         _timer?.Dispose();
+    }
+
+    /// <param name="Agents">The agents of a distributed run, or null for a run on this machine.</param>
+    /// <param name="Controller">The controller a share of a distributed test came from, or null.</param>
+    private sealed record Row(string Name, string Href, DateTimeOffset StartedAt, RunState State, LoadTestSnapshot Results, IReadOnlyList<string>? Agents, string? Controller)
+    {
+        public bool IsFinished => State is RunState.Completed or RunState.Cancelled or RunState.Failed;
     }
 }

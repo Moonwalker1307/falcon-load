@@ -16,3 +16,11 @@ jobs:
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release
       - run: dotnet test --no-build -c Release --verbosity normal
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t falcon-load .
+      - run: docker build -f Dockerfile.cli -t falcon-load-cli .
+      - run: docker run --rm falcon-load-cli --version

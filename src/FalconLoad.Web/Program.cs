@@ -1,11 +1,14 @@
 using System.Text.Json.Serialization;
+using FalconLoad.Core.Distributed;
 using FalconLoad.Web.Components;
 using FalconLoad.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents()
+    // The import page lets people paste a whole Postman collection or OpenAPI spec, which can be larger than SignalR's 32 KB default.
+    .AddHubOptions(options => options.MaximumReceiveMessageSize = 10 * 1024 * 1024);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
@@ -13,6 +16,13 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 builder.Services.AddSingleton<PlanStore>();
 builder.Services.AddSingleton<EnvironmentStore>();
 builder.Services.AddSingleton<RunManager>();
+
+// Agents: this machine can be one (AgentMode, with the token from configuration) and can drive others (the registry,
+// the client that talks to them and the manager that runs tests across them).
+builder.Services.AddSingleton<AgentMode>();
+builder.Services.AddHttpClient<AgentClient>(http => http.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddSingleton<AgentRegistry>();
+builder.Services.AddSingleton<DistributedRunManager>();
 
 var app = builder.Build();
 
@@ -29,6 +39,7 @@ app.UseAntiforgery();
 
 app.MapStaticAssets();
 app.MapFalconApi();
+app.MapAgentApi();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

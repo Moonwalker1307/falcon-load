@@ -3,6 +3,8 @@
 @inject PlanStore PlanStore
 @inject RunManager RunManager
 @inject EnvironmentStore EnvironmentStore
+@inject AgentRegistry Agents
+@inject DistributedRunManager DistributedRuns
 @inject NavigationManager Nav
 
 <PageTitle>falcon-load</PageTitle>
@@ -17,6 +19,7 @@
             <Icon Name="upload" />Import…
             <InputFile accept=".json,application/json" OnChange="Import" />
         </label>
+        <a class="btn" href="import" title="Create a test from a curl command, a Postman collection or an OpenAPI spec"><Icon Name="plus" />From curl, Postman or OpenAPI…</a>
         @if (_plans.Count > 0)
         {
             <a class="btn" href="api/plans/export" download title="Download every saved test as one file"><Icon Name="download" />Export all</a>
@@ -71,7 +74,7 @@
         <div class="actions actions-center">
             <a class="btn btn-primary" href="plans/new"><Icon Name="plus" />Create a test</a>
         </div>
-        <p class="hint">Got a file from another machine? Use <strong>Import…</strong> above.</p>
+        <p class="hint">Already have the requests? <a href="import">Import them from curl, Postman or OpenAPI</a>. Got a file from another machine? Use <strong>Import…</strong> above.</p>
     </section>
 }
 else
@@ -139,6 +142,10 @@ else
                                 {
                                     <div class="btn-group">
                                         <button class="btn-sm btn-primary" @onclick="() => Run(plan)" aria-label="Run @plan.Name"><Icon Name="play" />Run</button>
+                                        @if (_agentCount > 0)
+                                        {
+                                            <button class="btn-sm" @onclick="() => RunOnAgents(plan)" title="Run on the @_agentCount enabled @(_agentCount == 1 ? "agent" : "agents")" aria-label="Run @plan.Name on agents"><Icon Name="agents" />Agents</button>
+                                        }
                                         <a class="btn btn-sm" href="plans/@plan.Id" aria-label="Edit @plan.Name"><Icon Name="edit" />Edit</a>
                                         <button class="btn-sm btn-ghost btn-icon" @onclick="() => Duplicate(plan)" title="Duplicate" aria-label="Duplicate @plan.Name"><Icon Name="copy" /></button>
                                         <a class="btn btn-sm btn-ghost btn-icon" href="api/plans/@plan.Id/export" download title="Export to a file" aria-label="Export @plan.Name"><Icon Name="download" /></a>
@@ -177,12 +184,42 @@ else
     // Exported files are a few kilobytes; the cap only stops someone picking a huge file by mistake.
     private const long MaxImportBytes = 5 * 1024 * 1024;
 
+    private int _agentCount;
+
     protected override void OnInitialized()
     {
         _plans = PlanStore.GetAll();
         _environmentNames = [.. EnvironmentStore.GetAll().Select(e => e.Name)];
         PlanStore.Changed += OnPlansChanged;
         EnvironmentStore.Changed += OnPlansChanged;
+        _agentCount = Agents.GetEnabled().Count;
+        Agents.Changed += OnAgentsChanged;
+    }
+
+    private void OnAgentsChanged() => _ = InvokeAsync(() =>
+    {
+        _agentCount = Agents.GetEnabled().Count;
+        StateHasChanged();
+    });
+
+    private void RunOnAgents(LoadTestPlan plan)
+    {
+        _error = null;
+        if (!EnvironmentStore.TryResolve(EnvironmentFor(plan), out var environment, out var missing))
+        {
+            _error = $"{plan.Name}: {missing}";
+            return;
+        }
+
+        try
+        {
+            var run = DistributedRuns.Start(plan, environment);
+            Nav.NavigateTo($"distributed/{run.Id}");
+        }
+        catch (ArgumentException ex)
+        {
+            _error = $"{plan.Name}: {ex.Message}";
+        }
     }
 
     private void OnPlansChanged() => _ = InvokeAsync(() =>
@@ -263,5 +300,6 @@ else
     {
         PlanStore.Changed -= OnPlansChanged;
         EnvironmentStore.Changed -= OnPlansChanged;
+        Agents.Changed -= OnAgentsChanged;
     }
 }

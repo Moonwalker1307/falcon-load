@@ -1,0 +1,487 @@
+@page "/distributed/{Id:guid}"
+@implements IDisposable
+@inject DistributedRunManager DistributedRuns
+@inject PlanStore PlanStore
+@inject EnvironmentStore EnvironmentStore
+@inject NavigationManager Nav
+
+<PageTitle>@(_run?.Plan.Name ?? "Distributed run") · falcon-load</PageTitle>
+
+@if (_run is null)
+{
+    <div class="card empty">
+        <h1 tabindex="-1">Run not available</h1>
+        <p>Distributed runs are kept in memory and are cleared when the app restarts. Export a run as JSON to keep it.</p>
+        <a class="btn" href="agents">Back to agents</a>
+    </div>
+    return;
+}
+
+@{
+    var d = _run.Snapshot;
+    var s = d.Results;
+    var profile = _run.Plan.Profile;
+    var last = s.Timeline.Count > 0 ? s.Timeline[^1] : null;
+}
+
+<div class="page-header">
+    <div>
+        <div class="eyebrow">Distributed run</div>
+        <div class="title-row">
+            <h1 tabindex="-1">@_run.Plan.Name</h1>
+            <RunStateBadge State="d.State" />
+            <VerdictBadge Snapshot="s" />
+        </div>
+        <div class="meta">
+            <span>Started @_run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</span>
+            @if (!string.IsNullOrWhiteSpace(_run.EnvironmentName))
+            {
+                <span>Environment <strong>@_run.EnvironmentName</strong></span>
+            }
+            <span>@d.Agents.Count @(d.Agents.Count == 1 ? "agent" : "agents")</span>
+            <span>@Format.LoadSummary(profile) in all</span>
+            <span>Stops after @Format.StopSummary(profile)</span>
+            @if (profile.RampUpSeconds > 0 && !profile.IsStaged)
+            {
+                <span>@Format.Seconds(profile.RampUpSeconds) ramp-up</span>
+            }
+            @if (profile.MaxRequestsPerSecond > 0 && !(profile.IsStaged && profile.StageMode == StageMode.RequestRate))
+            {
+                <span>Capped at @profile.MaxRequestsPerSecond req/s in all</span>
+            }
+        </div>
+    </div>
+    <div class="actions">
+        @if (_planSaved)
+        {
+            <a class="btn btn-ghost" href="plans/@_run.Plan.Id"><Icon Name="edit" />Edit test</a>
+        }
+        @if (!d.IsFinished)
+        {
+            <button class="btn-danger" @onclick="() => _run.Stop()"><Icon Name="stop" />Stop on all agents</button>
+        }
+        else
+        {
+            <a class="btn" href="api/distributed/runs/@_run.Id/export" download title="Download the merged results and every agent's results as JSON"><Icon Name="download" />Export JSON</a>
+            <button class="btn-primary" @onclick="RunAgain"><Icon Name="rerun" />Run again</button>
+        }
+    </div>
+</div>
+
+<div class="sr-only" role="status" aria-live="polite">@StateMessage(d)</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert"><Icon Name="alert" /><div>@_error</div></div>
+}
+
+@if (d.FailureReason is not null)
+{
+    <div class="alert alert-error" role="alert"><Icon Name="alert" /><div><strong>The run failed.</strong> @d.FailureReason</div></div>
+}
+
+@foreach (var warning in d.Warnings)
+{
+    <div class="alert alert-info" role="status"><Icon Name="info" /><div>@warning</div></div>
+}
+
+<div class="progress-block">
+    <FlightProgress Value="Progress(d, profile)" Flying="!d.IsFinished" />
+    <div class="progress-text">
+        <span>@ProgressLabel(d, profile)</span>
+        <span>@Format.Duration(d.Elapsed) elapsed</span>
+    </div>
+</div>
+
+<section class="card card-flush" aria-labelledby="agents-title">
+    <div class="card-header"><h2 id="agents-title">Agents</h2><span class="hint">each agent's share, as last reported</span></div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th scope="col">Agent</th>
+                    <th scope="col">State</th>
+                    <th scope="col" class="num">Users</th>
+                    <th scope="col" class="num hide-sm">Active</th>
+                    <th scope="col" class="num">Requests</th>
+                    <th scope="col" class="num">Req/s</th>
+                    <th scope="col" class="num">p95</th>
+                    <th scope="col" class="num">Errors</th>
+                </tr>
+            </thead>
+            <tbody>
+                @for (var i = 0; i < d.Agents.Count; i++)
+                {
+                    var agent = d.Agents[i];
+                    var r = agent.Results;
+                    <tr>
+                        <td>
+                            <div class="row-title"><span class="swatch" style="background:@AgentColor(i)"></span>@agent.Name</div>
+                            <div class="small muted">@(agent.Machine ?? agent.BaseUrl.Host)@(agent.ClockOffset is { } offset && Math.Abs(offset.TotalMilliseconds) >= 50 ? $" · clock {Format.SignedMs(offset)}" : "")</div>
+                        </td>
+                        <td>
+                            <span class="@PhaseBadge(agent)">@PhaseLabel(agent)</span>
+                            @if (agent.Error is not null && agent.Phase is not (AgentRunPhase.Running or AgentRunPhase.Starting))
+                            {
+                                <div class="small status-err agent-error">@agent.Error</div>
+                            }
+                        </td>
+                        <td class="num">@agent.Share.PeakVirtualUsers</td>
+                        <td class="num hide-sm">@(r?.ActiveVirtualUsers.ToString() ?? "")</td>
+                        <td class="num">@(r?.TotalRequests.ToString("#,0") ?? "")</td>
+                        <td class="num">@(r is null ? "" : Format.Rate(r.RequestsPerSecond))</td>
+                        <td class="num">@(r is null ? "" : Format.Ms(r.Latency.P95Ms))</td>
+                        <td class="num @(r?.FailedRequests > 0 ? "status-err" : "")">@(r is null ? "" : Format.Percent(r.ErrorRate))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<h2 class="section-title">All agents together</h2>
+
+<div class="stats">
+    <div class="stat">
+        <div class="label">Throughput</div>
+        <div class="value">@Format.Rate(s.RequestsPerSecond)<span class="unit">req/s</span></div>
+        <div class="sub">@(d.IsFinished ? "average over the run" : $"now {Format.Rate(last?.Requests ?? 0)} req/s")</div>
+    </div>
+    <div class="stat">
+        <div class="label">p95 latency</div>
+        <div class="value">@Format.Ms(s.Latency.P95Ms)</div>
+        <div class="sub">median @Format.Ms(s.Latency.P50Ms)</div>
+    </div>
+    <div class="stat @(s.FailedRequests > 0 ? "bad" : s.TotalRequests > 0 ? "good" : "")">
+        <div class="label">Error rate</div>
+        <div class="value">@Format.Percent(s.ErrorRate)</div>
+        <div class="sub">@s.FailedRequests.ToString("#,0") of @s.TotalRequests.ToString("#,0") failed</div>
+    </div>
+    <div class="stat">
+        <div class="label">Requests</div>
+        <div class="value">@Format.Number(s.TotalRequests)</div>
+        <div class="sub">in @Format.Duration(d.Elapsed)</div>
+    </div>
+</div>
+
+<div class="stats stats-secondary">
+    <div class="stat"><div class="label">Mean</div><div class="value">@Format.Ms(s.Latency.MeanMs)</div></div>
+    <div class="stat"><div class="label">p90</div><div class="value">@Format.Ms(s.Latency.P90Ms)</div></div>
+    <div class="stat"><div class="label">p99</div><div class="value">@Format.Ms(s.Latency.P99Ms)</div></div>
+    <div class="stat"><div class="label">Max</div><div class="value">@Format.Ms(s.Latency.MaxMs)</div></div>
+    <div class="stat"><div class="label">Active users</div><div class="value">@s.ActiveVirtualUsers<span class="unit">/ @d.Concurrency</span></div></div>
+    <div class="stat"><div class="label">Received</div><div class="value">@Format.Bytes(s.BytesReceived)</div><div class="sub">sent @Format.Bytes(s.BytesSent)</div></div>
+</div>
+
+<div class="grid-2">
+    <section class="card" aria-labelledby="tp-title">
+        <div class="card-header"><h2 id="tp-title">Throughput</h2><span class="hint">requests per second, all agents and each</span></div>
+        <LineChart AriaLabel="Combined and per-agent requests per second over time" Series="ThroughputSeries(d)" />
+    </section>
+    <section class="card" aria-labelledby="lat-title">
+        <div class="card-header"><h2 id="lat-title">Latency</h2><span class="hint">per second, all agents</span></div>
+        <LineChart AriaLabel="Latency over time" FormatValue="Format.Ms" Series="LatencySeries(s)" />
+    </section>
+</div>
+
+<section class="card card-flush" aria-labelledby="req-title">
+    <div class="card-header"><h2 id="req-title">Requests</h2></div>
+    <div class="table-wrap">
+        <table class="table-hover">
+            <thead>
+                <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">Request</th>
+                    <th scope="col" class="num">Count</th>
+                    <th scope="col" class="num">Errors</th>
+                    <th scope="col" class="num">Mean</th>
+                    <th scope="col" class="num">p50</th>
+                    <th scope="col" class="num">p95</th>
+                    <th scope="col" class="num">p99</th>
+                    <th scope="col" class="num">Max</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var step in s.Steps)
+                {
+                    var def = step.StepIndex < _run.Plan.Requests.Count ? _run.Plan.Requests[step.StepIndex] : null;
+                    <tr>
+                        <td><span class="step-num">@(step.StepIndex + 1)</span></td>
+                        <td>
+                            @if (def is null)
+                            {
+                                <div class="mono small">@step.Name</div>
+                            }
+                            else
+                            {
+                                @if (!string.IsNullOrWhiteSpace(def.Name))
+                                {
+                                    <div class="row-title">@def.Name</div>
+                                }
+                                <div class="request-line"><span class="@Format.MethodClass(def.Method)">@def.Method</span><span class="mono muted" title="@def.Url">@def.Url</span></div>
+                            }
+                        </td>
+                        <td class="num">@step.Requests.ToString("#,0")</td>
+                        <td class="num @(step.Failures > 0 ? "status-err" : "")">@step.Failures.ToString("#,0")</td>
+                        <td class="num">@Format.Ms(step.Latency.MeanMs)</td>
+                        <td class="num">@Format.Ms(step.Latency.P50Ms)</td>
+                        <td class="num">@Format.Ms(step.Latency.P95Ms)</td>
+                        <td class="num">@Format.Ms(step.Latency.P99Ms)</td>
+                        <td class="num">@Format.Ms(step.Latency.MaxMs)</td>
+                    </tr>
+                }
+                @if (s.Steps.Count == 0)
+                {
+                    <tr><td colspan="9" class="muted">No results from the agents yet.</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<div class="grid-2">
+    <section class="card" aria-labelledby="codes-title">
+        <h2 id="codes-title">Status codes</h2>
+        @if (s.StatusCodes.Count == 0)
+        {
+            <div class="muted">No responses yet.</div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th scope="col">Status</th>
+                            <th scope="col" class="num">All</th>
+                            <th scope="col" class="num"></th>
+                            @foreach (var agent in d.Agents)
+                            {
+                                <th scope="col" class="num">@agent.Name</th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var (statusCode, count) in s.StatusCodes)
+                        {
+                            <tr>
+                                <td class="mono @Format.StatusClass(statusCode)">@statusCode</td>
+                                <td class="num">@count.ToString("#,0")</td>
+                                <td class="num muted">@Format.Percent((double)count / Math.Max(1, s.TotalRequests))</td>
+                                @foreach (var agent in d.Agents)
+                                {
+                                    <td class="num">@(agent.Results?.StatusCodes.GetValueOrDefault(statusCode).ToString("#,0") ?? "")</td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+    <section class="card" aria-labelledby="errors-title">
+        <h2 id="errors-title">Errors</h2>
+        @if (s.Errors.Count == 0)
+        {
+            <div class="muted">@(s.TotalRequests == 0 ? "No responses yet." : "No errors so far.")</div>
+        }
+        else
+        {
+            <table>
+                <tbody>
+                    @foreach (var error in s.Errors)
+                    {
+                        <tr>
+                            <td class="small">@error.Message</td>
+                            <td class="num status-err">@error.Count.ToString("#,0")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+</div>
+
+@code {
+    private DistributedRun? _run;
+    private bool _planSaved;
+    private string? _error;
+
+    [Parameter] public Guid Id { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        if (_run is not null)
+        {
+            _run.Updated -= OnUpdated;
+        }
+
+        _run = DistributedRuns.Get(Id);
+        _planSaved = _run is not null && PlanStore.Get(_run.Plan.Id) is not null;
+        if (_run is not null)
+        {
+            _run.Updated += OnUpdated;
+        }
+    }
+
+    private void OnUpdated(DistributedRun run) => _ = InvokeAsync(StateHasChanged);
+
+    private static double Progress(DistributedSnapshot d, LoadProfile p)
+    {
+        if (d.IsFinished)
+        {
+            return 1;
+        }
+
+        var fraction = p.IsStaged ? d.Elapsed.TotalSeconds / p.TotalStageSeconds
+            : p.StopCondition == StopCondition.Duration ? d.Elapsed.TotalSeconds / p.DurationSeconds
+            : (double)d.Results.TotalRequests / p.TotalRequests;
+        return Math.Clamp(fraction, 0, 1);
+    }
+
+    private static string StateMessage(DistributedSnapshot d) => d.State switch
+    {
+        RunState.Pending => "The agents are being contacted.",
+        RunState.Running => "The test is running on the agents.",
+        RunState.Completed => $"The test completed: {d.Results.TotalRequests:#,0} requests, {Format.Percent(d.Results.ErrorRate)} errors.",
+        RunState.Cancelled => "The test was stopped.",
+        _ => "The test failed.",
+    };
+
+    private static string ProgressLabel(DistributedSnapshot d, LoadProfile p)
+    {
+        if (d.IsFinished)
+        {
+            return d.State switch
+            {
+                RunState.Completed => "Finished",
+                RunState.Cancelled => "Stopped early",
+                _ => "Failed",
+            };
+        }
+
+        if (d.State == RunState.Pending)
+        {
+            return "Contacting the agents…";
+        }
+
+        if (d.Agents.All(a => a.Phase is AgentRunPhase.Starting or AgentRunPhase.Connecting))
+        {
+            return "Waiting for the shared start time…";
+        }
+
+        var percent = $"{Math.Round(Progress(d, p) * 100)}%";
+        if (p.IsStaged)
+        {
+            return $"{percent} · {Format.Remaining(TimeSpan.FromSeconds(p.TotalStageSeconds) - d.Elapsed)}";
+        }
+
+        if (p.StopCondition == StopCondition.Duration)
+        {
+            return $"{percent} · {Format.Remaining(TimeSpan.FromSeconds(p.DurationSeconds) - d.Elapsed)}";
+        }
+
+        var left = p.TotalRequests - d.Results.TotalRequests;
+        return d.Results.RequestsPerSecond > 0
+            ? $"{percent} · about {Format.Remaining(TimeSpan.FromSeconds(left / d.Results.RequestsPerSecond))}"
+            : percent;
+    }
+
+    private static string PhaseBadge(AgentRunStatus agent) => "badge " + agent.Phase switch
+    {
+        AgentRunPhase.Connecting or AgentRunPhase.Starting => "badge-pending",
+        AgentRunPhase.Running => "badge-running",
+        AgentRunPhase.Finished when agent.Results?.State == RunState.Cancelled => "badge-cancelled",
+        AgentRunPhase.Finished => "badge-completed",
+        _ => "badge-failed",
+    };
+
+    private static string PhaseLabel(AgentRunStatus agent) => agent.Phase switch
+    {
+        AgentRunPhase.Connecting => "Connecting",
+        AgentRunPhase.Starting => "Starting",
+        AgentRunPhase.Running => "Running",
+        AgentRunPhase.Finished => agent.Results?.State switch
+        {
+            RunState.Cancelled => "Stopped",
+            _ => "Finished",
+        },
+        AgentRunPhase.Lost => "Lost",
+        _ => "Failed",
+    };
+
+    private static string AgentColor(int index) => $"var(--machine-{index % 6 + 1})";
+
+    private static IReadOnlyList<ChartSeries> ThroughputSeries(DistributedSnapshot d)
+    {
+        var combined = d.Results;
+        var series = new List<ChartSeries>
+        {
+            new("All agents", "var(--series-1)", combined.Timeline.Select(t => (double)t.Requests).ToList(), Fill: true),
+        };
+
+        if (d.Combined is { } c && c.Machines.Count > 1)
+        {
+            var length = combined.Timeline.Count;
+            for (var i = 0; i < c.Machines.Count; i++)
+            {
+                var machine = c.Machines[i];
+                var values = new double[length];
+                foreach (var point in machine.Results.Timeline)
+                {
+                    var at = point.Second + machine.OffsetSeconds;
+                    if (at >= 0 && at < length)
+                    {
+                        values[at] = point.Requests;
+                    }
+                }
+
+                series.Add(new(machine.Name, AgentColor(d.Agents.ToList().FindIndex(a => a.Name == machine.Name) is var k && k >= 0 ? k : i), values));
+            }
+        }
+
+        series.Add(new("Errors/s", "var(--series-3)", combined.Timeline.Select(t => (double)t.Failures).ToList()));
+        return series;
+    }
+
+    private static IReadOnlyList<ChartSeries> LatencySeries(LoadTestSnapshot s) =>
+    [
+        new("Mean", "var(--series-1)", s.Timeline.Select(t => t.MeanLatencyMs).ToList()),
+        new("p95", "var(--series-2)", s.Timeline.Select(t => t.P95LatencyMs).ToList()),
+    ];
+
+    private void RunAgain()
+    {
+        if (_run is null)
+        {
+            return;
+        }
+
+        _error = null;
+        if (!EnvironmentStore.TryResolve(_run.EnvironmentName, out var environment, out var missing))
+        {
+            _error = missing;
+            return;
+        }
+
+        try
+        {
+            // Prefer the latest saved version of the test, if it still exists.
+            var plan = PlanStore.Get(_run.Plan.Id) ?? _run.Plan;
+            var next = DistributedRuns.Start(plan, environment);
+            Nav.NavigateTo($"distributed/{next.Id}");
+        }
+        catch (ArgumentException ex)
+        {
+            _error = ex.Message;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_run is not null)
+        {
+            _run.Updated -= OnUpdated;
+        }
+    }
+}

@@ -112,7 +112,7 @@
     var s = r.Combined;
     var users = r.Machines.Sum(m => m.Concurrency);
 
-    <h2 class="section-title">Combined <RunStateBadge State="s.State" /></h2>
+    <h2 class="section-title">Combined <RunStateBadge State="s.State" /> <VerdictBadge Snapshot="s" /></h2>
 
     @foreach (var warning in r.Warnings)
     {
@@ -123,6 +123,9 @@
     {
         <div class="alert alert-error" role="alert"><Icon Name="alert" /><div><strong>A run failed.</strong> @s.FailureReason</div></div>
     }
+
+    @* The first machine's thresholds judge the combined load, since every machine ran the same test. *@
+    <ThresholdResults Snapshot="s" />
 
     <div class="stats">
         <div class="stat">
@@ -215,6 +218,8 @@
                 </table>
             </div>
         </div>
+
+        <ChecksTable Snapshot="s" />
 
         <div class="card">
             <h2>Status codes</h2>
