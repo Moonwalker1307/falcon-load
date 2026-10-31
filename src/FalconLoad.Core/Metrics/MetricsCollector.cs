@@ -117,6 +117,20 @@ public sealed class MetricsCollector
         }
     }
 
+    /// <summary>
+    /// A snapshot and each request's latency histogram, taken together so their counts agree. Cheaper than
+    /// <see cref="SnapshotWithHistograms"/>, as it leaves out the per-second histograms, so it suits frequent
+    /// readers such as the metric exporters.
+    /// </summary>
+    public (LoadTestSnapshot Snapshot, IReadOnlyList<HistogramData> Steps) SnapshotWithStepHistograms(
+        RunState state, TimeSpan elapsed, int activeVirtualUsers, string? failureReason = null)
+    {
+        lock (_gate)
+        {
+            return (SnapshotLocked(state, elapsed, activeVirtualUsers, failureReason), _steps.Select(h => h.ToData()).ToList());
+        }
+    }
+
     private LoadTestSnapshot SnapshotLocked(RunState state, TimeSpan elapsed, int activeVirtualUsers, string? failureReason)
     {
         var lastSecond = LastChartedSecond(state, elapsed);

@@ -15,7 +15,7 @@ foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentV
     }
 }
 
-var console = new CliConsole(Console.In, Console.Out, Console.Error, ErrorIsTerminal: !Console.IsErrorRedirected, secrets);
+var console = new CliConsole(Console.In, Console.Out, Console.Error, ErrorIsTerminal: !Console.IsErrorRedirected, secrets, Environment.GetEnvironmentVariable);
 return await CliApp.RunAsync(args, console, cancellationToken: stop.Token);
 
 void Stop(PosixSignalContext context)

@@ -1,0 +1,24 @@
+@using FalconLoad.Core.Telemetry
+
+@if (!Enabled)
+{
+    <span class="badge">Off</span>
+}
+else if (Status.LastAttempt is null)
+{
+    <span class="badge badge-pending" title="Metrics are pushed while a test runs">Waiting for a test</span>
+}
+else if (Status.LastError is null)
+{
+    <span class="badge badge-completed" title="Last push @Format.When(Status.LastAttempt.Value)">Sending</span>
+}
+else
+{
+    <span class="badge badge-failed" title="Last push @Format.When(Status.LastAttempt.Value)">Failing</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public bool Enabled { get; set; }
+
+    [Parameter, EditorRequired] public PushStatus Status { get; set; } = PushStatus.None;
+}

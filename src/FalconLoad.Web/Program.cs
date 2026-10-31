@@ -26,6 +26,12 @@ builder.Services.AddHttpClient<AgentClient>(http => http.Timeout = TimeSpan.From
 builder.Services.AddSingleton<AgentRegistry>();
 builder.Services.AddSingleton<DistributedRunManager>();
 
+// Live metrics for Prometheus (scraped from /metrics), InfluxDB and OpenTelemetry (pushed in the background).
+builder.Services.AddSingleton<TelemetryStore>();
+builder.Services.AddHttpClient(nameof(TelemetryService));
+builder.Services.AddSingleton<TelemetryService>();
+builder.Services.AddHostedService(services => services.GetRequiredService<TelemetryService>());
+
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())

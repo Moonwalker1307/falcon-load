@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
+using FalconLoad.Core.Telemetry;
 
 namespace FalconLoad.Core.Engine;
 
@@ -108,6 +109,14 @@ public sealed class LoadTestRunner : IAsyncDisposable
         var (snapshot, histograms) = _metrics.SnapshotWithHistograms(
             _state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
         return (ThresholdEvaluator.Apply(_plan.Thresholds, snapshot with { Auth = _tokens?.Stats }), histograms);
+    }
+
+    /// <summary>The results so far with each request's latency histogram, for the metric exporters.</summary>
+    public MachineTelemetry GetTelemetry(string machine)
+    {
+        var (snapshot, steps) = _metrics.SnapshotWithStepHistograms(
+            _state, _finalElapsed ?? _clock.Elapsed, Volatile.Read(ref _activeVirtualUsers), _failureReason);
+        return new MachineTelemetry(machine, ThresholdEvaluator.Apply(_plan.Thresholds, snapshot), steps);
     }
 
     /// <summary>Runs the load test to completion. Cancelling <paramref name="cancellationToken"/> stops it early.</summary>

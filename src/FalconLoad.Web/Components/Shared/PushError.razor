@@ -1,0 +1,28 @@
+@using FalconLoad.Core.Telemetry
+
+@if (Enabled && Status.LastAttempt is { } attempt)
+{
+    @if (Status.LastError is { } error)
+    {
+        <div class="alert alert-error alert-compact push-status" role="status">
+            <Icon Name="alert" />
+            <div>
+                <strong>The last push failed</strong> (@Format.When(attempt)): @error
+                @if (Status.LastSuccess is { } success)
+                {
+                    <span class="muted"> The last one that worked was @Format.When(success).</span>
+                }
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="small muted push-status" role="status">Last push @Format.When(attempt), with @(Status.Runs == 1 ? "1 run" : $"{Status.Runs} runs").</div>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired] public bool Enabled { get; set; }
+
+    [Parameter, EditorRequired] public PushStatus Status { get; set; } = PushStatus.None;
+}

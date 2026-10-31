@@ -5,6 +5,7 @@ using FalconLoad.Core.Import;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
 using FalconLoad.Core.Reports;
+using FalconLoad.Core.Telemetry;
 
 namespace FalconLoad.Web.Services;
 
@@ -291,7 +292,39 @@ public static class ApiEndpoints
 
         MapAgents(api);
         MapDistributedRuns(api);
+        MapTelemetry(app, api);
     }
+
+    /// <summary>
+    /// Where live metrics go. <c>/metrics</c> is the Prometheus scrape endpoint, at the path Prometheus looks at by
+    /// default; the settings never return the InfluxDB token or the OTLP header values.
+    /// </summary>
+    private static void MapTelemetry(IEndpointRouteBuilder app, RouteGroupBuilder api)
+    {
+        app.MapGet("/metrics", (TelemetryService telemetry) =>
+            telemetry.Scrape() is { } text ? Results.Text(text, PrometheusText.ContentType) : Results.NotFound());
+
+        api.MapGet("/telemetry", (TelemetryStore store, TelemetryService telemetry) => TelemetryView(store, telemetry));
+
+        api.MapPut("/telemetry", (TelemetrySettings settings, TelemetryStore store, TelemetryService telemetry) =>
+        {
+            var problems = settings.KeepSecretsFrom(store.Get()).Validate();
+            if (problems.Count > 0)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["telemetry"] = [.. problems] });
+            }
+
+            store.Save(settings);
+            return Results.Ok(TelemetryView(store, telemetry));
+        });
+    }
+
+    private static object TelemetryView(TelemetryStore store, TelemetryService telemetry) => new
+    {
+        Settings = store.Get().Redacted(),
+        InfluxDb = telemetry.Publisher.InfluxDbStatus,
+        Otlp = telemetry.Publisher.OtlpStatus,
+    };
 
     /// <summary>The agents this controller runs tests on. Tokens are never returned; an update without a token keeps the saved one.</summary>
     private static void MapAgents(RouteGroupBuilder api)

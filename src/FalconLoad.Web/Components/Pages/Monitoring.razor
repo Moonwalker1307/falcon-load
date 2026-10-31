@@ -1,0 +1,257 @@
+@page "/monitoring"
+@implements IDisposable
+@using FalconLoad.Core.Telemetry
+@inject TelemetryStore Store
+@inject TelemetryService Telemetry
+@inject NavigationManager Nav
+
+<PageTitle>Monitoring · falcon-load</PageTitle>
+
+<NavigationLock ConfirmExternalNavigation="IsDirty" />
+
+<div class="page-header">
+    <div>
+        <h1>Monitoring</h1>
+        <div class="subtitle">
+            Stream the live numbers of every test to Prometheus, InfluxDB or an OpenTelemetry collector, and watch them in
+            Grafana next to the metrics of the system under test. Tests run on agents are reported here, one series per agent.
+        </div>
+    </div>
+    <div class="actions">
+        <span role="status">
+            @if (IsDirty)
+            {
+                <span class="badge badge-unsaved">Unsaved changes</span>
+            }
+            else if (_savedMessage is not null)
+            {
+                <span class="badge badge-saved">@_savedMessage</span>
+            }
+        </span>
+        <button class="btn-primary" @onclick="Save"><Icon Name="save" />Save</button>
+    </div>
+</div>
+
+@if (_problems.Count > 0)
+{
+    <div class="alert alert-error" role="alert">
+        <Icon Name="alert" />
+        <div>
+            <strong>@(_problems.Count == 1 ? "One thing needs fixing" : $"{_problems.Count} things need fixing") before these settings can be saved.</strong>
+            <ul>
+                @foreach (var problem in _problems)
+                {
+                    <li>@problem</li>
+                }
+            </ul>
+        </div>
+    </div>
+}
+
+<section class="card" aria-labelledby="prometheus-title">
+    <div class="card-header">
+        <h2 id="prometheus-title">Prometheus</h2>
+        <span class="badge @(_saved.PrometheusEnabled ? "badge-completed" : "")">@(_saved.PrometheusEnabled ? "Serving /metrics" : "Off")</span>
+    </div>
+    <label class="check">
+        <input type="checkbox" @bind="_settings.PrometheusEnabled" />
+        <span>Answer Prometheus scrapes on <code>/metrics</code><span class="hint">Running tests, and those that finished in the last @TelemetryService.KeepFinished.TotalMinutes minutes, in the Prometheus text format.</span></span>
+    </label>
+    <p class="small muted">Add this to the <code>scrape_configs</code> of <code>prometheus.yml</code>. A short interval keeps the charts close to live:</p>
+    <pre class="code-block">- job_name: falcon-load
+  scrape_interval: 5s
+  static_configs:
+    - targets: ['@ScrapeTarget']</pre>
+    @if (_saved.PrometheusEnabled)
+    {
+        <a class="small" href="metrics" target="_blank" rel="noopener">See what Prometheus gets</a>
+    }
+</section>
+
+<section class="card" aria-labelledby="influx-title">
+    <div class="card-header">
+        <h2 id="influx-title">InfluxDB</h2>
+        <PushBadge Enabled="_saved.InfluxDb.Enabled" Status="Telemetry.Publisher.InfluxDbStatus" />
+    </div>
+    <label class="check">
+        <input type="checkbox" @bind="_settings.InfluxDb.Enabled" />
+        <span>Write to InfluxDB while a test runs<span class="hint">Through <code>/api/v2/write</code>, which InfluxDB 2 and 3 have, and 1.8 with the database as the bucket and <code>user:password</code> as the token.</span></span>
+    </label>
+    <div class="field">
+        <label for="influx-url">URL</label>
+        <input id="influx-url" type="text" class="mono" placeholder="http://localhost:8086" spellcheck="false" autocomplete="off" @bind="_settings.InfluxDb.Url" @bind:event="oninput" />
+    </div>
+    <div class="field-row">
+        <div class="field">
+            <label for="influx-bucket">Bucket</label>
+            <input id="influx-bucket" type="text" class="mono" placeholder="falcon-load" spellcheck="false" autocomplete="off" @bind="_settings.InfluxDb.Bucket" @bind:event="oninput" />
+        </div>
+        <div class="field">
+            <label for="influx-org">Organization</label>
+            <input id="influx-org" type="text" class="mono" placeholder="Only for InfluxDB 2" spellcheck="false" autocomplete="off"
+                   @bind:get="_settings.InfluxDb.Organization ?? string.Empty" @bind:set="value => _settings.InfluxDb.Organization = value" @bind:event="oninput" />
+        </div>
+    </div>
+    <div class="field">
+        <label for="influx-token">Token</label>
+        <input id="influx-token" type="password" class="mono" autocomplete="new-password" spellcheck="false" aria-describedby="influx-token-hint"
+               placeholder="@(_settings.InfluxDb.Token is null ? "Saved. Type to replace it." : "An API token with write access to the bucket")"
+               @bind:get="_settings.InfluxDb.Token ?? string.Empty" @bind:set="value => _settings.InfluxDb.Token = value" @bind:event="oninput" />
+        <div class="hint" id="influx-token-hint">Write-only: after saving it isn't shown again, in the app or the API.</div>
+    </div>
+    <PushError Status="Telemetry.Publisher.InfluxDbStatus" Enabled="_saved.InfluxDb.Enabled" />
+</section>
+
+<section class="card" aria-labelledby="otlp-title">
+    <div class="card-header">
+        <h2 id="otlp-title">OpenTelemetry (OTLP)</h2>
+        <PushBadge Enabled="_saved.Otlp.Enabled" Status="Telemetry.Publisher.OtlpStatus" />
+    </div>
+    <label class="check">
+        <input type="checkbox" @bind="_settings.Otlp.Enabled" />
+        <span>Send metrics over OTLP/HTTP while a test runs<span class="hint">As JSON, to an OpenTelemetry Collector, Grafana Alloy, a hosted OTLP endpoint, or Prometheus 3 started with <code>--web.enable-otlp-receiver</code> (endpoint <code>http://prometheus:9090/api/v1/otlp</code>).</span></span>
+    </label>
+    <div class="field">
+        <label for="otlp-endpoint">Endpoint</label>
+        <input id="otlp-endpoint" type="text" class="mono" placeholder="http://localhost:4318" spellcheck="false" autocomplete="off" aria-describedby="otlp-endpoint-hint" @bind="_settings.Otlp.Endpoint" @bind:event="oninput" />
+        <div class="hint" id="otlp-endpoint-hint"><code>/v1/metrics</code> is added unless the address already ends with it.</div>
+    </div>
+
+    <div class="card-header subsection-header">
+        <h3>Headers</h3>
+        <button class="btn-sm" @onclick="() => _settings.Otlp.Headers.Add(new TelemetryHeader())"><Icon Name="plus" />Add header</button>
+    </div>
+    @if (_settings.Otlp.Headers.Count == 0)
+    {
+        <div class="hint">None. A hosted endpoint usually wants an <code>Authorization</code> header.</div>
+    }
+    @for (var i = 0; i < _settings.Otlp.Headers.Count; i++)
+    {
+        var header = _settings.Otlp.Headers[i];
+        var n = i + 1;
+        <div class="otlp-header-row">
+            <input type="text" class="mono" placeholder="Authorization" aria-label="Header @n name" spellcheck="false" autocomplete="off" @bind="header.Name" @bind:event="oninput" />
+            <input type="password" class="mono" autocomplete="new-password" spellcheck="false" aria-label="Header @n value"
+                   placeholder="@(header.Value is null ? "Saved. Type to replace it." : "Value")"
+                   @bind:get="header.Value ?? string.Empty" @bind:set="value => header.Value = value" @bind:event="oninput" />
+            <button class="btn-sm btn-icon btn-ghost btn-danger" title="Remove header" aria-label="Remove header @n" @onclick="() => _settings.Otlp.Headers.Remove(header)"><Icon Name="trash" /></button>
+        </div>
+    }
+    <div class="hint">Header values are write-only, like the InfluxDB token.</div>
+    <PushError Status="Telemetry.Publisher.OtlpStatus" Enabled="_saved.Otlp.Enabled" />
+</section>
+
+<section class="card" aria-labelledby="push-title">
+    <h2 id="push-title">Push interval</h2>
+    <div class="field field-narrow">
+        <label for="push-interval">Seconds between pushes</label>
+        <input id="push-interval" type="number" min="@TelemetrySettings.MinPushIntervalSeconds" max="@TelemetrySettings.MaxPushIntervalSeconds" aria-describedby="push-interval-hint" @bind="_settings.PushIntervalSeconds" @bind:event="oninput" />
+        <div class="hint" id="push-interval-hint">How often InfluxDB and the OTLP endpoint get the numbers of running tests. Each run also gets one last push when it finishes.</div>
+    </div>
+</section>
+
+<section class="card" aria-labelledby="what-title">
+    <h2 id="what-title">What is sent</h2>
+    <p class="small muted">
+        Every series is labelled with <code>run_id</code>, <code>test</code> and <code>machine</code> (the agent, for a test run on agents), and per request with <code>request</code> and <code>request_index</code>.
+        Prometheus and OTLP get running totals and a latency histogram, so <code>sum</code> adds agents up and <code>histogram_quantile</code> gives percentiles over any window.
+        InfluxDB gets each interval's throughput, error rate and exact latency percentiles, with agents merged.
+        Error messages and response bodies are never sent, and a test's requests are named as written, so <code>{{token}}</code> stays <code>{{token}}</code>.
+    </p>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th scope="col">Prometheus metric</th><th scope="col">Meaning</th></tr></thead>
+            <tbody>
+                @foreach (var (name, meaning) in Metrics)
+                {
+                    <tr><td class="mono small metric-name">@name</td><td class="small">@meaning</td></tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <p class="hint">A ready-made Grafana dashboard for Prometheus, and a Docker Compose stack with Prometheus and Grafana, are in the repository in <code>docs/monitoring</code>.</p>
+</section>
+
+@code {
+    private static readonly (string Name, string Meaning)[] Metrics =
+    [
+        ("falcon_load_requests_total", "Requests sent, by request and outcome (success or failure)"),
+        ("falcon_load_request_duration_seconds", "Latency histogram, by request"),
+        ("falcon_load_responses_total", "Responses by status code"),
+        ("falcon_load_checks_total", "Response checks that passed and failed"),
+        ("falcon_load_virtual_users", "Active virtual users"),
+        ("falcon_load_sent_bytes_total, falcon_load_received_bytes_total", "Bytes sent and received"),
+        ("falcon_load_run_active", "1 while a run is going"),
+        ("falcon_load_run_passed", "1 while a run's thresholds hold"),
+    ];
+
+    private TelemetrySettings _settings = new();
+    private TelemetrySettings _saved = new();
+    private string _baseline = string.Empty;
+    private IReadOnlyList<string> _problems = [];
+    private string? _savedMessage;
+    private Timer? _timer;
+
+    private bool IsDirty => Snapshot(_settings) != _baseline;
+
+    private string ScrapeTarget => new Uri(Nav.BaseUri).Authority;
+
+    protected override void OnInitialized()
+    {
+        Load();
+        Store.Changed += OnChanged;
+
+        // The push status changes in the background; show it while pushes are on.
+        _timer = new Timer(_ =>
+        {
+            if (_saved.PushesAnywhere)
+            {
+                _ = InvokeAsync(StateHasChanged);
+            }
+        }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+    }
+
+    private void Load()
+    {
+        // The page works on a redacted copy, so saved secrets never reach it.
+        _saved = Store.Get().Redacted();
+        _settings = _saved.Clone();
+        _baseline = Snapshot(_settings);
+    }
+
+    private void OnChanged() => _ = InvokeAsync(() =>
+    {
+        // Changes saved elsewhere, e.g. through the API, replace the form unless it has edits of its own.
+        if (!IsDirty)
+        {
+            Load();
+        }
+        else
+        {
+            _saved = Store.Get().Redacted();
+        }
+
+        StateHasChanged();
+    });
+
+    private static string Snapshot(TelemetrySettings settings) => System.Text.Json.JsonSerializer.Serialize(settings);
+
+    private void Save()
+    {
+        _problems = _settings.KeepSecretsFrom(Store.Get()).Validate();
+        if (_problems.Count > 0)
+        {
+            return;
+        }
+
+        Store.Save(_settings);
+        Load();
+        _savedMessage = $"Saved at {DateTime.Now:HH:mm}";
+    }
+
+    public void Dispose()
+    {
+        Store.Changed -= OnChanged;
+        _timer?.Dispose();
+    }
+}

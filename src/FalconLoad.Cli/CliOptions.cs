@@ -37,6 +37,13 @@ internal sealed record CliOptions
           --data <name>=<path>        Use the CSV or JSON file at <path> instead of the rows saved in the test's data
                                       file called <name>, such as --data users.csv=./users.csv. Can be repeated.
           --machine <name>            The machine name recorded in the results. Default: this machine's name.
+          --influx <url>              Write live metrics to InfluxDB at this address, e.g. http://localhost:8086. The token
+                                      comes from the INFLUX_TOKEN environment variable.
+          --influx-bucket <name>      The InfluxDB bucket (the database on InfluxDB 1.8 and 3). Needed with --influx.
+          --influx-org <name>         The InfluxDB organization, for InfluxDB 2.
+          --otlp <endpoint>           Send live metrics over OTLP/HTTP, e.g. http://localhost:4318. Headers such as
+                                      Authorization come from OTEL_EXPORTER_OTLP_HEADERS (name=value,name=value).
+          --metrics-interval <s>      Seconds between metric pushes. Default: 5.
           --quiet                     Print only the summary, without live progress.
           -h, --help                  Show this help.
           --version                   Show the version.
@@ -87,6 +94,18 @@ internal sealed record CliOptions
     public IReadOnlyList<KeyValuePair<string, string>> DataFiles { get; init; } = [];
 
     public bool Quiet { get; init; }
+
+    /// <summary>The InfluxDB address given with --influx.</summary>
+    public string? InfluxUrl { get; init; }
+
+    public string? InfluxBucket { get; init; }
+
+    public string? InfluxOrganization { get; init; }
+
+    /// <summary>The OTLP/HTTP endpoint given with --otlp.</summary>
+    public string? OtlpEndpoint { get; init; }
+
+    public int? MetricsIntervalSeconds { get; init; }
 
     /// <summary>Parses <paramref name="args"/>. Returns null and sets <paramref name="error"/> when they are invalid.</summary>
     public static CliOptions? Parse(IReadOnlyList<string> args, out string? error)
@@ -210,6 +229,26 @@ internal sealed record CliOptions
 
                     options = options with { DataFiles = [.. options.DataFiles, new(value[..separator], value[(separator + 1)..])] };
                     break;
+                case "--influx":
+                    options = options with { InfluxUrl = value };
+                    break;
+                case "--influx-bucket":
+                    options = options with { InfluxBucket = value };
+                    break;
+                case "--influx-org":
+                    options = options with { InfluxOrganization = value };
+                    break;
+                case "--otlp":
+                    options = options with { OtlpEndpoint = value };
+                    break;
+                case "--metrics-interval":
+                    if (!TryPositive(name, value, out var interval, out error))
+                    {
+                        return null;
+                    }
+
+                    options = options with { MetricsIntervalSeconds = interval };
+                    break;
                 case "--concurrency":
                     if (!TryPositive(name, value, out var concurrency, out error))
                     {
@@ -262,11 +301,32 @@ internal sealed record CliOptions
             return null;
         }
 
+        if (options.InfluxUrl is null && (options.InfluxBucket ?? options.InfluxOrganization) is not null)
+        {
+            error = "--influx-bucket and --influx-org need --influx with the InfluxDB address.";
+            return null;
+        }
+
+        if (options.InfluxUrl is not null && string.IsNullOrWhiteSpace(options.InfluxBucket))
+        {
+            error = "--influx needs --influx-bucket with the bucket to write to.";
+            return null;
+        }
+
+        if (options.MetricsIntervalSeconds is not null && options.InfluxUrl is null && options.OtlpEndpoint is null)
+        {
+            error = "--metrics-interval needs --influx or --otlp.";
+            return null;
+        }
+
         return options with { File = file };
     }
 
     private static readonly HashSet<string> ValueOptions =
-        ["--test", "--out", "--html", "--junit", "--machine", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate"];
+        [
+            "--test", "--out", "--html", "--junit", "--machine", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate",
+            "--influx", "--influx-bucket", "--influx-org", "--otlp", "--metrics-interval",
+        ];
 
     private static bool TryPositive(string name, string value, out int result, out string? error)
     {

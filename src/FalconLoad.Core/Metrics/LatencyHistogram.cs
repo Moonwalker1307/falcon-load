@@ -155,6 +155,84 @@ public sealed class LatencyHistogram
         return Math.Min(index, BucketCount - 1);
     }
 
+    /// <summary>
+    /// The samples of <paramref name="now"/> that <paramref name="before"/>, an earlier copy of the same histogram,
+    /// didn't hold yet: what was recorded in between. The mean is exact; the minimum and maximum are exact when they
+    /// changed in between and within a bucket's width otherwise. A <paramref name="before"/> that holds more than
+    /// <paramref name="now"/> belongs to something else and is ignored.
+    /// </summary>
+    internal static LatencyHistogram Since(HistogramData now, HistogramData? before)
+    {
+        if (before is not null && (before.Count > now.Count || before.Count == 0))
+        {
+            before = null;
+        }
+
+        var histogram = new LatencyHistogram();
+        var counts = now.Counts ?? [];
+        int first = -1, last = -1;
+        for (var i = 0; i < counts.Length; i++)
+        {
+            var bucket = now.Offset + i;
+            if (bucket is < 0 or >= BucketCount)
+            {
+                continue;
+            }
+
+            var added = counts[i] - (before?.CountAt(bucket) ?? 0);
+            if (added <= 0)
+            {
+                continue;
+            }
+
+            histogram._buckets[bucket] = added;
+            histogram.Count += added;
+            first = first < 0 ? bucket : first;
+            last = bucket;
+        }
+
+        if (histogram.Count == 0)
+        {
+            return new LatencyHistogram();
+        }
+
+        histogram.SumMs = Math.Max(0, now.SumMs - (before?.SumMs ?? 0));
+        histogram.MinMs = before is null || now.MinMs < before.MinMs ? now.MinMs : Math.Max(BucketMidpointMs(first), now.MinMs);
+        histogram.MaxMs = before is null || now.MaxMs > before.MaxMs ? now.MaxMs : Math.Min(BucketMidpointMs(last), now.MaxMs);
+        histogram.MinMs = Math.Min(histogram.MinMs, histogram.MaxMs);
+        return histogram;
+    }
+
+    /// <summary>
+    /// Sorts the samples of <paramref name="data"/> into coarser buckets with the given upper bounds, as a Prometheus
+    /// or OpenTelemetry histogram has them. Returns one count per bound plus one for samples above the last bound, not
+    /// cumulative. Each fine bucket goes whole to the coarse bucket its midpoint falls in, so a sample within about
+    /// 1% of a bound may be counted on the other side of it.
+    /// </summary>
+    internal static long[] Rebucket(HistogramData data, IReadOnlyList<double> upperBoundsMs)
+    {
+        var result = new long[upperBoundsMs.Count + 1];
+        var counts = data.Counts ?? [];
+        var target = 0;
+        for (var i = 0; i < counts.Length; i++)
+        {
+            if (counts[i] <= 0)
+            {
+                continue;
+            }
+
+            var ms = Math.Clamp(BucketMidpointMs(data.Offset + i), data.MinMs, Math.Max(data.MinMs, data.MaxMs));
+            while (target < upperBoundsMs.Count && ms > upperBoundsMs[target])
+            {
+                target++;
+            }
+
+            result[target] += counts[i];
+        }
+
+        return result;
+    }
+
     private static double BucketMidpointMs(int index)
     {
         if (index == 0)
@@ -181,6 +259,12 @@ public sealed record HistogramData(
     double SumMs)
 {
     public static HistogramData Empty { get; } = new(0, [], 0, 0, 0, 0);
+
+    internal long CountAt(int bucket)
+    {
+        var i = bucket - Offset;
+        return Counts is not null && i >= 0 && i < Counts.Length ? Counts[i] : 0;
+    }
 }
 
 /// <summary>Writes a number array on one line even in indented JSON, so an exported histogram stays small and readable.</summary>
