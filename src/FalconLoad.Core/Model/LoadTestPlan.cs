@@ -14,6 +14,9 @@ public sealed class LoadTestPlan
 
     public LoadProfile Profile { get; set; } = new();
 
+    /// <summary>Named lists of values that requests reference as <c>{{name}}</c>. Plans saved before lists existed have none.</summary>
+    public List<ParameterList> Parameters { get; set; } = [];
+
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     /// <summary>Returns a list of human readable validation problems; empty when the plan can run.</summary>
@@ -25,9 +28,20 @@ public sealed class LoadTestPlan
             errors.Add("Add at least one request.");
         }
 
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var list in Parameters)
+        {
+            errors.AddRange(list.Validate());
+            if (!string.IsNullOrWhiteSpace(list.Name) && !names.Add(list.Name))
+            {
+                errors.Add($"There is more than one parameter list named '{list.Name}'.");
+            }
+        }
+
+        var parameters = new ParameterSet(Parameters);
         for (var i = 0; i < Requests.Count; i++)
         {
-            foreach (var problem in Requests[i].Validate())
+            foreach (var problem in Requests[i].Validate(parameters))
             {
                 errors.Add($"Request {i + 1} ({Requests[i].DisplayName}): {problem}");
             }

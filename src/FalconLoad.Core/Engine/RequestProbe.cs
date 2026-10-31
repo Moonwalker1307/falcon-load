@@ -15,7 +15,10 @@ public sealed record ProbeResult(
     bool Success,
     string? Error);
 
-/// <summary>Sends one request and captures the response, so users can verify a request before load testing.</summary>
+/// <summary>
+/// Sends one request and captures the response, so users can verify a request before load testing. Parameter lists
+/// supply their first value.
+/// </summary>
 public static class RequestProbe
 {
     private const int MaxPreviewBytes = 16 * 1024;
@@ -24,9 +27,11 @@ public static class RequestProbe
         RequestDefinition definition,
         LoadProfile profile,
         HttpMessageInvoker? invoker = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<ParameterList>? parameters = null)
     {
-        var problems = definition.Validate().ToList();
+        var set = new ParameterSet(parameters ?? []);
+        var problems = definition.Validate(set).ToList();
         if (problems.Count > 0)
         {
             return new ProbeResult(null, null, TimeSpan.Zero, [], string.Empty, 0, false, string.Join(" ", problems));
@@ -41,7 +46,7 @@ public static class RequestProbe
 
         try
         {
-            using var request = prepared.Build(new TemplateContext(1, 1), out _);
+            using var request = prepared.Build(new TemplateContext(1, 1, set.First()), out _);
             using var response = await invoker.SendAsync(request, timeout.Token).ConfigureAwait(false);
             var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
             var latency = Stopwatch.GetElapsedTime(start);
