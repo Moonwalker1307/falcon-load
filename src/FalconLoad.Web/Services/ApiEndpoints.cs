@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.Mvc;
 using FalconLoad.Core.Engine;
+using FalconLoad.Core.Import;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
 
@@ -45,6 +47,69 @@ public static class ApiEndpoints
             }
 
             return Results.Ok(store.SaveAll(import.Plans));
+        });
+
+        // Turn a curl command, a Postman collection or an OpenAPI spec (the body) into a test.
+        api.MapPost("/import", async (HttpRequest request, PlanStore store, string? kind, string? name, string? baseUrl, [FromQuery] string[]? operations, bool? save, Guid? planId) =>
+        {
+            ImportResult result;
+            try
+            {
+                ImportKind? forced = kind is null || kind.Equals("auto", StringComparison.OrdinalIgnoreCase) ? null
+                    : Enum.TryParse<ImportKind>(kind, ignoreCase: true, out var parsed) ? parsed
+                    : throw new ImportException("kind must be curl, postman, openapi or auto.");
+                using var reader = new StreamReader(request.Body);
+                var source = ImportSource.Parse(await reader.ReadToEndAsync(request.HttpContext.RequestAborted), forced);
+                result = source.Build(operations is { Length: > 0 } ? operations : null, baseUrl);
+            }
+            catch (ImportException ex)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["import"] = [ex.Message] });
+            }
+
+            LoadTestPlan plan;
+            if (planId is { } id)
+            {
+                if (store.Get(id) is not { } existing)
+                {
+                    return Results.NotFound();
+                }
+
+                result.AddTo(existing);
+                plan = existing;
+            }
+            else
+            {
+                plan = result.ToPlan();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    plan.Name = name.Trim();
+                }
+            }
+
+            var problems = plan.Validate();
+            if (problems.Count > 0)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["plan"] = [.. problems] });
+            }
+
+            var saving = save ?? true;
+            return Results.Ok(new { Plan = saving ? store.Save(plan) : plan, result.Warnings, Saved = saving });
+        });
+
+        // List the operations of an OpenAPI spec (the body), so a caller can choose which to import.
+        api.MapPost("/import/operations", async (HttpRequest request) =>
+        {
+            try
+            {
+                using var reader = new StreamReader(request.Body);
+                var source = ImportSource.Parse(await reader.ReadToEndAsync(request.HttpContext.RequestAborted), ImportKind.OpenApi);
+                return Results.Ok(new { source.OpenApi!.Title, source.OpenApi.ServerUrl, source.OpenApi.Operations });
+            }
+            catch (ImportException ex)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["import"] = [ex.Message] });
+            }
         });
 
         api.MapDelete("/plans/{id:guid}", (Guid id, PlanStore store) =>

@@ -1,0 +1,383 @@
+@page "/import"
+@using FalconLoad.Core.Import
+@inject PlanStore PlanStore
+@inject NavigationManager Nav
+
+<PageTitle>Import requests · falcon-load</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Import requests</h1>
+        <div class="subtitle">
+            Turn requests you already have into a test: a curl command, a Postman collection (v2.0 or v2.1) or an
+            OpenAPI 3 spec, as JSON or YAML. Nothing is sent or saved until you create the test.
+        </div>
+    </div>
+</div>
+
+<section class="card" aria-labelledby="source-title">
+    <div class="card-header">
+        <h2 id="source-title">Source</h2>
+        <label class="btn file-button" title="Load a collection or spec from a file">
+            <Icon Name="upload" />Choose a file…
+            <InputFile accept=".json,.yaml,.yml,.txt,.sh,application/json" OnChange="LoadFile" />
+        </label>
+    </div>
+
+    @if (_fromFile)
+    {
+        <div class="alert alert-info" role="status">
+            <Icon Name="info" />
+            <div>Loaded <strong>@_fileName</strong> (@Format.Bytes(_text.Length)).</div>
+            <span class="spacer"></span>
+            <button class="btn-ghost btn-sm" @onclick="Clear"><Icon Name="x" />Clear</button>
+        </div>
+    }
+    else
+    {
+        <div class="field">
+            <label for="import-text">Paste a curl command, a Postman collection or an OpenAPI spec</label>
+            <textarea id="import-text" rows="9" spellcheck="false" @bind="_text" @bind:event="oninput"
+                      placeholder="curl -X POST https://localhost:5001/api/orders -H 'Content-Type: application/json' -d '{&quot;id&quot;: 1}'"></textarea>
+            <div class="hint">Several curl commands in a row become several requests. Browser "Copy as cURL (bash)" works too.</div>
+        </div>
+        <div class="actions">
+            <button class="btn-primary" @onclick="Read"><Icon Name="check" />Read</button>
+        </div>
+    }
+
+    @if (_error is not null)
+    {
+        <div class="alert alert-error" role="alert"><Icon Name="alert" /><div>@_error</div></div>
+    }
+</section>
+
+@if (_source is not null && _result is not null)
+{
+    @if (_source.OpenApi is { } spec)
+    {
+        var visible = VisibleOperations(spec).ToList();
+        <section class="card" aria-labelledby="operations-title">
+            <div class="card-header">
+                <h2 id="operations-title">Pick operations</h2>
+                <span class="muted small">@_selected.Count of @spec.Operations.Count selected</span>
+            </div>
+            <div class="field-row">
+                <div class="field">
+                    <label for="import-base">Send requests to</label>
+                    <input id="import-base" type="url" value="@_baseUrl" @onchange="OnBaseUrl"
+                           placeholder="@(spec.ServerUrl.Length > 0 ? spec.ServerUrl : "https://localhost:5001")" />
+                    <div class="hint">@(spec.ServerUrl.Length > 0 ? "The spec's first server is used when this is empty." : "The spec names no absolute server, so this is needed.")</div>
+                </div>
+                <div class="field">
+                    <label for="import-filter">Filter</label>
+                    <input id="import-filter" type="text" @bind="_filter" @bind:event="oninput" placeholder="path, method, tag or summary" autocomplete="off" />
+                </div>
+            </div>
+            <div class="actions operation-actions">
+                <button class="btn-sm" @onclick="() => Select(visible, true)">Select @(_filter.Length > 0 ? "shown" : "all")</button>
+                <button class="btn-sm" @onclick="() => Select(visible, false)">Select none</button>
+            </div>
+            <div class="operation-list" role="group" aria-label="Operations">
+                @foreach (var group in visible.GroupBy(o => o.Tags.FirstOrDefault() ?? "Untagged"))
+                {
+                    <div class="operation-group">@group.Key</div>
+                    @foreach (var operation in group)
+                    {
+                        var key = operation.Key;
+                        <label class="check operation">
+                            <input type="checkbox" checked="@_selected.Contains(key)" @onchange="e => Toggle(key, (bool)e.Value!)" />
+                            <span class="@Format.MethodClass(operation.Method)">@operation.Method</span>
+                            <span class="mono operation-path">@operation.Path</span>
+                            @if (operation.Summary.Length > 0)
+                            {
+                                <span class="muted small">@operation.Summary</span>
+                            }
+                            @if (operation.Deprecated)
+                            {
+                                <span class="badge">deprecated</span>
+                            }
+                        </label>
+                    }
+                }
+                @if (visible.Count == 0)
+                {
+                    <div class="muted small">No operation matches "@_filter".</div>
+                }
+            </div>
+        </section>
+    }
+
+    var plan = _result.ToPlan();
+    var problems = plan.Validate().Where(p => !p.StartsWith("Add at least one request", StringComparison.Ordinal)).ToList();
+    <section class="card" aria-labelledby="preview-title">
+        <div class="card-header">
+            <h2 id="preview-title">Preview</h2>
+            <span class="muted small">@_result.Requests.Count @(_result.Requests.Count == 1 ? "request" : "requests")@(_result.Parameters.Count > 0 ? $", {_result.Parameters.Count} parameter {(_result.Parameters.Count == 1 ? "list" : "lists")}" : "")</span>
+        </div>
+
+        @if (_result.Warnings.Count > 0)
+        {
+            <div class="alert alert-info" role="status">
+                <Icon Name="info" />
+                <div>
+                    <strong>Worth a look</strong>
+                    <ul>
+                        @foreach (var warning in _result.Warnings)
+                        {
+                            <li>@warning</li>
+                        }
+                    </ul>
+                </div>
+            </div>
+        }
+
+        @if (problems.Count > 0)
+        {
+            <div class="alert alert-error" role="alert">
+                <Icon Name="alert" />
+                <div>
+                    <strong>These will need fixing in the editor before the test can run</strong>
+                    <ul>
+                        @foreach (var problem in problems.Take(10))
+                        {
+                            <li>@problem</li>
+                        }
+                        @if (problems.Count > 10)
+                        {
+                            <li>and @(problems.Count - 10) more</li>
+                        }
+                    </ul>
+                </div>
+            </div>
+        }
+
+        @if (_result.Requests.Count == 0)
+        {
+            <div class="empty"><p>Pick at least one operation above.</p></div>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table class="stack-sm">
+                    <thead>
+                        <tr><th scope="col">Request</th><th scope="col">URL</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var request in _result.Requests.Take(PreviewLimit))
+                        {
+                            <tr>
+                                <td><span class="@Format.MethodClass(request.Method)">@request.Method</span> @ShortName(request)</td>
+                                <td class="mono muted" title="@request.Url">@request.Url</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (_result.Requests.Count > PreviewLimit)
+            {
+                <div class="small muted">+ @(_result.Requests.Count - PreviewLimit) more</div>
+            }
+
+            @if (_result.Parameters.Count > 0)
+            {
+                <p class="hint">
+                    Parameter lists created: @string.Join(", ", _result.Parameters.Select(p => p.Name)). Requests refer to them as <code>{{name}}</code>; edit their values in the test.
+                </p>
+            }
+        }
+    </section>
+
+    <section class="card" aria-labelledby="create-title">
+        <div class="card-header"><h2 id="create-title">Create the test</h2></div>
+        <div class="field-row">
+            <div class="field">
+                <label for="import-target">Add to</label>
+                <select id="import-target" @bind="_target">
+                    <option value="">A new test</option>
+                    @foreach (var existing in _plans)
+                    {
+                        <option value="@existing.Id">@existing.Name</option>
+                    }
+                </select>
+            </div>
+            @if (_target == "")
+            {
+                <div class="field">
+                    <label for="import-name">Test name</label>
+                    <input id="import-name" type="text" @bind="_planName" />
+                </div>
+            }
+        </div>
+        <div class="actions">
+            <button class="btn-primary" disabled="@(_result.Requests.Count == 0)" @onclick="Create">
+                <Icon Name="plus" />@(_target == "" ? "Create test" : "Add to test")
+            </button>
+            <span class="hint">You can set the load (users, duration, rate cap) in the editor next.</span>
+        </div>
+    </section>
+}
+
+@code {
+    private const int PreviewLimit = 100;
+
+    // A Postman collection or OpenAPI spec can be a few megabytes; the cap only stops a wrong file being read.
+    private const long MaxFileBytes = 10 * 1024 * 1024;
+
+    private string _text = string.Empty;
+    private string? _fileName;
+    private bool _fromFile;
+    private string? _error;
+    private ImportSource? _source;
+    private ImportResult? _result;
+    private readonly HashSet<string> _selected = new(StringComparer.Ordinal);
+    private string _baseUrl = string.Empty;
+    private string _filter = string.Empty;
+    private string _planName = string.Empty;
+    private string _target = string.Empty;
+    private IReadOnlyList<LoadTestPlan> _plans = [];
+
+    protected override void OnInitialized() => _plans = PlanStore.GetAll();
+
+    // Names made from the method and path repeat the method that the badge beside them already shows.
+    private static string ShortName(RequestDefinition request) =>
+        request.Name.StartsWith(request.Method + " ", StringComparison.Ordinal) ? request.Name[(request.Method.Length + 1)..] : request.Name;
+
+    private void Read()
+    {
+        _error = null;
+        _source = null;
+        _result = null;
+        try
+        {
+            _source = ImportSource.Parse(_text);
+            _selected.Clear();
+            _filter = string.Empty;
+            if (_source.OpenApi is { } spec)
+            {
+                _baseUrl = spec.ServerUrl;
+                foreach (var operation in spec.Operations)
+                {
+                    _selected.Add(operation.Key);
+                }
+            }
+
+            Build();
+            _planName = _result!.Name;
+        }
+        catch (ImportException ex)
+        {
+            _source = null;
+            _error = ex.Message;
+        }
+    }
+
+    private void Build()
+    {
+        try
+        {
+            _result = _source!.Build(_source.Kind == ImportKind.OpenApi ? _selected : null, _baseUrl);
+            _error = null;
+        }
+        catch (ImportException ex)
+        {
+            _result = null;
+            _error = ex.Message;
+        }
+    }
+
+    private async Task LoadFile(InputFileChangeEventArgs e)
+    {
+        _error = null;
+        if (e.File.Size > MaxFileBytes)
+        {
+            _error = $"The file is larger than {MaxFileBytes / (1024 * 1024)} MB.";
+            return;
+        }
+
+        await using var stream = e.File.OpenReadStream(MaxFileBytes);
+        using var reader = new StreamReader(stream);
+        _text = await reader.ReadToEndAsync();
+        _fileName = e.File.Name;
+        _fromFile = true;
+        Read();
+    }
+
+    private void Clear()
+    {
+        _text = string.Empty;
+        _fromFile = false;
+        _fileName = null;
+        _source = null;
+        _result = null;
+        _error = null;
+    }
+
+    private IEnumerable<OpenApiOperation> VisibleOperations(OpenApiSpec spec)
+    {
+        var filter = _filter.Trim();
+        return filter.Length == 0
+            ? spec.Operations
+            : spec.Operations.Where(o =>
+                o.Key.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || o.Summary.Contains(filter, StringComparison.OrdinalIgnoreCase)
+                || o.Tags.Any(t => t.Contains(filter, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private void Select(IEnumerable<OpenApiOperation> operations, bool on)
+    {
+        foreach (var operation in operations)
+        {
+            if (on)
+            {
+                _selected.Add(operation.Key);
+            }
+            else
+            {
+                _selected.Remove(operation.Key);
+            }
+        }
+
+        Build();
+    }
+
+    private void Toggle(string key, bool on)
+    {
+        if (on)
+        {
+            _selected.Add(key);
+        }
+        else
+        {
+            _selected.Remove(key);
+        }
+
+        Build();
+    }
+
+    private void OnBaseUrl(ChangeEventArgs e)
+    {
+        _baseUrl = e.Value?.ToString() ?? string.Empty;
+        Build();
+    }
+
+    private void Create()
+    {
+        if (_result is null)
+        {
+            return;
+        }
+
+        if (Guid.TryParse(_target, out var id) && PlanStore.Get(id) is { } existing)
+        {
+            _result.AddTo(existing);
+            var saved = PlanStore.Save(existing);
+            Nav.NavigateTo($"plans/{saved.Id}");
+            return;
+        }
+
+        var plan = _result.ToPlan();
+        plan.Name = string.IsNullOrWhiteSpace(_planName) ? _result.Name : _planName.Trim();
+        Nav.NavigateTo($"plans/{PlanStore.Save(plan).Id}");
+    }
+}
