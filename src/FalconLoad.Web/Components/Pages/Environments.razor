@@ -1,0 +1,203 @@
+@page "/environments"
+@implements IDisposable
+@inject EnvironmentStore Store
+
+<PageTitle>Environments · falcon-load</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Environments</h1>
+        <div class="subtitle">Pick one for each run, so a test can hit staging or production.</div>
+    </div>
+    <div class="actions">
+        <label class="btn file-button" title="Load environments from a file exported by falcon-load">
+            <Icon Name="upload" />Import…
+            <InputFile accept=".json,application/json" OnChange="Import" />
+        </label>
+        @if (_environments.Count > 0)
+        {
+            <a class="btn" href="api/environments/export" download title="Download every environment as one file. Secret values are left out."><Icon Name="download" />Export all</a>
+        }
+        <a class="btn btn-primary" href="environments/new"><Icon Name="plus" />New environment</a>
+    </div>
+</div>
+
+@if (_importProblems.Count > 0)
+{
+    <div class="alert alert-error" role="alert">
+        <Icon Name="alert" />
+        <div>
+            <strong>Couldn't import @_importFileName.</strong> Nothing was saved.
+            <ul>
+                @foreach (var problem in _importProblems)
+                {
+                    <li>@problem</li>
+                }
+            </ul>
+        </div>
+        <span class="spacer"></span>
+        <button class="btn-ghost btn-icon btn-sm" aria-label="Dismiss" @onclick="() => _importProblems = []"><Icon Name="x" /></button>
+    </div>
+}
+
+@if (_importMessage is not null)
+{
+    <div class="alert alert-info" role="status">
+        <Icon Name="check" /><div>@_importMessage</div>
+        <span class="spacer"></span>
+        <button class="btn-ghost btn-icon btn-sm" aria-label="Dismiss" @onclick="() => _importMessage = null"><Icon Name="x" /></button>
+    </div>
+}
+
+@if (_environments.Count == 0)
+{
+    <section class="card empty" aria-labelledby="env-empty-title">
+        <h2 id="env-empty-title">No environments yet</h2>
+        <p>An environment is a named set of variables. Write <code>{{baseUrl}}</code> in a test's URL and <code>Bearer {{token}}</code> in a header, then choose which environment supplies them each time you run.</p>
+        <p>Mark a variable as a <strong>secret</strong> and falcon-load hides its value in the app, in error messages and in exports.</p>
+        <div class="actions actions-center">
+            <a class="btn btn-primary" href="environments/new"><Icon Name="plus" />Create an environment</a>
+        </div>
+    </section>
+}
+else
+{
+    <section class="card card-flush" aria-labelledby="env-list-title">
+        <div class="card-header">
+            <h2 id="env-list-title">Saved environments</h2>
+            <span class="muted small">@_environments.Count @(_environments.Count == 1 ? "environment" : "environments")</span>
+        </div>
+        <div class="table-wrap">
+            <table class="table-hover stack-sm">
+                <thead>
+                    <tr>
+                        <th scope="col">Environment</th>
+                        <th scope="col">Variables</th>
+                        <th scope="col" class="hide-sm">Updated</th>
+                        <th scope="col"><span class="sr-only">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var environment in _environments)
+                    {
+                        var secrets = environment.Variables.Count(v => v.Secret);
+                        var unset = environment.Variables.Count(v => v.Secret && v.Value == string.Empty);
+                        <tr>
+                            <td><a class="row-title" href="environments/@environment.Id">@environment.Name</a></td>
+                            <td class="load-cell">
+                                <div>@environment.Variables.Count @(environment.Variables.Count == 1 ? "variable" : "variables")</div>
+                                @if (secrets > 0)
+                                {
+                                    <div class="small muted"><Icon Name="lock" />@secrets @(secrets == 1 ? "secret" : "secrets")</div>
+                                }
+                                @if (unset > 0)
+                                {
+                                    <div class="small status-err">@unset not set</div>
+                                }
+                            </td>
+                            <td class="hide-sm muted nowrap">@Format.When(environment.UpdatedAt)</td>
+                            <td class="actions">
+                                @if (_confirmDelete == environment.Id)
+                                {
+                                    <div class="btn-group" role="group" aria-label="Confirm delete">
+                                        <span class="small muted">Delete this environment?</span>
+                                        <button class="btn-sm btn-danger-solid" @onclick="() => Delete(environment)">Delete</button>
+                                        <button class="btn-sm" @onclick="() => _confirmDelete = null">Keep</button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="btn-group">
+                                        <a class="btn btn-sm" href="environments/@environment.Id" aria-label="Edit @environment.Name"><Icon Name="edit" />Edit</a>
+                                        <button class="btn-sm btn-ghost btn-icon" @onclick="() => Duplicate(environment)" title="Duplicate, including secret values" aria-label="Duplicate @environment.Name"><Icon Name="copy" /></button>
+                                        <a class="btn btn-sm btn-ghost btn-icon" href="api/environments/@environment.Id/export" download title="Export to a file. Secret values are left out." aria-label="Export @environment.Name"><Icon Name="download" /></a>
+                                        <button class="btn-sm btn-ghost btn-icon btn-danger" @onclick="() => _confirmDelete = environment.Id" title="Delete" aria-label="Delete @environment.Name"><Icon Name="trash" /></button>
+                                    </div>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+    <p class="hint">Exports never contain secret values: whoever imports a file gets the variable names and fills in the secrets themselves.</p>
+}
+
+@code {
+    // Only redacted copies are kept here, so a secret's value never sits in this component.
+    private IReadOnlyList<TestEnvironment> _environments = [];
+    private Guid? _confirmDelete;
+    private IReadOnlyList<string> _importProblems = [];
+    private string? _importFileName;
+    private string? _importMessage;
+
+    private const long MaxImportBytes = 5 * 1024 * 1024;
+
+    protected override void OnInitialized()
+    {
+        Refresh();
+        Store.Changed += OnChanged;
+    }
+
+    private void Refresh() => _environments = [.. Store.GetAll().Select(e => e.Redacted())];
+
+    private void OnChanged() => _ = InvokeAsync(() =>
+    {
+        Refresh();
+        StateHasChanged();
+    });
+
+    private void Duplicate(TestEnvironment environment)
+    {
+        if (Store.Get(environment.Id) is not { } copy)
+        {
+            return;
+        }
+
+        copy.Id = Guid.NewGuid();
+        copy.Name = $"{environment.Name} (copy)";
+        Store.Save(copy);
+    }
+
+    private void Delete(TestEnvironment environment)
+    {
+        _confirmDelete = null;
+        Store.Delete(environment.Id);
+    }
+
+    private async Task Import(InputFileChangeEventArgs e)
+    {
+        _importProblems = [];
+        _importMessage = null;
+        _importFileName = e.File.Name;
+        if (e.File.Size > MaxImportBytes)
+        {
+            _importProblems = [$"The file is larger than {MaxImportBytes / (1024 * 1024)} MB."];
+            return;
+        }
+
+        string json;
+        await using (var stream = e.File.OpenReadStream(MaxImportBytes))
+        using (var reader = new StreamReader(stream))
+        {
+            json = await reader.ReadToEndAsync();
+        }
+
+        var import = EnvironmentFile.Read(json);
+        if (!import.Succeeded)
+        {
+            _importProblems = import.Problems;
+            return;
+        }
+
+        var saved = Store.SaveAll(import.Environments);
+        var secrets = saved.Sum(s => s.Variables.Count(v => v.Secret));
+        var note = secrets > 0 ? $" Fill in the {(secrets == 1 ? "secret" : $"{secrets} secrets")}: exports leave them out." : string.Empty;
+        _importMessage = (saved.Count == 1
+            ? $"Imported \"{saved[0].Name}\" from {e.File.Name}."
+            : $"Imported {saved.Count} environments from {e.File.Name}.") + note;
+    }
+
+    public void Dispose() => Store.Changed -= OnChanged;
+}

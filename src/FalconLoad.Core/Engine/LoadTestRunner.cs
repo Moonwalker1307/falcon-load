@@ -17,6 +17,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
     private readonly bool _extracts;
     private readonly bool _keepsBodies;
     private readonly bool _hasOnceRequests;
+    private readonly SecretMasker _masker;
     private readonly HttpMessageInvoker _invoker;
     private readonly bool _ownsInvoker;
     private readonly MetricsCollector _metrics;
@@ -31,17 +32,24 @@ public sealed class LoadTestRunner : IAsyncDisposable
     private string? _failureReason;
     private TimeSpan? _finalElapsed;
 
-    public LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker = null)
+    /// <param name="environment">
+    /// The environment whose variables fill the <c>{{name}}</c> placeholders that no parameter list or extracted variable supplies. Its
+    /// secret values are hidden from error messages. The run is recorded against its name, not its values.
+    /// </param>
+    public LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker = null, TestEnvironment? environment = null)
     {
-        var problems = plan.Validate();
+        var problems = plan.ValidateForRun(environment);
         if (problems.Count > 0)
         {
             throw new ArgumentException("The load test plan is invalid: " + string.Join(" ", problems), nameof(plan));
         }
 
         _plan = plan.Clone();
-        _requests = _plan.Requests.Select(PreparedRequest.From).ToArray();
+        _plan.Environment = environment?.Name;
+        _masker = environment?.CreateMasker() ?? SecretMasker.None;
         _parameters = _plan.Parameters.Count > 0 ? new ParameterSet(_plan.Parameters) : null;
+        var variables = _plan.EnvironmentValues(environment);
+        _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables)).ToArray();
         _extracts = _requests.Any(r => r.Extractor is not null);
         _keepsBodies = _requests.Any(r => r.Extractor is { NeedsBody: true } || r.Checker.NeedsBody);
         _hasOnceRequests = _requests.Any(r => r.OncePerVirtualUser);
@@ -121,7 +129,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _failureReason = ex.Message;
+            _failureReason = _masker.Apply(ex.Message);
             _state = RunState.Failed;
         }
         finally
@@ -324,7 +332,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 latency,
                 code,
                 error is null,
-                error,
+                _masker.Apply(error),
                 bytesSent,
                 received,
                 failedChecks);
@@ -348,7 +356,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
 
         RequestResult Failure(string error) =>
-            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, error, bytesSent, 0);
+            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, _masker.Apply(error), bytesSent, 0);
     }
 
     private static readonly string TooLargeToCheck =

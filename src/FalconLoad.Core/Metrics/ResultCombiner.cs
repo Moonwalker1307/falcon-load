@@ -221,6 +221,12 @@ public static class ResultCombiner
             warnings.Add($"The results come from different tests ({string.Join(", ", tests)}), so the combined numbers mix them.");
         }
 
+        var environments = runs.Select(r => string.IsNullOrWhiteSpace(r.Plan.Environment) ? "no environment" : r.Plan.Environment).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (environments.Count > 1)
+        {
+            warnings.Add($"The runs used different environments ({string.Join(", ", environments)}), so they may not have hit the same system.");
+        }
+
         var running = runs.Select((r, i) => r.Results.IsFinished ? null : names[i]).OfType<string>().ToList();
         if (running.Count > 0)
         {

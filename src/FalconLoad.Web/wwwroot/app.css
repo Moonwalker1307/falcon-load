@@ -134,13 +134,13 @@ main { max-width: 1200px; margin: 0 auto; padding: var(--space-5) var(--space-5)
 /* Forms */
 label, .label-text { display: block; font-size: .85rem; font-weight: 600; color: var(--muted); margin-bottom: var(--space-1); }
 label .optional { font-weight: 400; }
-input[type=text], input[type=url], input[type=number], select, textarea {
+input[type=text], input[type=url], input[type=number], input[type=password], select, textarea {
     width: 100%; padding: .55rem .65rem; font: inherit; color: var(--text);
     background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
     transition: border-color .15s ease, box-shadow .15s ease;
 }
 /* Single-line controls share one height, so a select, an input and a button line up in a row. */
-input[type=text], input[type=url], input[type=number], select { height: var(--control-height); }
+input[type=text], input[type=url], input[type=number], input[type=password], select { height: var(--control-height); }
 /* Browsers draw selects natively (Safari most of all), so they get the input look and a drawn chevron. */
 select {
     appearance: none; -webkit-appearance: none; cursor: pointer;
@@ -467,4 +467,34 @@ label.btn-primary { color: #1b1300; font-weight: 650; }
     .check-row > :not(input[type=checkbox]):not(button), .threshold-row > :not(input[type=checkbox]):not(button) { grid-column: 2; }
     .check-row > button, .threshold-row > button { grid-column: 3; grid-row: 1; }
     .check-row, .threshold-row { padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
+}
+
+/* Import page */
+.operation-actions { margin-bottom: var(--space-3); }
+.operation-list { max-height: 24rem; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
+.operation-group { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; margin: var(--space-3) 0 var(--space-1); }
+.operation-group:first-child { margin-top: var(--space-1); }
+.check.operation { align-items: baseline; flex-wrap: wrap; margin-bottom: var(--space-1); }
+.operation-path { overflow-wrap: anywhere; }
+/* Environments and secret variables */
+.variable-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) auto auto; gap: var(--space-2); align-items: start; margin-bottom: var(--space-2); }
+.variable-row .check { margin: 0; height: var(--control-height); align-items: center; }
+.variable-row .check input { margin: 0; }
+.variable-row .check .icon { margin-right: .25rem; }
+.variable-head { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.secret-field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.var-chip { display: inline-flex; align-items: center; gap: .25rem; margin: 0 .35rem .25rem 0; }
+.var-chip .icon { width: .8em; height: .8em; }
+.hint-warn { display: flex; gap: var(--space-2); align-items: flex-start; margin-top: var(--space-3); color: var(--text); }
+.hint-warn .icon { flex: none; margin-top: .15rem; color: var(--accent); }
+.env-select { width: auto; max-width: 11rem; height: 2rem; padding-top: .2rem; padding-bottom: .2rem; font-size: .82rem; margin-top: var(--space-1); }
+
+@media (max-width: 640px) {
+    .variable-head { display: none; }
+    .variable-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+    .variable-row .secret-field { grid-column: 1 / -1; grid-row: 2; }
+}
+.variable-row > button { height: var(--control-height); }
+@media (max-width: 640px) {
+    .topbar nav a { padding: .4rem .5rem; font-size: .88rem; }
 }

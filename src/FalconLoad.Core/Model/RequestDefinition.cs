@@ -45,7 +45,16 @@ public sealed class RequestDefinition
 
     /// <param name="parameters">The plan's parameter lists; URLs that use them are checked with their first values.</param>
     /// <param name="variables">The names of the plan's extracted variables, which URLs may use too.</param>
-    public IEnumerable<string> Validate(ParameterSet? parameters = null, IReadOnlyCollection<string>? variables = null)
+    /// <param name="environment">The selected environment's values, substituted into the URL before it is checked.</param>
+    /// <param name="forRun">
+    /// True when the request is about to be sent, so a variable nothing supplies is a problem. When saving, the
+    /// environment isn't chosen yet, so the URL is only checked as far as it can be.
+    /// </param>
+    public IEnumerable<string> Validate(
+        ParameterSet? parameters = null,
+        IReadOnlyCollection<string>? variables = null,
+        IReadOnlyDictionary<string, string>? environment = null,
+        bool forRun = false)
     {
         if (!SupportedMethods.Contains(Method, StringComparer.OrdinalIgnoreCase))
         {
@@ -53,10 +62,13 @@ public sealed class RequestDefinition
         }
 
         // Validate the URL with template variables replaced by harmless placeholders.
-        var probe = TemplateRenderer.RenderForValidation(Url, parameters, variables);
+        var probe = TemplateRenderer.RenderForValidation(Url, parameters, variables, environment, assumeUnresolvedDefined: !forRun);
         if (!Uri.TryCreate(probe, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            yield return "URL must be an absolute http:// or https:// address.";
+            var missing = TemplateRenderer.UnresolvedNames(Url, environment, parameters, variables);
+            yield return missing.Count == 0
+                ? "URL must be an absolute http:// or https:// address."
+                : $"URL must be an absolute http:// or https:// address. No value for {string.Join(", ", missing.Select(m => "{{" + m + "}}"))}: choose an environment that defines it.";
         }
 
         if (!StatusCodeMatcher.TryParse(ExpectedStatusCodes, out _))

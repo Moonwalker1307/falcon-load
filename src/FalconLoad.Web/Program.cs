@@ -5,12 +5,15 @@ using FalconLoad.Web.Services;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents()
+    // The import page lets people paste a whole Postman collection or OpenAPI spec, which can be larger than SignalR's 32 KB default.
+    .AddHubOptions(options => options.MaximumReceiveMessageSize = 10 * 1024 * 1024);
 
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 builder.Services.AddSingleton<PlanStore>();
+builder.Services.AddSingleton<EnvironmentStore>();
 builder.Services.AddSingleton<RunManager>();
 
 var app = builder.Build();

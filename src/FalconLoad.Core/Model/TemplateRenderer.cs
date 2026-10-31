@@ -10,7 +10,8 @@ namespace FalconLoad.Core.Model;
 /// <item><c>{{$timestamp}}</c> Unix time in seconds; <c>{{$isoTimestamp}}</c> ISO 8601 UTC</item>
 /// <item><c>{{$iteration}}</c> the virtual user's iteration number; <c>{{$vu}}</c> the virtual user number</item>
 /// <item><c>{{name}}</c> the current value of the plan's <see cref="ParameterList"/> with that name, or else the
-/// virtual user's variable of that name, taken from an earlier response by an <see cref="ExtractionRule"/></item>
+/// virtual user's variable of that name, taken from an earlier response by an <see cref="ExtractionRule"/>, or else
+/// the variable of that name in the selected <see cref="TestEnvironment"/></item>
 /// </list>
 /// Placeholders that match nothing, including a variable no response has supplied yet, are sent as written.
 /// </summary>
@@ -28,7 +29,49 @@ public static partial class TemplateRenderer
             return text;
         }
 
-        return VariablePattern().Replace(text, match => Evaluate(match, context) ?? match.Value);
+        return VariablePattern().Replace(text, match => Evaluate(match, context, null) ?? match.Value);
+    }
+
+    /// <summary>
+    /// Substitutes the environment's variables, which never change during a run, so a request is prepared once
+    /// instead of rendered for every send. The caller leaves out the names a parameter list or an extracted variable
+    /// supplies, because those win and change from request to request.
+    /// </summary>
+    public static string ResolveVariables(string text, IReadOnlyDictionary<string, string>? variables)
+    {
+        if (variables is not { Count: > 0 } || !HasVariables(text))
+        {
+            return text;
+        }
+
+        return VariablePattern().Replace(text, match =>
+        {
+            return IsUserVariable(match) && variables.TryGetValue(match.Groups["name"].Value, out var value) ? value : match.Value;
+        });
+    }
+
+    /// <summary>
+    /// The names of <c>{{name}}</c> placeholders in <paramref name="text"/> that no parameter list, extracted variable
+    /// or environment variable supplies.
+    /// </summary>
+    public static IReadOnlyList<string> UnresolvedNames(
+        string text,
+        IReadOnlyDictionary<string, string>? environment,
+        ParameterSet? parameters,
+        IReadOnlyCollection<string>? extracted)
+    {
+        if (!HasVariables(text))
+        {
+            return [];
+        }
+
+        return [.. VariablePattern().Matches(text)
+            .Where(IsUserVariable)
+            .Select(m => m.Groups["name"].Value)
+            .Where(name => !IsParameter(name, parameters)
+                && environment?.ContainsKey(name) != true
+                && extracted?.Contains(name, StringComparer.OrdinalIgnoreCase) != true)
+            .Distinct(StringComparer.OrdinalIgnoreCase)];
     }
 
     /// <summary>
@@ -36,7 +79,18 @@ public static partial class TemplateRenderer
     /// Extracted variables have no value until a response supplies one, so they stand in as <c>1</c>, or as a URL when
     /// the text starts with one, such as a URL taken from a <c>Location</c> header.
     /// </summary>
-    public static string RenderForValidation(string text, ParameterSet? parameters = null, IReadOnlyCollection<string>? variables = null)
+    /// <param name="variables">The names of the plan's extracted variables.</param>
+    /// <param name="environment">The selected environment's values.</param>
+    /// <param name="assumeUnresolvedDefined">
+    /// For saving a test, when no environment has been chosen yet: a placeholder nothing supplies is replaced by a
+    /// stand-in (a whole address when it starts the URL), because the environment picked for a run may provide it.
+    /// </param>
+    public static string RenderForValidation(
+        string text,
+        ParameterSet? parameters = null,
+        IReadOnlyCollection<string>? variables = null,
+        IReadOnlyDictionary<string, string>? environment = null,
+        bool assumeUnresolvedDefined = false)
     {
         Dictionary<string, string>? stand = null;
         if (variables is { Count: > 0 })
@@ -49,10 +103,30 @@ public static partial class TemplateRenderer
             }
         }
 
-        return Render(text, new TemplateContext(1, 1, parameters?.First() ?? default, stand));
+        if (!HasVariables(text))
+        {
+            return text;
+        }
+
+        var context = new TemplateContext(1, 1, parameters?.First() ?? default, stand);
+        var leading = text.Length - text.TrimStart().Length;
+        return VariablePattern().Replace(text, match =>
+        {
+            var value = Evaluate(match, context, environment);
+            if (value is null && assumeUnresolvedDefined && IsUserVariable(match))
+            {
+                return match.Index == leading ? "http://placeholder.invalid" : "placeholder";
+            }
+
+            return value ?? match.Value;
+        });
     }
 
-    private static string? Evaluate(Match match, TemplateContext context)
+    private static bool IsUserVariable(Match match) => !match.Groups["builtin"].Success && !match.Groups["a"].Success;
+
+    private static bool IsParameter(string name, ParameterSet? parameters) => parameters is not null && parameters.TryGetIndex(name, out _);
+
+    private static string? Evaluate(Match match, TemplateContext context, IReadOnlyDictionary<string, string>? environment)
     {
         var name = match.Groups["name"].Value;
         if (!match.Groups["builtin"].Success)
@@ -67,7 +141,12 @@ public static partial class TemplateRenderer
                 return value;
             }
 
-            return context.Variables is not null && context.Variables.TryGetValue(name, out var extracted) ? extracted : null;
+            if (context.Variables is not null && context.Variables.TryGetValue(name, out var extracted))
+            {
+                return extracted;
+            }
+
+            return environment is not null && environment.TryGetValue(name, out var variable) ? variable : null;
         }
 
         return name.ToLowerInvariant() switch

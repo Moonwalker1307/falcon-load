@@ -2,6 +2,7 @@
 @page "/plans/{Id:guid}"
 @inject PlanStore PlanStore
 @inject RunManager RunManager
+@inject EnvironmentStore EnvironmentStore
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 
@@ -71,8 +72,67 @@
     </div>
 }
 
+@if (_runProblems.Count > 0)
+{
+    <div class="alert alert-error" role="alert">
+        <Icon Name="alert" />
+        <div>
+            <strong>The test was saved, but it can't run yet.</strong>
+            <ul>
+                @foreach (var problem in _runProblems)
+                {
+                    <li>@problem</li>
+                }
+            </ul>
+        </div>
+    </div>
+}
+
 <div class="editor-layout">
     <div class="stack">
+        <section class="card" aria-labelledby="env-title">
+            <div class="card-header">
+                <h2 id="env-title">Environment</h2>
+                <a class="small" href="environments">Manage environments →</a>
+            </div>
+            <div class="field field-narrow">
+                <label for="plan-env">Run with</label>
+                <select id="plan-env" aria-describedby="plan-env-hint" @bind:get="_plan.Environment ?? string.Empty" @bind:set="SetEnvironment">
+                    <option value="">No environment</option>
+                    @foreach (var environment in _environments)
+                    {
+                        <option value="@environment.Name">@environment.Name</option>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_plan.Environment) && _selected is null)
+                    {
+                        <option value="@_plan.Environment">@_plan.Environment (not found)</option>
+                    }
+                </select>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(_plan.Environment) && _selected is null)
+            {
+                <div class="field-error">There is no environment named '@_plan.Environment' on this machine. Pick another, or <a href="environments/new">create it</a>.</div>
+            }
+            <div class="hint" id="plan-env-hint">
+                @if (_selected is { Variables.Count: > 0 })
+                {
+                    <span>Variables from this environment:</span>
+                    @foreach (var variable in _selected.Variables)
+                    {
+                        <code class="var-chip">@("{{" + variable.Name + "}}")@if (variable.Secret){<Icon Name="lock" />}</code>
+                    }
+                }
+                else if (_environments.Count == 0)
+                {
+                    <span>An environment holds values such as <code>{{baseUrl}}</code> or a token, so one test can run against staging or production. <a href="environments/new">Create one</a>.</span>
+                }
+                else
+                {
+                    <span>Choose an environment to fill in placeholders such as <code>{{baseUrl}}</code>. "Send once" and "Save &amp; run" use it.</span>
+                }
+            </div>
+        </section>
+
         @for (var i = 0; i < _plan.Requests.Count; i++)
         {
             var index = i;
@@ -144,7 +204,7 @@
                             <Icon Name="send" />@(_probing.Contains(request) ? "Sending…" : "Send once")
                         </button>
                     </div>
-                    <div class="hint" id="@idp-url-hint">Dynamic values such as <code>{{$guid}}</code> work here too.</div>
+                    <div class="hint" id="@idp-url-hint">Dynamic values such as <code>{{$guid}}</code> and environment variables such as <code>{{baseUrl}}</code> work here too.</div>
 
                     <div class="tabs" role="tablist" aria-label="Request @(index + 1) details">
                         <button role="tab" id="@idp-tab-headers" aria-selected="@(tab == "headers" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "headers"'>
@@ -184,6 +244,16 @@
                                 </div>
                             }
                             <button class="btn-sm" @onclick="() => request.Headers.Add(new HeaderEntry())"><Icon Name="plus" />Add header</button>
+                            @if (request.Headers.FirstOrDefault(IsPlainCredential) is { } credential)
+                            {
+                                <div class="hint hint-warn">
+                                    <Icon Name="lock" />
+                                    <span>
+                                        <strong>@credential.Name</strong> looks like a credential typed straight into the test, so it is saved in the test and included when you export it.
+                                        Store it as a secret in an <a href="environments">environment</a> and write <code>{{token}}</code> here instead.
+                                    </span>
+                                </div>
+                            }
                         }
                         else if (tab == "body")
                         {
@@ -444,6 +514,7 @@
                     <tr><td><code>{{$vu}}</code> / <code>{{$iteration}}</code></td><td class="muted">Virtual user number / its iteration count</td></tr>
                     <tr><td><code>{{userIds}}</code></td><td class="muted">The next value of your parameter list with that name (below)</td></tr>
                     <tr><td><code>{{token}}</code></td><td class="muted">A value this virtual user extracted from an earlier response (a request's Extract tab)</td></tr>
+                    <tr><td><code>{{baseUrl}}</code></td><td class="muted">A variable of the selected environment (above)</td></tr>
                 </tbody>
             </table>
         </section>
@@ -583,6 +654,10 @@
     private bool _showProblems;
     private string? _savedMessage;
     private string _baseline = string.Empty;
+
+    // Names and variable names only: a secret's value is looked up by the store when a request is sent.
+    private IReadOnlyList<TestEnvironment> _environments = [];
+    private IReadOnlyList<string> _runProblems = [];
     private readonly Dictionary<RequestDefinition, string> _tabs = new(ReferenceEqualityComparer.Instance);
     private readonly HashSet<RequestDefinition> _collapsed = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<RequestDefinition, ProbeResult> _probeResults = new(ReferenceEqualityComparer.Instance);
@@ -596,6 +671,23 @@
     // Comparing serialized JSON is cheap at plan sizes and catches every kind of edit, including reordering.
     private bool IsDirty => !_notFound && Snapshot(_plan) != _baseline;
 
+    private TestEnvironment? _selected =>
+        _environments.FirstOrDefault(e => string.Equals(e.Name, _plan.Environment, StringComparison.OrdinalIgnoreCase));
+
+    private static readonly HashSet<string> CredentialHeaders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization", "Proxy-Authorization", "Cookie", "X-Api-Key", "Api-Key", "X-Auth-Token", "X-Access-Token",
+    };
+
+    private static bool IsPlainCredential(HeaderEntry header) =>
+        header.Enabled && CredentialHeaders.Contains(header.Name.Trim()) && header.Value.Trim().Length > 0 && !TemplateRenderer.HasVariables(header.Value);
+
+    private void SetEnvironment(string? name)
+    {
+        _plan.Environment = string.IsNullOrWhiteSpace(name) ? null : name;
+        _runProblems = [];
+    }
+
     protected override void OnParametersSet()
     {
         if (Id is not null && Id == _plan.Id && !_notFound)
@@ -605,6 +697,8 @@
 
         _showProblems = false;
         _savedMessage = null;
+        _runProblems = [];
+        _environments = [.. EnvironmentStore.GetAll().Select(e => e.Redacted())];
         _probeResults.Clear();
         _probeVariables.Clear();
         _collapsed.Clear();
@@ -626,7 +720,7 @@
     }
 
     private static string Snapshot(LoadTestPlan plan) =>
-        System.Text.Json.JsonSerializer.Serialize(new { plan.Name, plan.Requests, plan.Parameters, plan.Profile, plan.Thresholds });
+        System.Text.Json.JsonSerializer.Serialize(new { plan.Name, plan.Environment, plan.Requests, plan.Parameters, plan.Profile, plan.Thresholds });
 
     private static string ProfileSummary(LoadProfile p)
     {
@@ -749,11 +843,28 @@
 
     private void SaveAndRun()
     {
-        if (TrySave(out var saved))
+        _runProblems = [];
+        if (!TrySave(out var saved))
         {
-            var run = RunManager.Start(saved);
-            Nav.NavigateTo($"runs/{run.Id}");
+            return;
         }
+
+        // The test is saved either way; a missing environment or variable only stops the run.
+        if (!EnvironmentStore.TryResolve(saved.Environment, out var environment, out var missing))
+        {
+            _runProblems = [missing!];
+            return;
+        }
+
+        var problems = saved.ValidateForRun(environment);
+        if (problems.Count > 0)
+        {
+            _runProblems = problems;
+            return;
+        }
+
+        var run = RunManager.Start(saved, environment);
+        Nav.NavigateTo($"runs/{run.Id}");
     }
 
     private async Task ConfirmLeave(LocationChangingContext context)
@@ -776,7 +887,14 @@
         _probeResults.Remove(request);
         try
         {
-            _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables);
+            if (EnvironmentStore.TryResolve(_plan.Environment, out var environment, out var missing))
+            {
+                _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables, environment: environment);
+            }
+            else
+            {
+                _probeResults[request] = new ProbeResult(null, null, TimeSpan.Zero, [], string.Empty, 0, false, missing);
+            }
         }
         finally
         {

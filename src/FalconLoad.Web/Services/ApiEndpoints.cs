@@ -1,4 +1,6 @@
+using Microsoft.AspNetCore.Mvc;
 using FalconLoad.Core.Engine;
+using FalconLoad.Core.Import;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
 
@@ -47,14 +49,120 @@ public static class ApiEndpoints
             return Results.Ok(store.SaveAll(import.Plans));
         });
 
+        // Turn a curl command, a Postman collection or an OpenAPI spec (the body) into a test.
+        api.MapPost("/import", async (HttpRequest request, PlanStore store, string? kind, string? name, string? baseUrl, [FromQuery] string[]? operations, bool? save, Guid? planId) =>
+        {
+            ImportResult result;
+            try
+            {
+                ImportKind? forced = kind is null || kind.Equals("auto", StringComparison.OrdinalIgnoreCase) ? null
+                    : Enum.TryParse<ImportKind>(kind, ignoreCase: true, out var parsed) ? parsed
+                    : throw new ImportException("kind must be curl, postman, openapi or auto.");
+                using var reader = new StreamReader(request.Body);
+                var source = ImportSource.Parse(await reader.ReadToEndAsync(request.HttpContext.RequestAborted), forced);
+                result = source.Build(operations is { Length: > 0 } ? operations : null, baseUrl);
+            }
+            catch (ImportException ex)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["import"] = [ex.Message] });
+            }
+
+            LoadTestPlan plan;
+            if (planId is { } id)
+            {
+                if (store.Get(id) is not { } existing)
+                {
+                    return Results.NotFound();
+                }
+
+                result.AddTo(existing);
+                plan = existing;
+            }
+            else
+            {
+                plan = result.ToPlan();
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    plan.Name = name.Trim();
+                }
+            }
+
+            var problems = plan.Validate();
+            if (problems.Count > 0)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["plan"] = [.. problems] });
+            }
+
+            var saving = save ?? true;
+            return Results.Ok(new { Plan = saving ? store.Save(plan) : plan, result.Warnings, Saved = saving });
+        });
+
+        // List the operations of an OpenAPI spec (the body), so a caller can choose which to import.
+        api.MapPost("/import/operations", async (HttpRequest request) =>
+        {
+            try
+            {
+                using var reader = new StreamReader(request.Body);
+                var source = ImportSource.Parse(await reader.ReadToEndAsync(request.HttpContext.RequestAborted), ImportKind.OpenApi);
+                return Results.Ok(new { source.OpenApi!.Title, source.OpenApi.ServerUrl, source.OpenApi.Operations });
+            }
+            catch (ImportException ex)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["import"] = [ex.Message] });
+            }
+        });
+
         api.MapDelete("/plans/{id:guid}", (Guid id, PlanStore store) =>
             store.Delete(id) ? Results.NoContent() : Results.NotFound());
 
-        api.MapPost("/plans/{id:guid}/run", (Guid id, PlanStore store, RunManager runs) =>
-            store.Get(id) is { } plan ? StartRun(plan, runs) : Results.NotFound());
+        // Environments hold the variables, such as {{baseUrl}} or a token, that a run substitutes into a test. Secret
+        // values are write-only here: responses leave them out (null means "set, but hidden"), and saving a secret with
+        // a null value keeps the stored one.
+        api.MapGet("/environments", (EnvironmentStore environments) => environments.GetAll().Select(e => e.Redacted()));
+
+        api.MapGet("/environments/{id:guid}", (Guid id, EnvironmentStore environments) =>
+            environments.Get(id) is { } environment ? Results.Ok(environment.Redacted()) : Results.NotFound());
+
+        api.MapPost("/environments", (TestEnvironment environment, EnvironmentStore environments) =>
+        {
+            var problems = environments.Validate(environment);
+            if (problems.Count > 0)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = [.. problems] });
+            }
+
+            var saved = environments.Save(environment);
+            return Results.Created($"/api/environments/{saved.Id}", saved.Redacted());
+        });
+
+        api.MapGet("/environments/export", (EnvironmentStore environments) =>
+            EnvironmentDownload(environments.GetAll(), $"falcon-load-environments-{DateTime.Now:yyyyMMdd-HHmmss}.json"));
+
+        api.MapGet("/environments/{id:guid}/export", (Guid id, EnvironmentStore environments) =>
+            environments.Get(id) is { } environment ? EnvironmentDownload([environment], $"falcon-load-environment-{Slug(environment.Name)}.json") : Results.NotFound());
+
+        api.MapPost("/environments/import", async (HttpRequest request, EnvironmentStore environments) =>
+        {
+            using var reader = new StreamReader(request.Body);
+            var import = EnvironmentFile.Read(await reader.ReadToEndAsync(request.HttpContext.RequestAborted));
+            if (!import.Succeeded)
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = [.. import.Problems] });
+            }
+
+            return Results.Ok(environments.SaveAll(import.Environments).Select(e => e.Redacted()));
+        });
+
+        api.MapDelete("/environments/{id:guid}", (Guid id, EnvironmentStore environments) =>
+            environments.Delete(id) ? Results.NoContent() : Results.NotFound());
+
+        // The environment comes from ?environment=Name, or else from the test's own "environment" setting.
+        api.MapPost("/plans/{id:guid}/run", (Guid id, string? environment, PlanStore store, EnvironmentStore environments, RunManager runs) =>
+            store.Get(id) is { } plan ? StartRun(plan, environment, environments, runs) : Results.NotFound());
 
         // Run an ad-hoc plan without saving it.
-        api.MapPost("/runs", (LoadTestPlan plan, RunManager runs) => StartRun(plan, runs));
+        api.MapPost("/runs", (LoadTestPlan plan, string? environment, EnvironmentStore environments, RunManager runs) =>
+            StartRun(plan, environment, environments, runs));
 
         api.MapGet("/runs", (RunManager runs) => runs.GetAll().Select(Summarize));
 
@@ -87,21 +195,37 @@ public static class ApiEndpoints
                 : Results.Ok(ResultCombiner.Combine(results));
         });
 
-        api.MapPost("/probe", async (RequestDefinition request, bool? ignoreTlsErrors, CancellationToken ct) =>
-            await RequestProbe.SendAsync(request, new LoadProfile { IgnoreTlsErrors = ignoreTlsErrors ?? false }, cancellationToken: ct));
+        api.MapPost("/probe", async (RequestDefinition request, bool? ignoreTlsErrors, string? environment, EnvironmentStore environments, CancellationToken ct) =>
+        {
+            if (!environments.TryResolve(environment, out var resolved, out var problem))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = [problem!] });
+            }
+
+            var profile = new LoadProfile { IgnoreTlsErrors = ignoreTlsErrors ?? false };
+            return Results.Ok(await RequestProbe.SendAsync(request, profile, cancellationToken: ct, environment: resolved));
+        });
     }
 
-    private static IResult StartRun(LoadTestPlan plan, RunManager runs)
+    private static IResult StartRun(LoadTestPlan plan, string? environmentName, EnvironmentStore environments, RunManager runs)
     {
-        var problems = plan.Validate();
+        if (!environments.TryResolve(string.IsNullOrWhiteSpace(environmentName) ? plan.Environment : environmentName, out var environment, out var missing))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = [missing!] });
+        }
+
+        var problems = plan.ValidateForRun(environment);
         if (problems.Count > 0)
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["plan"] = [.. problems] });
         }
 
-        var run = runs.Start(plan);
+        var run = runs.Start(plan, environment);
         return Results.Accepted($"/api/runs/{run.Id}", Summarize(run));
     }
+
+    private static IResult EnvironmentDownload(IEnumerable<TestEnvironment> environments, string fileName) =>
+        Results.Text(EnvironmentFile.Write(environments), "application/json").WithDownloadName(fileName);
 
     private static IResult PlanDownload(IEnumerable<LoadTestPlan> plans, string fileName) =>
         Results.Text(PlanFile.Write(plans), "application/json").WithDownloadName(fileName);
@@ -112,6 +236,7 @@ public static class ApiEndpoints
         PlanId = run.Plan.Id,
         PlanName = run.Plan.Name,
         run.StartedAt,
+        run.EnvironmentName,
         run.Snapshot.State,
         run.Snapshot.Elapsed,
         run.Snapshot.TotalRequests,

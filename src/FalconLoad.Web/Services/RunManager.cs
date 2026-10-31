@@ -23,6 +23,9 @@ public sealed class LoadTestRun
 
     public LoadTestPlan Plan { get; }
 
+    /// <summary>The name of the environment the run used, if any. Its values are not kept with the run.</summary>
+    public string? EnvironmentName => Plan.Environment;
+
     public DateTimeOffset StartedAt { get; } = DateTimeOffset.UtcNow;
 
     public LoadTestSnapshot Snapshot { get; private set; }
@@ -82,10 +85,13 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
 
     public LoadTestRun? Get(Guid id) => _runs.GetValueOrDefault(id);
 
-    /// <summary>Validates and starts <paramref name="plan"/>. Throws <see cref="ArgumentException"/> if it is invalid.</summary>
-    public LoadTestRun Start(LoadTestPlan plan)
+    /// <summary>
+    /// Validates and starts <paramref name="plan"/> with the variables of <paramref name="environment"/>, if any.
+    /// Throws <see cref="ArgumentException"/> if it is invalid.
+    /// </summary>
+    public LoadTestRun Start(LoadTestPlan plan, TestEnvironment? environment = null)
     {
-        var runner = new LoadTestRunner(plan);
+        var runner = new LoadTestRunner(plan, environment: environment);
         var run = new LoadTestRun(runner);
         _runs[run.Id] = run;
         Trim();
@@ -96,7 +102,7 @@ public sealed class RunManager(ILogger<RunManager> logger) : IDisposable
             {
                 try
                 {
-                    logger.LogInformation("Starting load test {RunId} '{Name}'", run.Id, plan.Name);
+                    logger.LogInformation("Starting load test {RunId} '{Name}' (environment: {Environment})", run.Id, plan.Name, environment?.Name ?? "none");
                     var final = await runner.RunAsync(run.Publish, TimeSpan.FromMilliseconds(500), run.CancellationToken);
                     run.Finish(runner);
                     logger.LogInformation(
