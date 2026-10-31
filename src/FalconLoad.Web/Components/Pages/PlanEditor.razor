@@ -25,6 +25,10 @@
         {
             <span class="muted small">@_savedMessage</span>
         }
+        @if (Id is { } savedId)
+        {
+            <a class="btn" href="api/plans/@savedId/export" download title="Download the saved version of this test, to import on another machine">Export</a>
+        }
         <button @onclick="Save">Save</button>
         <button class="btn-primary" @onclick="SaveAndRun">▶ Save &amp; run</button>
     </div>

@@ -12,6 +12,14 @@
         <div class="muted">Configure API requests, then hit them hard and watch how they hold up.</div>
     </div>
     <div class="actions">
+        <label class="btn file-button" title="Load tests from a file exported by falcon-load">
+            Import…
+            <InputFile accept=".json,application/json" OnChange="Import" />
+        </label>
+        @if (_plans.Count > 0)
+        {
+            <a class="btn" href="api/plans/export" download title="Download every saved test as one file">Export all</a>
+        }
         <a class="btn btn-primary" href="plans/new">+ New load test</a>
     </div>
 </div>
@@ -19,6 +27,24 @@
 @if (_error is not null)
 {
     <div class="alert alert-error">@_error</div>
+}
+
+@if (_importProblems.Count > 0)
+{
+    <div class="alert alert-error">
+        Couldn't import @_importFileName:
+        <ul>
+            @foreach (var problem in _importProblems)
+            {
+                <li>@problem</li>
+            }
+        </ul>
+    </div>
+}
+
+@if (_importMessage is not null)
+{
+    <div class="alert alert-info">@_importMessage</div>
 }
 
 <div class="card">
@@ -66,6 +92,7 @@
                                 <button class="btn-sm btn-primary" @onclick="() => Run(plan)">▶ Run</button>
                                 <a class="btn btn-sm" href="plans/@plan.Id">Edit</a>
                                 <button class="btn-sm" @onclick="() => Duplicate(plan)">Duplicate</button>
+                                <a class="btn btn-sm" href="api/plans/@plan.Id/export" download>Export</a>
                                 @if (_confirmDelete == plan.Id)
                                 {
                                     <button class="btn-sm btn-danger" @onclick="() => Delete(plan)">Confirm delete</button>
@@ -96,6 +123,12 @@
     private IReadOnlyList<LoadTestPlan> _plans = [];
     private string? _error;
     private Guid? _confirmDelete;
+    private IReadOnlyList<string> _importProblems = [];
+    private string? _importFileName;
+    private string? _importMessage;
+
+    // Exported files are a few kilobytes; the cap only stops someone picking a huge file by mistake.
+    private const long MaxImportBytes = 5 * 1024 * 1024;
 
     protected override void OnInitialized()
     {
@@ -128,6 +161,37 @@
         copy.Id = Guid.NewGuid();
         copy.Name = $"{plan.Name} (copy)";
         PlanStore.Save(copy);
+    }
+
+    private async Task Import(InputFileChangeEventArgs e)
+    {
+        _importProblems = [];
+        _importMessage = null;
+        _importFileName = e.File.Name;
+        if (e.File.Size > MaxImportBytes)
+        {
+            _importProblems = [$"The file is larger than {MaxImportBytes / (1024 * 1024)} MB."];
+            return;
+        }
+
+        string json;
+        await using (var stream = e.File.OpenReadStream(MaxImportBytes))
+        using (var reader = new StreamReader(stream))
+        {
+            json = await reader.ReadToEndAsync();
+        }
+
+        var import = PlanFile.Read(json);
+        if (!import.Succeeded)
+        {
+            _importProblems = import.Problems;
+            return;
+        }
+
+        var saved = PlanStore.SaveAll(import.Plans);
+        _importMessage = saved.Count == 1
+            ? $"Imported \"{saved[0].Name}\" from {e.File.Name}."
+            : $"Imported {saved.Count} tests from {e.File.Name}.";
     }
 
     private void Delete(LoadTestPlan plan)

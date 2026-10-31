@@ -1,63 +1,36 @@
 :root {
-    --bg: #f5f6f8;
-    --surface: #ffffff;
-    --surface-2: #f0f2f5;
-    --border: #dfe3e8;
-    --text: #1d2430;
-    --muted: #5f6b7a;
-    --accent: #d97706;
-    --accent-strong: #b45309;
-    --accent-soft: #fef3c7;
-    --ok: #15803d;
-    --ok-soft: #dcfce7;
-    --bad: #c62828;
-    --bad-soft: #fde2e2;
-    --info: #2563eb;
-    --info-soft: #dbeafe;
-    --series-1: #2563eb;
-    --series-2: #d97706;
-    --series-3: #c62828;
-    --machine-1: #0891b2;
-    --machine-2: #7c3aed;
-    --machine-3: #16a34a;
-    --machine-4: #db2777;
-    --machine-5: #65a30d;
-    --machine-6: #9333ea;
-    --grid: #e6e9ee;
+    /* falcon-load uses one dark scheme. The soft tints are each colour blended over the card
+       background, so badges and alerts stay readable on it. */
+    --bg: #101116;
+    --surface: #252936;
+    --surface-2: #2d3140;
+    --border: #343846;
+    --text: #F3F0E5;
+    --muted: #A8B0C4;
+    --accent: #FFD52A;
+    --accent-strong: #FFE266;
+    --accent-soft: #433F2F;
+    --ok: #78C99A;
+    --ok-soft: #2F4140;
+    --bad: #F07171;
+    --bad-soft: #45343F;
+    --info: #747B96;
+    --info-soft: #2F3343;
+    --series-1: #FFD52A;
+    --series-2: #A8B0C4;
+    --series-3: #F07171;
+    /* One colour per machine on the Combine page, distinct from the series colours above. */
+    --machine-1: #5CCFE6;
+    --machine-2: #B392F0;
+    --machine-3: #78C99A;
+    --machine-4: #F28FAD;
+    --machine-5: #FFA759;
+    --machine-6: #73B8FF;
+    --grid: #343846;
     --radius: 10px;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg: #0f141b;
-        --surface: #161d26;
-        --surface-2: #1d2631;
-        --border: #2a3542;
-        --text: #e6ebf1;
-        --muted: #93a1b2;
-        --accent: #f59e0b;
-        --accent-strong: #fbbf24;
-        --accent-soft: #3a2a0c;
-        --ok: #4ade80;
-        --ok-soft: #12321f;
-        --bad: #f87171;
-        --bad-soft: #3b1717;
-        --info: #60a5fa;
-        --info-soft: #172a45;
-        --series-1: #60a5fa;
-        --series-2: #f59e0b;
-        --series-3: #f87171;
-        --machine-1: #22d3ee;
-        --machine-2: #a78bfa;
-        --machine-3: #4ade80;
-        --machine-4: #f472b6;
-        --machine-5: #a3e635;
-        --machine-6: #c084fc;
-        --grid: #24303c;
-        color-scheme: dark;
-    }
+    color-scheme: dark;
+    accent-color: var(--accent);
 }
 
 * { box-sizing: border-box; }
@@ -123,7 +96,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
 label { display: block; font-size: .85rem; font-weight: 600; color: var(--muted); margin-bottom: .25rem; }
 input[type=text], input[type=url], input[type=number], select, textarea {
     width: 100%; padding: .5rem .6rem; font: inherit; color: var(--text);
-    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
 }
 input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
 textarea { font-family: var(--mono); font-size: .88rem; min-height: 120px; resize: vertical; }
@@ -207,13 +180,17 @@ td.actions > * { margin-left: .25rem; }
 .alert { padding: .7rem .9rem; border-radius: 8px; margin-bottom: 1rem; font-size: .92rem; }
 .alert-error { background: var(--bad-soft); color: var(--bad); }
 .alert-error ul { margin: .25rem 0 0; padding-left: 1.2rem; }
-.alert-info { background: var(--info-soft); color: var(--info); }
+.alert-info { background: var(--info-soft); color: var(--muted); }
 .probe { margin-top: .9rem; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .probe-head { display: flex; gap: 1rem; align-items: center; padding: .5rem .8rem; background: var(--surface-2); font-size: .88rem; flex-wrap: wrap; }
 .probe pre { margin: 0; padding: .75rem .8rem; max-height: 280px; overflow: auto; font-family: var(--mono); font-size: .82rem; white-space: pre-wrap; word-break: break-all; }
 
 .empty { text-align: center; padding: 2rem 1rem; color: var(--muted); }
 .empty .btn { margin-top: .75rem; }
+
+/* A label styled as a button opens the hidden file picker inside it. */
+.file-button { cursor: pointer; }
+.file-button input[type=file] { display: none; }
 
 .request-card { border-left: 3px solid var(--accent); }
 .step-num { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-strong); font-weight: 700; font-size: .8rem; margin-right: .4rem; }
