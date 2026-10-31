@@ -39,6 +39,30 @@ public class DistributedRunnerTests
         new(plan, agents.Select(a => a.Endpoint()).ToList(), agents.Select(_ => 1).ToList(), new AgentClient(new HttpClient(new FakeAgentNetwork(agents))), Fast, Staging);
 
     [Fact]
+    public async Task RunAsync_DealsDataRowsToTheAgents_AndKeepsThemOutOfTheResults()
+    {
+        var plan = Plan(p =>
+        {
+            p.Requests = [new RequestDefinition { Url = "{{base}}/users/{{id}}" }];
+            p.DataFiles.Add(new DataFile { Name = "users.csv", Content = "id\n1\n2\n3\n4\n" });
+        });
+        var one = new FakeAgent("agent-1", "t1");
+        var two = new FakeAgent("agent-2", "t2");
+        var runner = Runner(plan, one, two);
+
+        var result = await runner.RunAsync(null, CancellationToken.None);
+
+        Assert.Equal(RunState.Completed, result.State);
+        Assert.All(one.Target.Received, r => Assert.Contains(r.Request.RequestUri!.AbsolutePath, new[] { "/users/1", "/users/3" }));
+        Assert.All(two.Target.Received, r => Assert.Contains(r.Request.RequestUri!.AbsolutePath, new[] { "/users/2", "/users/4" }));
+
+        // The controller's record of the test and each agent's export carry the row count, not the rows.
+        var file = Assert.Single(runner.Plan.DataFiles);
+        Assert.Equal((string.Empty, 4), (file.Content, file.OmittedRows));
+        Assert.All(runner.GetAgentExports(), e => Assert.All(e.Plan.DataFiles, f => Assert.Equal(string.Empty, f.Content)));
+    }
+
+    [Fact]
     public async Task RunAsync_SplitsTheTest_StartsTheAgentsTogether_AndMergesTheirResults()
     {
         var one = new FakeAgent("agent-1", "t1");

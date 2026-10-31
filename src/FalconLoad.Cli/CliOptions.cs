@@ -30,6 +30,8 @@ internal sealed record CliOptions
           --env-file <path>           An environments file exported from the web UI, for tests that use {{variables}}.
           --env <name>                The environment to use. Default: the test's own environment, or the only one in the file.
           --var <name>=<value>        Set a variable, overriding the environment. Can be repeated.
+          --data <name>=<path>        Use the CSV or JSON file at <path> instead of the rows saved in the test's data
+                                      file called <name>, such as --data users.csv=./users.csv. Can be repeated.
           --machine <name>            The machine name recorded in the results. Default: this machine's name.
           --quiet                     Print only the summary, without live progress.
           -h, --help                  Show this help.
@@ -72,6 +74,9 @@ internal sealed record CliOptions
 
     /// <summary>Variables set with --var, in the order given; a later one wins.</summary>
     public IReadOnlyList<KeyValuePair<string, string>> Variables { get; init; } = [];
+
+    /// <summary>Data files given with --data: the name of a data file in the test and the path of the file to use instead.</summary>
+    public IReadOnlyList<KeyValuePair<string, string>> DataFiles { get; init; } = [];
 
     public bool Quiet { get; init; }
 
@@ -181,6 +186,16 @@ internal sealed record CliOptions
 
                     options = options with { Variables = [.. options.Variables, new(value[..split], value[(split + 1)..])] };
                     break;
+                case "--data":
+                    var separator = value.IndexOf('=');
+                    if (separator <= 0 || separator == value.Length - 1)
+                    {
+                        error = "--data needs the name of a data file in the test and a path, such as --data users.csv=./users.csv.";
+                        return null;
+                    }
+
+                    options = options with { DataFiles = [.. options.DataFiles, new(value[..separator], value[(separator + 1)..])] };
+                    break;
                 case "--concurrency":
                     if (!TryPositive(name, value, out var concurrency, out error))
                     {
@@ -237,7 +252,7 @@ internal sealed record CliOptions
     }
 
     private static readonly HashSet<string> ValueOptions =
-        ["--test", "--out", "--machine", "--env-file", "--env", "--var", "--concurrency", "--duration", "--requests", "--max-error-rate"];
+        ["--test", "--out", "--machine", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate"];
 
     private static bool TryPositive(string name, string value, out int result, out string? error)
     {

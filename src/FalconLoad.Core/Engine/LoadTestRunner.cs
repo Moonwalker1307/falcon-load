@@ -56,12 +56,15 @@ public sealed class LoadTestRunner : IAsyncDisposable
         _plan = plan.Clone();
         _plan.Environment = environment?.Name;
         _masker = environment?.CreateMasker() ?? SecretMasker.None;
-        _parameters = _plan.Parameters.Count > 0 ? new ParameterSet(_plan.Parameters) : null;
+        _parameters = _plan.Parameters.Count > 0 || _plan.DataFiles.Count > 0 ? new ParameterSet(_plan.Parameters, _plan.DataFiles) : null;
         _schedule = _plan.Profile.IsStaged ? new StageSchedule(_plan.Profile.Stages) : null;
         _stagedRate = _schedule is not null && _plan.Profile.StageMode == StageMode.RequestRate;
         _slotIterations = new long[_plan.Profile.PeakVirtualUsers];
         var variables = _plan.EnvironmentValues(environment);
         _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables)).ToArray();
+
+        // The parameter set holds the rows; the plan that is reported with the results doesn't need them as well.
+        _plan.DropDataRows();
         _extracts = _requests.Any(r => r.Extractor is not null);
         _keepsBodies = _requests.Any(r => r.Extractor is { NeedsBody: true } || r.Checker.NeedsBody);
         _hasOnceRequests = _requests.Any(r => r.OncePerVirtualUser);

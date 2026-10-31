@@ -17,6 +17,12 @@ public sealed class LoadTestPlan
     /// <summary>Named lists of values that requests reference as <c>{{name}}</c>. Plans saved before lists existed have none.</summary>
     public List<ParameterList> Parameters { get; set; } = [];
 
+    /// <summary>
+    /// Tables of test data, such as a list of users, whose columns requests reference as <c>{{column}}</c>. Plans saved
+    /// before data files existed have none.
+    /// </summary>
+    public List<DataFile> DataFiles { get; set; } = [];
+
     /// <summary>Pass/fail rules for the whole run. Without any, a run has no verdict.</summary>
     public List<Threshold> Thresholds { get; set; } = [];
 
@@ -56,7 +62,35 @@ public sealed class LoadTestPlan
             }
         }
 
-        var parameters = new ParameterSet(Parameters);
+        var fileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var columnOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in DataFiles)
+        {
+            errors.AddRange(file.Validate());
+            if (!string.IsNullOrWhiteSpace(file.Name) && !fileNames.Add(file.Name))
+            {
+                errors.Add($"There is more than one data file named '{file.Name}'.");
+            }
+
+            if (!file.TryGetTable(out var table, out _))
+            {
+                continue;
+            }
+
+            foreach (var column in table.Columns.Where(c => c.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (names.Contains(column))
+                {
+                    errors.Add($"Column '{column}' of data file '{file.Name}' has the same name as a parameter list; rename one of them.");
+                }
+                else if (!columnOwners.TryAdd(column, file.Name))
+                {
+                    errors.Add($"Column '{column}' is in both data file '{columnOwners[column]}' and '{file.Name}'; rename one of them.");
+                }
+            }
+        }
+
+        var parameters = new ParameterSet(Parameters, DataFiles);
         var variables = ExtractedVariables();
         var values = EnvironmentValues(environment);
         for (var i = 0; i < Requests.Count; i++)
@@ -73,6 +107,10 @@ public sealed class LoadTestPlan
             {
                 errors.Add($"'{variable}' is both a parameter list and an extracted variable; rename one of them.");
             }
+            else if (columnOwners.TryGetValue(variable, out var owner))
+            {
+                errors.Add($"'{variable}' is both a column of data file '{owner}' and an extracted variable; rename one of them.");
+            }
         }
 
         if (Requests.Count > 0 && Requests.All(r => r.OncePerVirtualUser))
@@ -87,12 +125,12 @@ public sealed class LoadTestPlan
 
     /// <summary>
     /// The variables of <paramref name="environment"/> that requests of this plan actually read: a parameter list or an
-    /// extracted variable with the same name wins, so it is left out here. These values never change during a run.
+    /// extracted variable or data column with the same name wins, so it is left out here. These values never change during a run.
     /// </summary>
     public IReadOnlyDictionary<string, string> EnvironmentValues(TestEnvironment? environment)
     {
         var values = new Dictionary<string, string>(environment?.ToValues() ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
-        foreach (var name in Parameters.Select(p => p.Name).Concat(ExtractedVariables()))
+        foreach (var name in new ParameterSet(Parameters, DataFiles).Names.Concat(ExtractedVariables()))
         {
             values.Remove(name);
         }
@@ -103,6 +141,13 @@ public sealed class LoadTestPlan
     /// <summary>The distinct names of the variables the plan's requests extract from responses.</summary>
     public IReadOnlyList<string> ExtractedVariables() =>
         [.. Requests.SelectMany(r => r.Extractions).Select(e => e.Variable?.Trim()).OfType<string>().Where(v => v.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase)];
+
+    /// <summary>
+    /// Replaces the text of every data file with its row count. A plan that is kept as the record of a run, in the run
+    /// history, an export or an API response, calls this so the rows, which can be large and can hold personal data,
+    /// aren't copied into every result.
+    /// </summary>
+    public void DropDataRows() => DataFiles = [.. DataFiles.Select(f => f.WithoutRows())];
 
     public LoadTestPlan Clone()
     {

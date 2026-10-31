@@ -27,7 +27,7 @@
     var profile = _plan.Profile;
     var stageProblems = _showProblems ? profile.ValidateStages().ToList() : [];
     var profileProblems = _showProblems ? profile.Validate().Except(stageProblems).ToList() : [];
-    var parameterSet = _showProblems ? new ParameterSet(_plan.Parameters) : null;
+    var parameterSet = _showProblems ? new ParameterSet(_plan.Parameters, _plan.DataFiles) : null;
     var extracted = _plan.ExtractedVariables();
 }
 
@@ -600,6 +600,7 @@
                     <tr><td><code>{{$timestamp}}</code> / <code>{{$isoTimestamp}}</code></td><td class="muted">Current Unix time / ISO 8601 time</td></tr>
                     <tr><td><code>{{$vu}}</code> / <code>{{$iteration}}</code></td><td class="muted">Virtual user number / its iteration count</td></tr>
                     <tr><td><code>{{userIds}}</code></td><td class="muted">The next value of your parameter list with that name (below)</td></tr>
+                    <tr><td><code>{{email}}</code></td><td class="muted">A column of one of your data files (below): each iteration takes the next whole row</td></tr>
                     <tr><td><code>{{token}}</code></td><td class="muted">A value this virtual user extracted from an earlier response (a request's Extract tab)</td></tr>
                     <tr><td><code>{{baseUrl}}</code></td><td class="muted">A variable of the selected environment (above)</td></tr>
                 </tbody>
@@ -639,6 +640,96 @@
                 </div>
             }
             <div class="hint">Each iteration takes one value from every list, so all its requests use the same one. "Send once" uses the first value.</div>
+        </section>
+
+        <section class="card" aria-labelledby="data-title">
+            <div class="card-header">
+                <h2 id="data-title">Data files</h2>
+                <label class="btn btn-sm file-button" title="Add a CSV or JSON file, such as a list of test users">
+                    <Icon Name="upload" />Add file…
+                    <InputFile accept=".csv,.tsv,.json,.txt,text/csv,application/json" multiple OnChange="AddDataFiles" aria-label="Add a CSV or JSON data file" />
+                </label>
+            </div>
+            <div class="small muted" id="data-intro">
+                Feed rows from a CSV file or a JSON array of objects into your requests, such as a list of test users. Each column becomes a variable:
+                write <code>{{email}}</code> in a URL, header value or body, and every iteration uses the next whole row, so an email and its
+                password always belong together. The file is saved with the test.
+            </div>
+            @if (_dataProblem is not null)
+            {
+                <div class="field-error" role="alert">@_dataProblem</div>
+            }
+            @for (var k = 0; k < _plan.DataFiles.Count; k++)
+            {
+                var file = _plan.DataFiles[k];
+                var did = $"data-{k}";
+                var fileProblems = file.Validate().ToList();
+                var hasTable = file.TryGetTable(out var table, out _);
+                <div class="data-file">
+                    <div class="data-file-head">
+                        <input id="@did-name" type="text" class="mono" placeholder="users.csv" aria-label="Data file @(k + 1) name" spellcheck="false" @bind="file.Name" @bind:event="oninput" />
+                        <div class="segmented" role="group" aria-label="Format of data file @(k + 1)">
+                            <button aria-pressed="@(file.Format == DataFormat.Csv ? "true" : "false")" title="Comma, semicolon or tab separated, with a header line" @onclick="() => file.Format = DataFormat.Csv">CSV</button>
+                            <button aria-pressed="@(file.Format == DataFormat.Json ? "true" : "false")" title="A JSON array of objects" @onclick="() => file.Format = DataFormat.Json">JSON</button>
+                        </div>
+                        <div class="segmented" role="group" aria-label="How data file @(k + 1) picks rows">
+                            <button aria-pressed="@(file.Selection == ParameterSelection.Sequential ? "true" : "false")" title="Rows in order, shared by all virtual users, starting over at the end" @onclick="() => file.Selection = ParameterSelection.Sequential">In order</button>
+                            <button aria-pressed="@(file.Selection == ParameterSelection.Random ? "true" : "false")" title="A random row each iteration" @onclick="() => file.Selection = ParameterSelection.Random">Random</button>
+                        </div>
+                        <button class="btn-sm btn-icon btn-ghost btn-danger" title="Remove data file" aria-label="Remove data file @(k + 1)" @onclick="() => _plan.DataFiles.Remove(file)"><Icon Name="trash" /></button>
+                    </div>
+                    @if (fileProblems.Count > 0)
+                    {
+                        <ul class="field-error">
+                            @foreach (var problem in fileProblems)
+                            {
+                                <li>@problem</li>
+                            }
+                        </ul>
+                    }
+                    @if (hasTable && table.Rows.Count > 0)
+                    {
+                        <div class="hint" id="@did-hint">
+                            @table.Rows.Count.ToString("#,0") @(table.Rows.Count == 1 ? "row" : "rows"). Use as
+                            @foreach (var column in table.Columns.Where(c => c.Length > 0))
+                            {
+                                <code>{{@column}}</code>@(" ")
+                            }
+                        </div>
+                        <div class="table-wrap">
+                            <table class="data-preview" aria-label="First rows of data file @(k + 1)">
+                                <thead>
+                                    <tr>
+                                        @foreach (var column in table.Columns)
+                                        {
+                                            <th>@column</th>
+                                        }
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var row in table.Rows.Take(PreviewRows))
+                                    {
+                                        <tr>
+                                            @foreach (var value in row)
+                                            {
+                                                <td class="mono" title="@value">@value</td>
+                                            }
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                        @if (table.Rows.Count > PreviewRows)
+                        {
+                            <div class="hint">Showing the first @PreviewRows rows.</div>
+                        }
+                    }
+                </div>
+            }
+            @if (_plan.DataFiles.Count > 0)
+            {
+                <div class="hint">"Send once" uses the first row. Anyone who can open this test or its export can read the file, so keep real secrets in an environment instead.</div>
+            }
         </section>
     </div>
 
@@ -843,7 +934,18 @@
     }
 
     private static string Snapshot(LoadTestPlan plan) =>
-        System.Text.Json.JsonSerializer.Serialize(new { plan.Name, plan.Environment, plan.Requests, plan.Parameters, plan.Profile, plan.Thresholds });
+        System.Text.Json.JsonSerializer.Serialize(new
+        {
+            plan.Name,
+            plan.Environment,
+            plan.Requests,
+            plan.Parameters,
+            plan.Profile,
+            plan.Thresholds,
+
+            // A file's text can be megabytes, so only a fingerprint of it is compared.
+            DataFiles = plan.DataFiles.Select(f => new { f.Name, f.Format, f.Selection, f.Content.Length, Hash = f.Content.GetHashCode() }),
+        });
 
     private static string ProfileSummary(LoadProfile p)
     {
@@ -914,6 +1016,34 @@
     }
 
     private void AddRequest() => _plan.Requests.Add(new RequestDefinition { Url = _plan.Requests.LastOrDefault()?.Url ?? "https://" });
+
+    private const int PreviewRows = 5;
+    private string? _dataProblem;
+
+    private async Task AddDataFiles(InputFileChangeEventArgs e)
+    {
+        _dataProblem = null;
+        foreach (var upload in e.GetMultipleFiles(10))
+        {
+            if (upload.Size > DataFile.MaxContentLength)
+            {
+                _dataProblem = $"{upload.Name} is larger than {DataFile.MaxContentLength / 1_000_000} MB. The data is saved with the test and sent to every agent, so use a shorter file.";
+                continue;
+            }
+
+            try
+            {
+                await using var stream = upload.OpenReadStream(DataFile.MaxContentLength);
+                using var reader = new StreamReader(stream);
+                var content = await reader.ReadToEndAsync();
+                _plan.DataFiles.Add(new DataFile { Name = upload.Name, Content = content, Format = DataFile.DetectFormat(upload.Name, content) });
+            }
+            catch (IOException ex)
+            {
+                _dataProblem = $"Couldn't read {upload.Name}: {ex.Message}";
+            }
+        }
+    }
 
     private void AddParameterList() => _plan.Parameters.Add(new ParameterList { Name = _plan.Parameters.Count == 0 ? "userIds" : string.Empty });
 
@@ -1079,7 +1209,7 @@
         {
             if (EnvironmentStore.TryResolve(_plan.Environment, out var environment, out var missing))
             {
-                _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables, environment: environment);
+                _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables, environment: environment, dataFiles: _plan.DataFiles);
             }
             else
             {
