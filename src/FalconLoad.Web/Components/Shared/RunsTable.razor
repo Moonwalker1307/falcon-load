@@ -1,0 +1,74 @@
+@implements IDisposable
+@inject RunManager RunManager
+
+@if (_runs.Count == 0)
+{
+    <div class="empty">No runs yet. Run a saved test to see results here.</div>
+}
+else
+{
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Test</th>
+                    <th>Started</th>
+                    <th>State</th>
+                    <th class="num">Requests</th>
+                    <th class="num">Req/s</th>
+                    <th class="num">p95</th>
+                    <th class="num">Errors</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var run in _runs.Take(Limit))
+                {
+                    var s = run.Snapshot;
+                    <tr>
+                        <td><a href="runs/@run.Id">@run.Plan.Name</a></td>
+                        <td class="muted">@Format.When(run.StartedAt)</td>
+                        <td><RunStateBadge State="s.State" /></td>
+                        <td class="num">@s.TotalRequests.ToString("#,0")</td>
+                        <td class="num">@Format.Rate(s.RequestsPerSecond)</td>
+                        <td class="num">@Format.Ms(s.Latency.P95Ms)</td>
+                        <td class="num @(s.FailedRequests > 0 ? "status-err" : "")">@Format.Percent(s.ErrorRate)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private IReadOnlyList<LoadTestRun> _runs = [];
+    private Timer? _timer;
+
+    [Parameter] public int Limit { get; set; } = int.MaxValue;
+
+    protected override void OnInitialized()
+    {
+        _runs = RunManager.GetAll();
+        RunManager.RunsChanged += OnRunsChanged;
+
+        // Refresh live numbers of running tests once a second.
+        _timer = new Timer(_ =>
+        {
+            if (_runs.Any(r => !r.Snapshot.IsFinished))
+            {
+                _ = InvokeAsync(StateHasChanged);
+            }
+        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void OnRunsChanged() => _ = InvokeAsync(() =>
+    {
+        _runs = RunManager.GetAll();
+        StateHasChanged();
+    });
+
+    public void Dispose()
+    {
+        RunManager.RunsChanged -= OnRunsChanged;
+        _timer?.Dispose();
+    }
+}

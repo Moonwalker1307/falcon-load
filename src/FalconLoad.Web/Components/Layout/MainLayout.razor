@@ -1,0 +1,20 @@
+@inherits LayoutComponentBase
+
+<header class="topbar">
+    <a class="brand" href="/"><img src="falcon.svg" alt="" /><span class="brand-name">falcon<span>-load</span></span></a>
+    <nav>
+        <NavLink href="/" Match="NavLinkMatch.All">Dashboard</NavLink>
+        <NavLink href="/plans/new">New test</NavLink>
+        <NavLink href="/runs">Runs</NavLink>
+    </nav>
+</header>
+
+<main>
+    @Body
+</main>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

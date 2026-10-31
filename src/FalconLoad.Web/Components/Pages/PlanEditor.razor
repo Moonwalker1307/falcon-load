@@ -1,0 +1,343 @@
+@page "/plans/new"
+@page "/plans/{Id:guid}"
+@inject PlanStore PlanStore
+@inject RunManager RunManager
+@inject NavigationManager Nav
+
+<PageTitle>@(_plan.Name) · falcon-load</PageTitle>
+
+@if (_notFound)
+{
+    <div class="card empty">
+        <div>That test doesn't exist any more.</div>
+        <a class="btn" href="/">Back to dashboard</a>
+    </div>
+    return;
+}
+
+<div class="page-header">
+    <div style="flex:1; min-width:260px">
+        <label for="plan-name">Test name</label>
+        <input id="plan-name" type="text" @bind="_plan.Name" @bind:event="oninput" style="font-size:1.25rem; font-weight:600" />
+    </div>
+    <div class="actions">
+        @if (_savedMessage is not null)
+        {
+            <span class="muted small">@_savedMessage</span>
+        }
+        <button @onclick="Save">Save</button>
+        <button class="btn-primary" @onclick="SaveAndRun">▶ Save &amp; run</button>
+    </div>
+</div>
+
+@if (_problems.Count > 0)
+{
+    <div class="alert alert-error">
+        Fix these before saving or running:
+        <ul>
+            @foreach (var problem in _problems)
+            {
+                <li>@problem</li>
+            }
+        </ul>
+    </div>
+}
+
+<div class="editor-layout">
+    <div class="stack">
+        @for (var i = 0; i < _plan.Requests.Count; i++)
+        {
+            var index = i;
+            var request = _plan.Requests[index];
+            var tab = _tabs.GetValueOrDefault(request, "headers");
+            <div class="card request-card" style="margin-bottom:0">
+                <div class="card-header">
+                    <h3><span class="step-num">@(index + 1)</span>Request</h3>
+                    <div class="actions" style="display:flex; gap:.25rem">
+                        <button class="btn-sm btn-icon" title="Move up" disabled="@(index == 0)" @onclick="() => Move(index, -1)">↑</button>
+                        <button class="btn-sm btn-icon" title="Move down" disabled="@(index == _plan.Requests.Count - 1)" @onclick="() => Move(index, 1)">↓</button>
+                        <button class="btn-sm btn-danger" disabled="@(_plan.Requests.Count == 1)" @onclick="() => _plan.Requests.RemoveAt(index)">Remove</button>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label>Name <span class="muted">(optional)</span></label>
+                    <input type="text" placeholder="e.g. List products" @bind="request.Name" />
+                </div>
+
+                <div class="url-row">
+                    <select @bind="request.Method" aria-label="HTTP method">
+                        @foreach (var method in RequestDefinition.SupportedMethods)
+                        {
+                            <option value="@method">@method</option>
+                        }
+                    </select>
+                    <input type="text" class="mono" placeholder="https://api.example.com/items" aria-label="URL" @bind="request.Url" @bind:event="oninput" />
+                    <button @onclick="() => Probe(request)" disabled="@_probing.Contains(request)">
+                        @(_probing.Contains(request) ? "Sending…" : "Send once")
+                    </button>
+                </div>
+
+                <div class="tabs">
+                    <button class="@(tab == "headers" ? "on" : "")" @onclick='() => _tabs[request] = "headers"'>
+                        Headers<span class="count">@request.Headers.Count(h => h.Enabled)</span>
+                    </button>
+                    <button class="@(tab == "body" ? "on" : "")" @onclick='() => _tabs[request] = "body"'>
+                        Body
+                        @if (!string.IsNullOrEmpty(request.Body))
+                        {
+                            <span class="count">●</span>
+                        }
+                    </button>
+                    <button class="@(tab == "checks" ? "on" : "")" @onclick='() => _tabs[request] = "checks"'>Success criteria</button>
+                </div>
+
+                @if (tab == "headers")
+                {
+                    @foreach (var header in request.Headers)
+                    {
+                        var h = header;
+                        <div class="header-row">
+                            <input type="checkbox" title="Enabled" @bind="h.Enabled" />
+                            <input type="text" placeholder="Header" @bind="h.Name" />
+                            <input type="text" class="mono" placeholder="Value" @bind="h.Value" />
+                            <button class="btn-sm btn-icon btn-danger" title="Remove header" @onclick="() => request.Headers.Remove(h)">✕</button>
+                        </div>
+                    }
+                    <button class="btn-sm" @onclick="() => request.Headers.Add(new HeaderEntry())">+ Add header</button>
+                    <div class="hint">Common: <code>Authorization: Bearer …</code>, <code>Accept: application/json</code>, <code>X-Api-Key</code>.</div>
+                }
+                else if (tab == "body")
+                {
+                    <div class="field" style="max-width:280px">
+                        <label>Content type</label>
+                        <input type="text" class="mono" list="content-types" @bind="request.ContentType" />
+                    </div>
+                    <textarea placeholder='{ "name": "falcon-{{$randomInt}}" }' @bind="request.Body"></textarea>
+                    @if (request.Method is "GET" or "HEAD" && !string.IsNullOrEmpty(request.Body))
+                    {
+                        <div class="hint">Heads up: many servers ignore a body on @request.Method requests.</div>
+                    }
+                }
+                else
+                {
+                    <div class="field" style="max-width:320px">
+                        <label>Expected status codes</label>
+                        <input type="text" class="mono" placeholder="200-399 (default)" @bind="request.ExpectedStatusCodes" />
+                        <div class="hint">Comma separated codes or ranges, e.g. <code>200,201</code> or <code>200-299,404</code>. Anything else counts as an error.</div>
+                    </div>
+                }
+
+                @if (_probeResults.TryGetValue(request, out var probe))
+                {
+                    <div class="probe">
+                        <div class="probe-head">
+                            @if (probe.StatusCode is { } statusCode)
+                            {
+                                <strong class="@Format.StatusClass(statusCode.ToString())">@statusCode @probe.ReasonPhrase</strong>
+                                <span>@Format.Ms(probe.Latency.TotalMilliseconds)</span>
+                                <span>@Format.Bytes(probe.BodyBytes)</span>
+                                @if (!probe.Success)
+                                {
+                                    <span class="status-err">Doesn't match the expected status codes</span>
+                                }
+                            }
+                            else
+                            {
+                                <strong class="status-err">Request failed</strong>
+                                <span>@probe.Error</span>
+                            }
+                            <span style="flex:1"></span>
+                            <button class="btn-sm" @onclick="() => _probeResults.Remove(request)">Close</button>
+                        </div>
+                        @if (probe.StatusCode is not null)
+                        {
+                            <pre>@string.Join("\n", probe.Headers.Select(h => $"{h.Key}: {h.Value}"))</pre>
+                            @if (!string.IsNullOrEmpty(probe.BodyPreview))
+                            {
+                                <pre style="border-top:1px solid var(--border)">@probe.BodyPreview</pre>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        }
+
+        <div>
+            <button @onclick="AddRequest">+ Add request</button>
+            <div class="hint">Each virtual user sends the requests in this order, then starts over.</div>
+        </div>
+
+        <div class="card" style="margin-bottom:0">
+            <h3>Dynamic values</h3>
+            <div class="small muted">Use these anywhere in a URL, header value or body to make every request unique.</div>
+            <table class="small" style="margin-top:.5rem">
+                <tbody>
+                    <tr><td><code>{{$guid}}</code></td><td class="muted">A new random GUID</td></tr>
+                    <tr><td><code>{{$randomInt}}</code> or <code>{{$randomInt:1:100}}</code></td><td class="muted">Random integer (0–999999, or within a range)</td></tr>
+                    <tr><td><code>{{$timestamp}}</code> / <code>{{$isoTimestamp}}</code></td><td class="muted">Current Unix time / ISO 8601 time</td></tr>
+                    <tr><td><code>{{$vu}}</code> / <code>{{$iteration}}</code></td><td class="muted">Virtual user number / its iteration count</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card profile-card">
+        <h2>Load profile</h2>
+
+        <div class="field">
+            <label>Virtual users</label>
+            <input type="number" min="1" max="10000" @bind="_plan.Profile.Concurrency" />
+            <div class="hint">How many requests are in flight at the same time.</div>
+        </div>
+
+        <div class="field">
+            <label>Stop after</label>
+            <div class="segmented">
+                <button class="@(_plan.Profile.StopCondition == StopCondition.Duration ? "on" : "")" @onclick="() => _plan.Profile.StopCondition = StopCondition.Duration">Duration</button>
+                <button class="@(_plan.Profile.StopCondition == StopCondition.RequestCount ? "on" : "")" @onclick="() => _plan.Profile.StopCondition = StopCondition.RequestCount">Request count</button>
+            </div>
+        </div>
+
+        @if (_plan.Profile.StopCondition == StopCondition.Duration)
+        {
+            <div class="field">
+                <label>Duration (seconds)</label>
+                <input type="number" min="1" @bind="_plan.Profile.DurationSeconds" />
+            </div>
+        }
+        else
+        {
+            <div class="field">
+                <label>Total requests</label>
+                <input type="number" min="1" @bind="_plan.Profile.TotalRequests" />
+            </div>
+        }
+
+        <div class="field-row">
+            <div class="field">
+                <label>Ramp-up (s)</label>
+                <input type="number" min="0" @bind="_plan.Profile.RampUpSeconds" />
+            </div>
+            <div class="field">
+                <label>Timeout (s)</label>
+                <input type="number" min="1" max="600" @bind="_plan.Profile.TimeoutSeconds" />
+            </div>
+        </div>
+
+        <div class="field">
+            <label>Max requests / second</label>
+            <input type="number" min="0" step="any" @bind="_plan.Profile.MaxRequestsPerSecond" />
+            <div class="hint">0 means unlimited: go as fast as the virtual users can.</div>
+        </div>
+
+        <div class="field">
+            <label class="check"><input type="checkbox" @bind="_plan.Profile.FollowRedirects" /> Follow redirects</label>
+            <label class="check"><input type="checkbox" @bind="_plan.Profile.IgnoreTlsErrors" /> Ignore TLS certificate errors</label>
+        </div>
+
+        <div class="alert alert-info small" style="margin:0">
+            Only load test APIs you own or have permission to test.
+        </div>
+    </div>
+</div>
+
+<datalist id="content-types">
+    <option value="application/json" />
+    <option value="application/x-www-form-urlencoded" />
+    <option value="application/xml" />
+    <option value="text/plain" />
+</datalist>
+
+@code {
+    private LoadTestPlan _plan = new();
+    private bool _notFound;
+    private IReadOnlyList<string> _problems = [];
+    private string? _savedMessage;
+    private readonly Dictionary<RequestDefinition, string> _tabs = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<RequestDefinition, ProbeResult> _probeResults = new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<RequestDefinition> _probing = new(ReferenceEqualityComparer.Instance);
+
+    [Parameter] public Guid? Id { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        if (Id is not null && Id == _plan.Id && !_notFound)
+        {
+            return; // Just saved a new plan and the URL caught up; keep the current state.
+        }
+
+        _problems = [];
+        _savedMessage = null;
+        _probeResults.Clear();
+        if (Id is { } id)
+        {
+            var plan = PlanStore.Get(id);
+            _notFound = plan is null;
+            _plan = plan ?? new LoadTestPlan();
+        }
+        else
+        {
+            _plan = new LoadTestPlan
+            {
+                Requests = [new RequestDefinition { Url = "https://localhost:5001/api/health", Headers = [new HeaderEntry { Name = "Accept", Value = "application/json" }] }],
+            };
+        }
+    }
+
+    private void AddRequest() => _plan.Requests.Add(new RequestDefinition { Url = _plan.Requests.LastOrDefault()?.Url ?? "https://" });
+
+    private void Move(int index, int delta)
+    {
+        var target = index + delta;
+        (_plan.Requests[index], _plan.Requests[target]) = (_plan.Requests[target], _plan.Requests[index]);
+    }
+
+    private bool TrySave(out LoadTestPlan saved)
+    {
+        _problems = _plan.Validate();
+        saved = _plan;
+        if (_problems.Count > 0)
+        {
+            return false;
+        }
+
+        saved = PlanStore.Save(_plan);
+        return true;
+    }
+
+    private void Save()
+    {
+        if (TrySave(out var saved))
+        {
+            _savedMessage = $"Saved at {DateTime.Now:HH:mm:ss}";
+            if (Id != saved.Id)
+            {
+                Nav.NavigateTo($"plans/{saved.Id}", replace: true);
+            }
+        }
+    }
+
+    private void SaveAndRun()
+    {
+        if (TrySave(out var saved))
+        {
+            var run = RunManager.Start(saved);
+            Nav.NavigateTo($"runs/{run.Id}");
+        }
+    }
+
+    private async Task Probe(RequestDefinition request)
+    {
+        _probing.Add(request);
+        _probeResults.Remove(request);
+        try
+        {
+            _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile);
+        }
+        finally
+        {
+            _probing.Remove(request);
+        }
+    }
+}
