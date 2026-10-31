@@ -21,6 +21,13 @@ internal sealed class PreparedRequest
     private bool _bodyHasVariables;
     private string _contentType = "application/json";
     private (string Name, string Value, bool HasVariables)[] _headers = [];
+    private string? _graphQLVariables;
+    private string? _operationName;
+
+    public RequestProtocol Protocol { get; private set; }
+
+    /// <summary>Whether the protocol itself has to read the body to judge the response, as GraphQL does for its errors.</summary>
+    public bool ProtocolNeedsBody => Protocol == RequestProtocol.GraphQL;
 
     public StatusCodeMatcher Matcher { get; private set; } = StatusCodeMatcher.Default;
 
@@ -43,16 +50,24 @@ internal sealed class PreparedRequest
     public static PreparedRequest From(RequestDefinition definition, IReadOnlyDictionary<string, string>? variables = null, bool auth = false)
     {
         StatusCodeMatcher.TryParse(definition.ExpectedStatusCodes, out var matcher);
+        var graphQL = definition.Protocol == RequestProtocol.GraphQL;
         var url = TemplateRenderer.ResolveVariables(definition.Url, variables);
         var body = string.IsNullOrEmpty(definition.Body) ? null : TemplateRenderer.ResolveVariables(definition.Body, variables);
+        var graphQLVariables = graphQL && !string.IsNullOrWhiteSpace(definition.GraphQL?.Variables)
+            ? TemplateRenderer.ResolveVariables(definition.GraphQL.Variables, variables)
+            : null;
         var prepared = new PreparedRequest
         {
-            _method = HttpMethod.Parse(definition.Method.ToUpperInvariant()),
+            Protocol = definition.Protocol,
+            _method = graphQL ? HttpMethod.Post : HttpMethod.Parse(definition.Method.ToUpperInvariant()),
             _url = url.Trim(),
             _urlHasVariables = TemplateRenderer.HasVariables(url),
             _body = body,
-            _bodyHasVariables = body is not null && TemplateRenderer.HasVariables(body),
-            _contentType = string.IsNullOrWhiteSpace(definition.ContentType) ? "text/plain" : definition.ContentType.Trim(),
+            _bodyHasVariables = (body is not null && TemplateRenderer.HasVariables(body)) || TemplateRenderer.HasVariables(graphQLVariables),
+            _graphQLVariables = graphQLVariables,
+            _operationName = graphQL ? definition.GraphQL?.OperationName : null,
+            _contentType = graphQL ? GraphQLRequest.ContentType
+                : string.IsNullOrWhiteSpace(definition.ContentType) ? "text/plain" : definition.ContentType.Trim(),
             _headers = definition.Headers
                 .Where(h => h.Enabled && !string.IsNullOrWhiteSpace(h.Name))
                 .Select(h =>
@@ -76,11 +91,33 @@ internal sealed class PreparedRequest
 
         if (body is not null && !prepared._bodyHasVariables)
         {
-            prepared._staticBody = Encoding.UTF8.GetBytes(body);
+            prepared._staticBody = prepared.EncodeBody(body, graphQLVariables);
         }
 
         return prepared;
     }
+
+    /// <summary>The bytes to send for a body whose placeholders have been filled in.</summary>
+    private byte[] EncodeBody(string body, string? graphQLVariables) =>
+        Protocol == RequestProtocol.GraphQL ? GraphQLRequest.BuildBody(body, graphQLVariables, _operationName) : Encoding.UTF8.GetBytes(body);
+
+    /// <summary>
+    /// The protocol's own verdict on a response whose status matched: for GraphQL, the first message in its
+    /// <c>errors</c> array. Null when the protocol finds nothing wrong, or needs nothing beyond the status.
+    /// </summary>
+    /// <param name="bodyTooLarge">True when only the start of the body was kept, so it can't be judged.</param>
+    public string? ProtocolError(ReadOnlySpan<byte> body, bool bodyTooLarge)
+    {
+        if (Protocol != RequestProtocol.GraphQL)
+        {
+            return null;
+        }
+
+        return bodyTooLarge ? TooLargeToCheck : GraphQLRequest.FindError(body);
+    }
+
+    internal static readonly string TooLargeToCheck =
+        $"Response body over {Assertion.MaxBodyBytes / (1024 * 1024)} MB is too large to check";
 
     /// <param name="authorization">The <c>Authorization</c> header value to send when <see cref="UsesAuth"/>, such as <c>Bearer …</c>.</param>
     public HttpRequestMessage Build(TemplateContext context, out long bytesSent, string? authorization = null)
@@ -91,7 +128,9 @@ internal sealed class PreparedRequest
 
         if (_body is not null)
         {
-            var bytes = _staticBody ?? Encoding.UTF8.GetBytes(TemplateRenderer.Render(_body, context));
+            var bytes = _staticBody ?? EncodeBody(
+                TemplateRenderer.Render(_body, context),
+                _graphQLVariables is null ? null : TemplateRenderer.Render(_graphQLVariables, context));
             var content = new ByteArrayContent(bytes);
             content.Headers.ContentType = MediaTypeHeaderValue.Parse(_contentType);
             request.Content = content;

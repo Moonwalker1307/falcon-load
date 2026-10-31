@@ -102,7 +102,7 @@ else
                                 <a class="row-title" href="plans/@plan.Id">@plan.Name</a>
                                 @foreach (var r in plan.Requests.Take(2))
                                 {
-                                    <div class="request-line"><span class="@Format.MethodClass(r.Method)">@r.Method</span><span class="mono muted" title="@r.Url">@r.Url</span></div>
+                                    <div class="request-line"><span class="@Format.MethodClass(r.Label)">@r.Label</span><span class="mono muted" title="@r.Url">@r.Url</span></div>
                                 }
                                 @if (plan.Requests.Count > 2)
                                 {

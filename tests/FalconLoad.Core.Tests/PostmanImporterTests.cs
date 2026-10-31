@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using FalconLoad.Core.Import;
+using FalconLoad.Core.Model;
 
 namespace FalconLoad.Core.Tests;
 
@@ -126,7 +127,9 @@ public class PostmanImporterTests
         Assert.StartsWith("multipart/form-data", result.Requests[1].ContentType);
         Assert.DoesNotContain("a.png", result.Requests[1].Body);
         Assert.Contains(result.Warnings, w => w.Contains("uploads a file"));
-        Assert.Equal("""{"query":"{ me { id } }","variables":{"a":1}}""", result.Requests[2].Body);
+        Assert.Equal(RequestProtocol.GraphQL, result.Requests[2].Protocol);
+        Assert.Equal("{ me { id } }", result.Requests[2].Body);
+        Assert.Equal("""{"a":1}""", result.Requests[2].GraphQL!.Variables);
     }
 
     [Fact]

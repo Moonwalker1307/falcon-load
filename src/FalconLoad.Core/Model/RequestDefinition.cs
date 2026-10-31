@@ -1,12 +1,16 @@
 namespace FalconLoad.Core.Model;
 
-/// <summary>A single HTTP request to send as part of a load test.</summary>
+/// <summary>A single request to send as part of a load test: an HTTP request, or a GraphQL operation over HTTP.</summary>
 public sealed class RequestDefinition
 {
     public static readonly string[] SupportedMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
 
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>Plans saved before protocols existed have no protocol and are plain HTTP.</summary>
+    public RequestProtocol Protocol { get; set; } = RequestProtocol.Http;
+
+    /// <summary>The HTTP method. A GraphQL request is always a POST, whatever this says.</summary>
     public string Method { get; set; } = "GET";
 
     /// <summary>Absolute URL. May contain template variables such as <c>{{$guid}}</c> or a parameter list's <c>{{name}}</c>.</summary>
@@ -14,8 +18,11 @@ public sealed class RequestDefinition
 
     public List<HeaderEntry> Headers { get; set; } = [];
 
-    /// <summary>Optional request body. May contain template variables.</summary>
+    /// <summary>Optional request body, or the query of a GraphQL request. May contain template variables.</summary>
     public string? Body { get; set; }
+
+    /// <summary>The variables and operation name of a GraphQL request. Null for other protocols.</summary>
+    public GraphQLOptions? GraphQL { get; set; }
 
     public string ContentType { get; set; } = "application/json";
 
@@ -41,7 +48,15 @@ public sealed class RequestDefinition
     public bool OncePerVirtualUser { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
-    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? $"{Method} {Url}" : Name;
+    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? $"{Label} {Url}" : Name;
+
+    /// <summary>What is shown in place of the method: the method itself for HTTP, otherwise the protocol's name.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Label => Protocol switch
+    {
+        RequestProtocol.GraphQL => "GraphQL",
+        _ => Method,
+    };
 
     /// <param name="parameters">The plan's parameter lists; URLs that use them are checked with their first values.</param>
     /// <param name="variables">The names of the plan's extracted variables, which URLs may use too.</param>
@@ -56,9 +71,30 @@ public sealed class RequestDefinition
         IReadOnlyDictionary<string, string>? environment = null,
         bool forRun = false)
     {
-        if (!SupportedMethods.Contains(Method, StringComparer.OrdinalIgnoreCase))
+        if (!Enum.IsDefined(Protocol))
+        {
+            yield return "Unknown protocol.";
+        }
+
+        if (Protocol == RequestProtocol.Http && !SupportedMethods.Contains(Method, StringComparer.OrdinalIgnoreCase))
         {
             yield return $"Unsupported HTTP method '{Method}'.";
+        }
+
+        if (Protocol == RequestProtocol.GraphQL)
+        {
+            if (string.IsNullOrWhiteSpace(Body))
+            {
+                yield return "A GraphQL request needs a query.";
+            }
+
+            // Placeholders may stand anywhere in the JSON, as a string's text or as a bare number, so they are replaced by a
+            // number before the shape is checked.
+            var graphQLVariables = GraphQL?.Variables;
+            if (!string.IsNullOrWhiteSpace(graphQLVariables) && !Engine.GraphQLRequest.IsJsonObject(TemplateRenderer.ReplaceVariables(graphQLVariables, "1")))
+            {
+                yield return "GraphQL variables must be a JSON object, such as { \"id\": 1 }.";
+            }
         }
 
         // Validate the URL with template variables replaced by harmless placeholders.

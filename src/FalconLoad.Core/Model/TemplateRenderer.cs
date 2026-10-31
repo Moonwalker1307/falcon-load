@@ -22,6 +22,10 @@ public static partial class TemplateRenderer
 
     public static bool HasVariables(string? text) => text is not null && text.Contains("{{", StringComparison.Ordinal) && VariablePattern().IsMatch(text);
 
+    /// <summary>Replaces every placeholder with <paramref name="replacement"/>, for checking the shape of text around them.</summary>
+    public static string ReplaceVariables(string text, string replacement) =>
+        HasVariables(text) ? VariablePattern().Replace(text, replacement) : text;
+
     public static string Render(string text, TemplateContext context)
     {
         if (!HasVariables(text))
