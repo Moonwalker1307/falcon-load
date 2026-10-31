@@ -18,7 +18,8 @@ public sealed record ProbeResult(
 
 /// <summary>
 /// Sends one request and captures the response, so users can verify a request before load testing. Parameter lists
-/// supply their first value, and the request's extraction rules are tried on the response.
+/// supply their first value, the environment, if any, supplies its variables, and the request's extraction rules are
+/// tried on the response. The environment's secret values are hidden in what comes back, in case the server echoes them.
 /// </summary>
 public static class RequestProbe
 {
@@ -33,10 +34,20 @@ public static class RequestProbe
         HttpMessageInvoker? invoker = null,
         CancellationToken cancellationToken = default,
         IReadOnlyList<ParameterList>? parameters = null,
-        Dictionary<string, string>? variables = null)
+        Dictionary<string, string>? variables = null,
+        TestEnvironment? environment = null)
     {
         var set = new ParameterSet(parameters ?? []);
-        var problems = definition.Validate(set).ToList();
+        var masker = environment?.CreateMasker() ?? SecretMasker.None;
+
+        // Parameter lists and variables already extracted win over an environment variable of the same name.
+        var values = new Dictionary<string, string>(environment?.ToValues() ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
+        foreach (var name in (parameters ?? []).Select(p => p.Name).Concat(variables?.Keys ?? Enumerable.Empty<string>()))
+        {
+            values.Remove(name);
+        }
+
+        var problems = definition.Validate(set, variables?.Keys.ToList(), values, forRun: true).ToList();
         if (problems.Count > 0)
         {
             return new ProbeResult(null, null, TimeSpan.Zero, [], string.Empty, 0, false, string.Join(" ", problems));
@@ -44,7 +55,7 @@ public static class RequestProbe
 
         var owned = invoker is null;
         invoker ??= new HttpMessageInvoker(HttpHandlerFactory.Create(profile), disposeHandler: true);
-        var prepared = PreparedRequest.From(definition);
+        var prepared = PreparedRequest.From(definition, values);
         var start = Stopwatch.GetTimestamp();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(profile.TimeoutSeconds));
@@ -60,9 +71,9 @@ public static class RequestProbe
             var latency = Stopwatch.GetElapsedTime(start);
 
             var headers = response.Headers.Concat(response.Content.Headers)
-                .Select(h => new KeyValuePair<string, string>(h.Key, string.Join(", ", h.Value)))
+                .Select(h => new KeyValuePair<string, string>(h.Key, masker.Apply(string.Join(", ", h.Value))))
                 .ToList();
-            var preview = Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, MaxPreviewBytes));
+            var preview = masker.Apply(Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, MaxPreviewBytes)));
             if (bytes.Length > MaxPreviewBytes)
             {
                 preview += $"\n… ({bytes.Length - MaxPreviewBytes:N0} more bytes)";
@@ -77,7 +88,7 @@ public static class RequestProbe
                 extractor.Apply(response, bytes.AsSpan(0, Math.Min(bytes.Length, ResponseExtractor.MaxBodyBytes)), variables, extractions);
             }
 
-            return new ProbeResult(code, response.ReasonPhrase, latency, headers, preview, bytes.Length, success, null, extractions);
+            return new ProbeResult(code, masker.Apply(response.ReasonPhrase), latency, headers, preview, bytes.Length, success, null, extractions);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -100,7 +111,7 @@ public static class RequestProbe
         }
 
         ProbeResult Failed(string error) =>
-            new(null, null, Stopwatch.GetElapsedTime(start), [], string.Empty, 0, false, error);
+            new(null, null, Stopwatch.GetElapsedTime(start), [], string.Empty, 0, false, masker.Apply(error));
     }
 }
 

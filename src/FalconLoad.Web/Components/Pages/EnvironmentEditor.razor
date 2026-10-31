@@ -1,0 +1,206 @@
+@page "/environments/new"
+@page "/environments/{Id:guid}"
+@inject EnvironmentStore Store
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>@(string.IsNullOrWhiteSpace(_environment.Name) ? "Environment" : _environment.Name) · falcon-load</PageTitle>
+
+@if (_notFound)
+{
+    <div class="card empty">
+        <h1 tabindex="-1">Environment not found</h1>
+        <p>That environment doesn't exist any more. It may have been deleted in another tab.</p>
+        <a class="btn" href="environments">Back to environments</a>
+    </div>
+    return;
+}
+
+<NavigationLock OnBeforeInternalNavigation="ConfirmLeave" ConfirmExternalNavigation="IsDirty" />
+
+<div class="page-header editor-header">
+    <div class="title">
+        <h1 class="sr-only" tabindex="-1">@(Id is null ? "New environment" : "Edit environment")</h1>
+        <label class="eyebrow" for="env-name">@(Id is null ? "New environment" : "Environment name")</label>
+        <div class="title-row">
+            <input id="env-name" class="name-input" type="text" @bind="_environment.Name" @bind:event="oninput" placeholder="e.g. Staging" />
+        </div>
+    </div>
+    <div class="actions">
+        <span role="status">
+            @if (IsDirty)
+            {
+                <span class="badge badge-unsaved">Unsaved changes</span>
+            }
+            else if (_savedMessage is not null)
+            {
+                <span class="badge badge-saved">@_savedMessage</span>
+            }
+        </span>
+        <a class="btn btn-ghost" href="environments">Back</a>
+        <button class="btn-primary" @onclick="Save"><Icon Name="save" />Save</button>
+    </div>
+</div>
+
+@if (_problems.Count > 0)
+{
+    <div class="alert alert-error" role="alert">
+        <Icon Name="alert" />
+        <div>
+            <strong>@(_problems.Count == 1 ? "One thing needs fixing" : $"{_problems.Count} things need fixing") before this environment can be saved.</strong>
+            <ul>
+                @foreach (var problem in _problems)
+                {
+                    <li>@problem</li>
+                }
+            </ul>
+        </div>
+    </div>
+}
+
+<section class="card" aria-labelledby="vars-title">
+    <div class="card-header">
+        <h2 id="vars-title">Variables</h2>
+        <button class="btn-sm" @onclick="AddVariable"><Icon Name="plus" />Add variable</button>
+    </div>
+    <p class="small muted">Write <code>{{name}}</code> in a test's URL, header value or body, and the run swaps in the value from the environment you pick. A parameter list with the same name takes priority.</p>
+
+    @if (_environment.Variables.Count == 0)
+    {
+        <div class="hint">No variables yet. A good start: <code>baseUrl</code> and a secret <code>token</code>.</div>
+    }
+    else
+    {
+        <div class="variable-row variable-head" aria-hidden="true">
+            <span>Name</span><span>Value</span><span>Secret</span><span></span>
+        </div>
+    }
+
+    @for (var i = 0; i < _environment.Variables.Count; i++)
+    {
+        var variable = _environment.Variables[i];
+        var n = i + 1;
+        <div class="variable-row">
+            <input type="text" class="mono" placeholder="baseUrl" aria-label="Variable @n name" spellcheck="false" autocomplete="off" @bind="variable.Name" @bind:event="oninput" />
+            <div class="secret-field">
+                @if (variable.Secret)
+                {
+                    <input type="password" class="mono" autocomplete="new-password" spellcheck="false" aria-label="Variable @n secret value"
+                           placeholder="@(variable.Value is null ? "Saved. Type to replace it." : "Value")"
+                           @bind:get="variable.Value ?? string.Empty" @bind:set="value => variable.Value = value" @bind:event="oninput" />
+                    @if (variable.Value == string.Empty)
+                    {
+                        <span class="small status-err">Not set</span>
+                    }
+                }
+                else
+                {
+                    <input type="text" class="mono" placeholder="https://staging.example.com" aria-label="Variable @n value" spellcheck="false" autocomplete="off"
+                           @bind:get="variable.Value ?? string.Empty" @bind:set="value => variable.Value = value" @bind:event="oninput" />
+                }
+            </div>
+            <label class="check variable-secret" title="Hide this value in the app, in error messages and in exports">
+                <input type="checkbox" aria-label="Variable @n is a secret" checked="@variable.Secret" @onchange="e => SetSecret(variable, (bool)e.Value!)" />
+                <span><Icon Name="lock" />Secret</span>
+            </label>
+            <button class="btn-sm btn-icon btn-ghost btn-danger" title="Remove variable" aria-label="Remove variable @n" @onclick="() => _environment.Variables.Remove(variable)"><Icon Name="trash" /></button>
+        </div>
+    }
+
+    <div class="alert alert-info alert-compact">
+        <Icon Name="lock" />
+        <div>
+            Secret values are write-only: after saving they aren't shown again, in the app or the API. They are replaced by <code>@SecretMasker.Mask</code> in error messages and echoed responses, and left out of exports.
+            They are stored in plain text in <code>environments.json</code> next to your saved tests, which only your user account can read.
+        </div>
+    </div>
+</section>
+
+@code {
+    private TestEnvironment _environment = new();
+    private bool _notFound;
+    private string? _savedMessage;
+    private string _baseline = string.Empty;
+    private IReadOnlyList<string> _problems = [];
+
+    [Parameter] public Guid? Id { get; set; }
+
+    private bool IsDirty => !_notFound && Snapshot(_environment) != _baseline;
+
+    protected override void OnParametersSet()
+    {
+        if (Id is not null && Id == _environment.Id && !_notFound)
+        {
+            return; // Just saved a new environment and the URL caught up; keep the current state.
+        }
+
+        _problems = [];
+        _savedMessage = null;
+        if (Id is { } id)
+        {
+            // The editor works on a redacted copy, so saved secrets never reach the page.
+            var environment = Store.Get(id)?.Redacted();
+            _notFound = environment is null;
+            _environment = environment ?? new TestEnvironment();
+        }
+        else
+        {
+            _environment = new TestEnvironment
+            {
+                Name = string.Empty,
+                Variables = [new EnvironmentVariable { Name = "baseUrl", Value = "https://localhost:5001" }],
+            };
+        }
+
+        _baseline = Snapshot(_environment);
+    }
+
+    private static string Snapshot(TestEnvironment environment) =>
+        System.Text.Json.JsonSerializer.Serialize(new { environment.Name, environment.Variables });
+
+    private void AddVariable() => _environment.Variables.Add(new EnvironmentVariable());
+
+    private static void SetSecret(EnvironmentVariable variable, bool secret)
+    {
+        // A hidden value can't be turned back into plain text; start the field over rather than reveal it.
+        if (!secret && variable.Value is null)
+        {
+            variable.Value = string.Empty;
+        }
+
+        variable.Secret = secret;
+    }
+
+    private void Save()
+    {
+        _problems = Store.Validate(_environment);
+        if (_problems.Count > 0)
+        {
+            return;
+        }
+
+        var saved = Store.Save(_environment);
+
+        // Show the saved copy, which keeps secrets hidden again.
+        _environment = saved.Redacted();
+        _baseline = Snapshot(_environment);
+        _savedMessage = $"Saved at {DateTime.Now:HH:mm}";
+        if (Id != saved.Id)
+        {
+            Nav.NavigateTo($"environments/{saved.Id}", replace: true);
+        }
+    }
+
+    private async Task ConfirmLeave(LocationChangingContext context)
+    {
+        if (!IsDirty || context.TargetLocation.EndsWith($"environments/{_environment.Id}", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (!await JS.InvokeAsync<bool>("confirm", "You have unsaved changes to this environment. Leave without saving?"))
+        {
+            context.PreventNavigation();
+        }
+    }
+}
