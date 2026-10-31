@@ -29,6 +29,7 @@
         <div class="title-row">
             <h1 tabindex="-1">@_run.Plan.Name</h1>
             <RunStateBadge State="s.State" />
+            <VerdictBadge Snapshot="s" />
         </div>
         <div class="meta">
             <span>Started @_run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</span>
@@ -85,6 +86,8 @@
         <span>@Format.Duration(s.Elapsed) elapsed</span>
     </div>
 </div>
+
+<ThresholdResults Snapshot="s" />
 
 <div class="stats">
     <div class="stat">
@@ -172,6 +175,8 @@
         </table>
     </div>
 </section>
+
+<ChecksTable Snapshot="s" />
 
 <div class="grid-2">
     <section class="card" aria-labelledby="codes-title">
@@ -267,7 +272,7 @@
     {
         RunState.Pending => "The test is starting.",
         RunState.Running => "The test is running.",
-        RunState.Completed => $"The test completed: {s.TotalRequests:#,0} requests, {Format.Percent(s.ErrorRate)} errors.",
+        RunState.Completed => $"The test completed: {s.TotalRequests:#,0} requests, {Format.Percent(s.ErrorRate)} errors.{s.Passed switch { true => " It passed its thresholds.", false => " It failed its thresholds.", _ => "" }}",
         RunState.Cancelled => "The test was stopped.",
         _ => "The test failed.",
     };

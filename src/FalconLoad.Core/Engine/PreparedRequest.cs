@@ -24,6 +24,8 @@ internal sealed class PreparedRequest
 
     public StatusCodeMatcher Matcher { get; private set; } = StatusCodeMatcher.Default;
 
+    public ResponseChecker Checker { get; private set; } = ResponseChecker.Empty;
+
     /// <summary>The request's extraction rules, or null when it extracts nothing.</summary>
     public ResponseExtractor? Extractor { get; private set; }
 
@@ -56,6 +58,7 @@ internal sealed class PreparedRequest
                 })
                 .ToArray(),
             Matcher = matcher,
+            Checker = ResponseChecker.From(definition.Assertions),
             Extractor = ResponseExtractor.From(definition),
             OncePerVirtualUser = definition.OncePerVirtualUser,
         };

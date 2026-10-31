@@ -1,0 +1,19 @@
+@* The pass/fail verdict of a run with thresholds. Renders nothing for a run without thresholds. *@
+@if (Snapshot.Passed is { } passed)
+{
+    <span class="badge @(passed ? "badge-passed" : "badge-failed")" title="@Title(passed)">@Label(passed)</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public LoadTestSnapshot Snapshot { get; set; } = default!;
+
+    // While a test runs, the verdict can still change, so it reads as "so far".
+    // "Pass" and "Fail" rather than "Passed" and "Failed", so the verdict doesn't read like the run's state beside it.
+    private string Label(bool passed) => Snapshot.IsFinished
+        ? passed ? "Pass" : "Fail"
+        : passed ? "Passing" : "Failing";
+
+    private string Title(bool passed) => Snapshot.State is RunState.Cancelled or RunState.Failed
+        ? "The run didn't complete, so it can't pass its thresholds."
+        : passed ? "Every threshold holds." : "At least one threshold doesn't hold.";
+}

@@ -1,0 +1,67 @@
+@* The thresholds of a run, each with its measured value, under the run's verdict. *@
+@if (Snapshot.Thresholds.Count > 0)
+{
+    var passed = Snapshot.Passed == true;
+    <section class="card card-flush verdict @(passed ? "verdict-pass" : "verdict-fail")" aria-labelledby="@_id">
+        <div class="card-header">
+            <h2 id="@_id"><Icon Name="@(passed ? "check" : "alert")" />@Heading(passed)</h2>
+            <span class="hint">@Summary()</span>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col">Threshold</th>
+                        <th scope="col" class="num">Measured</th>
+                        <th scope="col">Result</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in Snapshot.Thresholds)
+                    {
+                        <tr>
+                            <td>@t.Name</td>
+                            <td class="num">@(t.Actual is { } actual ? Format.Measured(actual, t.Unit) : "no requests")</td>
+                            <td>
+                                @if (t.Passed)
+                                {
+                                    <span class="status-2xx"><Icon Name="check" /> Holds</span>
+                                }
+                                else
+                                {
+                                    <span class="status-err"><Icon Name="x" /> Doesn't hold</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    private readonly string _id = $"thresholds-{Guid.NewGuid():N}";
+
+    [Parameter, EditorRequired] public LoadTestSnapshot Snapshot { get; set; } = default!;
+
+    private string Heading(bool passed) => Snapshot.IsFinished
+        ? passed ? "Passed its thresholds" : "Failed its thresholds"
+        : passed ? "Passing its thresholds so far" : "Failing its thresholds so far";
+
+    private string Summary()
+    {
+        var failing = Snapshot.Thresholds.Count(t => !t.Passed);
+        var total = Snapshot.Thresholds.Count;
+        var counts = failing == 0
+            ? total == 1 ? "The threshold holds" : $"All {total} thresholds hold"
+            : total == 1 ? "The threshold doesn't hold"
+            : $"{failing} of {total} thresholds {(failing == 1 ? "doesn't" : "don't")} hold";
+        return Snapshot.State switch
+        {
+            RunState.Cancelled => $"{counts}, but the run was stopped early.",
+            RunState.Failed => $"{counts}, but the run failed.",
+            _ => counts + ".",
+        };
+    }
+}

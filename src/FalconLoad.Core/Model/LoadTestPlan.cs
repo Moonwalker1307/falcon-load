@@ -17,6 +17,9 @@ public sealed class LoadTestPlan
     /// <summary>Named lists of values that requests reference as <c>{{name}}</c>. Plans saved before lists existed have none.</summary>
     public List<ParameterList> Parameters { get; set; } = [];
 
+    /// <summary>Pass/fail rules for the whole run. Without any, a run has no verdict.</summary>
+    public List<Threshold> Thresholds { get; set; } = [];
+
     /// <summary>
     /// The name of the <see cref="TestEnvironment"/> whose variables this test runs with unless a run picks another.
     /// It is a name, not an id, so a test exported to another machine finds that machine's environment of the same name.
@@ -78,6 +81,7 @@ public sealed class LoadTestPlan
         }
 
         errors.AddRange(Profile.Validate());
+        errors.AddRange(Thresholds.Where(t => t.Enabled).SelectMany(t => t.Validate(Requests.Count)));
         return errors;
     }
 

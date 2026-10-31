@@ -104,6 +104,7 @@ public static class ResultCombiner
         var statusCodes = new SortedDictionary<string, long>();
         var errors = new Dictionary<string, long>();
         var steps = new List<(int Index, string Name, long Failures, LatencyHistogram Latency)>();
+        var checks = new List<CheckStats>();
         var timeline = new SortedDictionary<int, (long Failures, LatencyHistogram Latency)>();
         var machines = new List<MachineResult>(runs.Count);
         var timelineLength = 0;
@@ -142,6 +143,20 @@ public static class ResultCombiner
                 var existing = steps[at];
                 existing.Latency.Add(LatencyHistogram.FromData(histograms.Steps[s]));
                 steps[at] = existing with { Failures = existing.Failures + step.Failures };
+
+                // A request's checks are matched by name, and keep the combined position of their request.
+                foreach (var check in results.Checks.Where(c => c.StepIndex == step.StepIndex))
+                {
+                    var c = checks.FindIndex(x => x.StepIndex == at && x.Name == check.Name);
+                    if (c < 0)
+                    {
+                        checks.Add(check with { StepIndex = at });
+                    }
+                    else
+                    {
+                        checks[c] = checks[c] with { Passed = checks[c].Passed + check.Passed, Failed = checks[c].Failed + check.Failed };
+                    }
+                }
             }
 
             foreach (var second in histograms.Timeline)
@@ -187,8 +202,12 @@ public static class ResultCombiner
             Errors = errors.OrderByDescending(e => e.Value).Select(e => new ErrorCount(e.Key, e.Value)).ToList(),
             Steps = steps.Select((s, i) => new StepStats(i, s.Name, s.Latency.Count, s.Failures, s.Latency.ToStats())).ToList(),
             Timeline = points,
+            Checks = checks.OrderBy(c => c.StepIndex).ToList(),
             FailureReason = failures.Count == 0 ? null : string.Join(" ", failures),
         };
+
+        // The machines ran the same test, so the first one's thresholds judge the combined load.
+        combined = ThresholdEvaluator.Apply(runs[0].Plan.Thresholds, combined);
 
         return new CombinedResult(combined, start, machines, Warnings(runs, names, start));
     }

@@ -14,7 +14,14 @@ public sealed record ProbeResult(
     long BodyBytes,
     bool Success,
     string? Error,
-    IReadOnlyList<ExtractedValue>? Extractions = null);
+    IReadOnlyList<ExtractedValue>? Extractions = null)
+{
+    /// <summary>What each of the request's checks saw in the response. Empty when it has none or nothing came back.</summary>
+    public IReadOnlyList<CheckOutcome> Checks { get; init; } = [];
+
+    /// <summary>Whether the status matched the expected codes, regardless of the checks.</summary>
+    public bool StatusMatches { get; init; }
+}
 
 /// <summary>
 /// Sends one request and captures the response, so users can verify a request before load testing. Parameter lists
@@ -80,7 +87,8 @@ public static class RequestProbe
             }
 
             var code = (int)response.StatusCode;
-            var success = prepared.Matcher.IsMatch(code);
+            var statusMatches = prepared.Matcher.IsMatch(code);
+            var checks = prepared.Checker.Explain(response, bytes);
             List<ExtractedValue>? extractions = null;
             if (prepared.Extractor is { } extractor)
             {
@@ -88,7 +96,11 @@ public static class RequestProbe
                 extractor.Apply(response, bytes.AsSpan(0, Math.Min(bytes.Length, ResponseExtractor.MaxBodyBytes)), variables, extractions);
             }
 
-            return new ProbeResult(code, masker.Apply(response.ReasonPhrase), latency, headers, preview, bytes.Length, success, null, extractions);
+            return new ProbeResult(code, masker.Apply(response.ReasonPhrase), latency, headers, preview, bytes.Length, statusMatches && checks.All(c => c.Passed), null, extractions)
+            {
+                Checks = [.. checks.Select(c => c with { Actual = masker.Apply(c.Actual) })],
+                StatusMatches = statusMatches,
+            };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

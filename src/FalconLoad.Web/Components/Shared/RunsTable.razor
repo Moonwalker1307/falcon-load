@@ -29,7 +29,7 @@ else
                     <tr>
                         <td><a class="row-title" href="runs/@run.Id">@run.Plan.Name</a></td>
                         <td class="muted nowrap hide-sm">@Format.When(run.StartedAt)</td>
-                        <td><RunStateBadge State="s.State" /></td>
+                        <td><span class="badges"><RunStateBadge State="s.State" /><VerdictBadge Snapshot="s" /></span></td>
                         <td class="num hide-sm">@s.TotalRequests.ToString("#,0")</td>
                         <td class="num">@Format.Rate(s.RequestsPerSecond)</td>
                         <td class="num">@Format.Ms(s.Latency.P95Ms)</td>

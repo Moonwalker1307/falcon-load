@@ -1,0 +1,57 @@
+@* How often each request's checks passed and failed. Renders nothing when no request has checks. *@
+@if (Snapshot.Checks.Count > 0)
+{
+    <section class="card card-flush" aria-labelledby="@_id">
+        <div class="card-header"><h2 id="@_id">Checks</h2><span class="hint">responses that passed each check</span></div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col">#</th>
+                        <th scope="col">Check</th>
+                        <th scope="col" class="num">Passed</th>
+                        <th scope="col" class="num">Failed</th>
+                        <th scope="col">Pass rate</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var check in Snapshot.Checks)
+                    {
+                        var total = check.Passed + check.Failed;
+                        var rate = total == 0 ? 0 : (double)check.Passed / total;
+                        <tr>
+                            <td><span class="step-num" title="@StepName(check.StepIndex)">@(check.StepIndex + 1)</span></td>
+                            <td class="mono small">@check.Name</td>
+                            <td class="num">@check.Passed.ToString("#,0")</td>
+                            <td class="num @(check.Failed > 0 ? "status-err" : "")">@check.Failed.ToString("#,0")</td>
+                            <td>
+                                @if (total == 0)
+                                {
+                                    <span class="muted small">no responses yet</span>
+                                }
+                                else
+                                {
+                                    <div class="share">
+                                        <div class="share-bar @(check.Failed > 0 ? "bad" : "")"><div style="width:@Css(rate)%"></div></div>
+                                        <span class="pct">@Format.Percent(rate)</span>
+                                    </div>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
+
+@code {
+    private readonly string _id = $"checks-{Guid.NewGuid():N}";
+
+    [Parameter, EditorRequired] public LoadTestSnapshot Snapshot { get; set; } = default!;
+
+    private string StepName(int index) => Snapshot.Steps.FirstOrDefault(s => s.StepIndex == index)?.Name ?? $"Request {index + 1}";
+
+    private static string Css(double fraction) =>
+        (Math.Clamp(fraction, 0, 1) * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}
