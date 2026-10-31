@@ -13,22 +13,27 @@ public sealed record ProbeResult(
     string BodyPreview,
     long BodyBytes,
     bool Success,
-    string? Error);
+    string? Error,
+    IReadOnlyList<ExtractedValue>? Extractions = null);
 
 /// <summary>
 /// Sends one request and captures the response, so users can verify a request before load testing. Parameter lists
-/// supply their first value.
+/// supply their first value, and the request's extraction rules are tried on the response.
 /// </summary>
 public static class RequestProbe
 {
     private const int MaxPreviewBytes = 16 * 1024;
 
+    /// <param name="variables">
+    /// Extracted variables for placeholders, compared without regard to case. Values this request extracts are added.
+    /// </param>
     public static async Task<ProbeResult> SendAsync(
         RequestDefinition definition,
         LoadProfile profile,
         HttpMessageInvoker? invoker = null,
         CancellationToken cancellationToken = default,
-        IReadOnlyList<ParameterList>? parameters = null)
+        IReadOnlyList<ParameterList>? parameters = null,
+        Dictionary<string, string>? variables = null)
     {
         var set = new ParameterSet(parameters ?? []);
         var problems = definition.Validate(set).ToList();
@@ -46,7 +51,10 @@ public static class RequestProbe
 
         try
         {
-            using var request = prepared.Build(new TemplateContext(1, 1, set.First()), out _);
+            // Variables from earlier probes fill in placeholders, and this probe's extractions are added to them, so
+            // sending a login request once lets the next "Send once" use its token.
+            variables ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            using var request = prepared.Build(new TemplateContext(1, 1, set.First(), variables), out _);
             using var response = await invoker.SendAsync(request, timeout.Token).ConfigureAwait(false);
             var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
             var latency = Stopwatch.GetElapsedTime(start);
@@ -61,7 +69,15 @@ public static class RequestProbe
             }
 
             var code = (int)response.StatusCode;
-            return new ProbeResult(code, response.ReasonPhrase, latency, headers, preview, bytes.Length, prepared.Matcher.IsMatch(code), null);
+            var success = prepared.Matcher.IsMatch(code);
+            List<ExtractedValue>? extractions = null;
+            if (prepared.Extractor is { } extractor)
+            {
+                extractions = [];
+                extractor.Apply(response, bytes.AsSpan(0, Math.Min(bytes.Length, ResponseExtractor.MaxBodyBytes)), variables, extractions);
+            }
+
+            return new ProbeResult(code, response.ReasonPhrase, latency, headers, preview, bytes.Length, success, null, extractions);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -87,3 +103,4 @@ public static class RequestProbe
             new(null, null, Stopwatch.GetElapsedTime(start), [], string.Empty, 0, false, error);
     }
 }
+

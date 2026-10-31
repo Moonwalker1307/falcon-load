@@ -24,6 +24,11 @@ internal sealed class PreparedRequest
 
     public StatusCodeMatcher Matcher { get; private set; } = StatusCodeMatcher.Default;
 
+    /// <summary>The request's extraction rules, or null when it extracts nothing.</summary>
+    public ResponseExtractor? Extractor { get; private set; }
+
+    public bool OncePerVirtualUser { get; private set; }
+
     public static PreparedRequest From(RequestDefinition definition)
     {
         StatusCodeMatcher.TryParse(definition.ExpectedStatusCodes, out var matcher);
@@ -41,6 +46,8 @@ internal sealed class PreparedRequest
                 .Select(h => (h.Name.Trim(), h.Value, TemplateRenderer.HasVariables(h.Value)))
                 .ToArray(),
             Matcher = matcher,
+            Extractor = ResponseExtractor.From(definition),
+            OncePerVirtualUser = definition.OncePerVirtualUser,
         };
 
         if (!prepared._urlHasVariables)

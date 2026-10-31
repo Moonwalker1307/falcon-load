@@ -22,6 +22,7 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 - **Multi-step scenarios**: add several requests; each virtual user runs them in order and loops.
 - **Dynamic values** in URLs, headers and bodies: `{{$guid}}`, `{{$randomInt}}`, `{{$randomInt:1:100}}`, `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$vu}}`, `{{$iteration}}`.
 - **Parameter lists**: name a list of values, such as `userIds` = 17, 42, 99, and write `{{userIds}}` in a URL, header value or body. Each iteration of a virtual user takes one value from every list, so all requests in that iteration use the same value. A list hands out its values in order, shared by all virtual users and starting over at the end, or picks one at random. "Send once" uses the first value. Placeholders that match no list are sent as written.
+- **Response extraction and request chaining**: on a request's Extract tab, take a value from its response into a variable, and use it in later requests as `{{name}}`, like a parameter list. A rule reads a JSON path (`$.data.token`, `items[0].id`, `items[-1].id` for the last item, `['odd key']`), a response header by name (such as `Location`), or a regular expression over the body (its first capture group, or the whole match without one). Each virtual user keeps its own variables across its iterations, so with "Once per virtual user" ticked on a login request, every virtual user logs in once and reuses its token; a request sent once is sent again on the next iteration if it fails, until it succeeds. A response with an expected status that lacks a value counts as an error, such as "Couldn't extract 'token': JSON path $.token found nothing", and the variable keeps its previous value; responses with an unexpected status aren't searched. A variable no response has supplied yet is sent as written. Only the first 1 MB of a body is searched, and extraction happens after the request is timed, so it doesn't add to the latency. "Send once" shows what each rule found and passes the values on to "Send once" on later requests.
 - **Load profile**: virtual users (concurrency), stop after a duration or a request count, ramp-up, optional requests-per-second cap, per-request timeout, redirect and TLS options.
 - **Success criteria**: expected status codes per request (e.g. `200,201` or `200-299,404`); defaults to any 2xx/3xx.
 - **Live results**: a pixel-art falcon flies along the progress bar while a test runs. Requests, throughput, error rate, latency (mean, p50, p90, p95, p99, max), per-second throughput and latency charts, per-request breakdown, status code and error tables.
@@ -47,7 +48,7 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 | `GET` | `/api/runs/{id}/export` | Results as a JSON download, with the latency histograms needed to combine them |
 | `POST` | `/api/runs/{id}/stop` | Stop a running test |
 | `POST` | `/api/results/combine` | Combine an array of exported results from several machines |
-| `POST` | `/api/probe` | Send a single request and return the response |
+| `POST` | `/api/probe` | Send a single request and return the response, with what its extraction rules found |
 
 Example:
 
@@ -55,9 +56,12 @@ Example:
 curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' -d '{
   "name": "Products smoke",
   "requests": [
+    { "method": "POST", "url": "https://localhost:5001/api/login", "body": "{ \"user\": \"load-{{$vu}}\" }",
+      "oncePerVirtualUser": true,
+      "extractions": [{ "variable": "token", "source": "JsonPath", "expression": "$.accessToken" }] },
     { "method": "GET", "url": "https://localhost:5001/api/products?page={{$randomInt:1:20}}" },
     { "method": "POST", "url": "https://localhost:5001/api/orders",
-      "headers": [{ "name": "Authorization", "value": "Bearer <token>" }],
+      "headers": [{ "name": "Authorization", "value": "Bearer {{token}}" }],
       "body": "{ \"id\": \"{{$guid}}\", \"userId\": {{userIds}} }", "expectedStatusCodes": "201" }
   ],
   "parameters": [{ "name": "userIds", "values": ["17", "42", "99"], "selection": "Sequential" }],
@@ -73,7 +77,7 @@ src/FalconLoad.Web           ASP.NET Core host, Blazor UI and JSON API
 tests/FalconLoad.Core.Tests  xUnit tests for the engine and metrics
 ```
 
-How the engine works: each virtual user is a task that loops over the plan's requests through a shared `SocketsHttpHandler`. A request is timed until its full response body has been read. Latencies go into a fixed-size log-linear histogram (about 1% precision), so percentiles stay cheap and memory stays flat however long a test runs. Requests still in flight when a test stops are discarded rather than counted as errors.
+How the engine works: each virtual user is a task that loops over the plan's requests through a shared `SocketsHttpHandler`, with its own extracted variables. A request is timed until its full response body has been read. Latencies go into a fixed-size log-linear histogram (about 1% precision), so percentiles stay cheap and memory stays flat however long a test runs. Requests still in flight when a test stops are discarded rather than counted as errors.
 
 How combining works: an export holds the run's summary plus its latency histograms (overall, per request and per second), along with the machine's name. Counts are added up, and the histograms are merged bucket by bucket, so the combined percentiles are exactly what one machine would have measured had it sent every request. Each machine's per-second timeline is placed by its start time, so keep the machines' clocks in sync (NTP is enough). Throughput is averaged from the first machine's start to the last one's end; the page warns when runs didn't overlap, because that average then understates the load. Files exported before this feature have no histograms and can't be combined; export the run again if it is still in memory.
 
