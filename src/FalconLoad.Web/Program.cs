@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using FalconLoad.Core.Distributed;
 using FalconLoad.Web.Components;
 using FalconLoad.Web.Services;
 
@@ -16,6 +17,13 @@ builder.Services.AddSingleton<PlanStore>();
 builder.Services.AddSingleton<EnvironmentStore>();
 builder.Services.AddSingleton<RunManager>();
 
+// Agents: this machine can be one (AgentMode, with the token from configuration) and can drive others (the registry,
+// the client that talks to them and the manager that runs tests across them).
+builder.Services.AddSingleton<AgentMode>();
+builder.Services.AddHttpClient<AgentClient>(http => http.Timeout = TimeSpan.FromSeconds(10));
+builder.Services.AddSingleton<AgentRegistry>();
+builder.Services.AddSingleton<DistributedRunManager>();
+
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())
@@ -31,6 +39,7 @@ app.UseAntiforgery();
 
 app.MapStaticAssets();
 app.MapFalconApi();
+app.MapAgentApi();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

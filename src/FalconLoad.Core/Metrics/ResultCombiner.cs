@@ -88,7 +88,8 @@ public static class ResultCombiner
     }
 
     /// <summary>Combines <paramref name="runs"/>. Throws <see cref="ArgumentException"/> if <see cref="Validate"/> finds problems.</summary>
-    public static CombinedResult Combine(IReadOnlyList<RunExport> runs)
+    /// <param name="live">True when the runs are still going, as on a controller: unfinished runs are then expected and not warned about.</param>
+    public static CombinedResult Combine(IReadOnlyList<RunExport> runs, bool live = false)
     {
         var problems = Validate(runs);
         if (problems.Count > 0)
@@ -209,10 +210,10 @@ public static class ResultCombiner
         // The machines ran the same test, so the first one's thresholds judge the combined load.
         combined = ThresholdEvaluator.Apply(runs[0].Plan.Thresholds, combined);
 
-        return new CombinedResult(combined, start, machines, Warnings(runs, names, start));
+        return new CombinedResult(combined, start, machines, Warnings(runs, names, start, live));
     }
 
-    private static List<string> Warnings(IReadOnlyList<RunExport> runs, IReadOnlyList<string> names, DateTimeOffset start)
+    private static List<string> Warnings(IReadOnlyList<RunExport> runs, IReadOnlyList<string> names, DateTimeOffset start, bool live)
     {
         var warnings = new List<string>();
         var tests = runs.Select(r => r.Plan.Name).Distinct().ToList();
@@ -228,7 +229,7 @@ public static class ResultCombiner
         }
 
         var running = runs.Select((r, i) => r.Results.IsFinished ? null : names[i]).OfType<string>().ToList();
-        if (running.Count > 0)
+        if (running.Count > 0 && !live)
         {
             warnings.Add($"{string.Join(", ", running)} hadn't finished when the result was exported.");
         }

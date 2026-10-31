@@ -1,0 +1,427 @@
+@page "/agents"
+@implements IDisposable
+@inject AgentRegistry Registry
+@inject AgentMode AgentMode
+@inject PlanStore PlanStore
+@inject EnvironmentStore EnvironmentStore
+@inject DistributedRunManager DistributedRuns
+@inject NavigationManager Nav
+
+<PageTitle>Agents · falcon-load</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Agents</h1>
+        <div class="subtitle">
+            Run one test from several machines at once. Register the other machines here, and this falcon-load splits the
+            load between them, starts and stops them together and shows their results merged live.
+        </div>
+    </div>
+    <div class="actions">
+        @if (_agents.Count > 0)
+        {
+            <button @onclick="CheckAll" disabled="@_checking"><Icon Name="rerun" />@(_checking ? "Checking…" : "Check all")</button>
+        }
+        <button class="btn-primary" @onclick="() => Edit(new AgentDefinition())" disabled="@(_editing is not null)"><Icon Name="plus" />Add agent</button>
+    </div>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-error" role="alert">
+        <Icon Name="alert" /><div>@_error</div>
+        <span class="spacer"></span>
+        <button class="btn-ghost btn-icon btn-sm" aria-label="Dismiss" @onclick="() => _error = null"><Icon Name="x" /></button>
+    </div>
+}
+
+@if (_editing is { } agent)
+{
+    var problems = _showProblems ? agent.Validate().ToList() : [];
+    <section class="card agent-form @(problems.Count > 0 ? "has-error" : "")" aria-labelledby="agent-form-title">
+        <div class="card-header">
+            <h2 id="agent-form-title">@(_isNew ? "Add an agent" : $"Edit {agent.Name}")</h2>
+        </div>
+        @if (problems.Count > 0)
+        {
+            <ul class="field-error">
+                @foreach (var problem in problems)
+                {
+                    <li>@problem</li>
+                }
+            </ul>
+        }
+        <div class="field-row">
+            <div class="field">
+                <label for="agent-name">Name</label>
+                <input id="agent-name" type="text" placeholder="e.g. load-2" @bind="agent.Name" @bind:event="oninput" />
+            </div>
+            <div class="field">
+                <label for="agent-weight">Weight</label>
+                <input id="agent-weight" type="number" min="1" max="100" aria-describedby="agent-weight-hint" @bind="agent.Weight" @bind:event="oninput" />
+                <div class="hint" id="agent-weight-hint">Weight 2 gets twice the virtual users of weight 1.</div>
+            </div>
+        </div>
+        <div class="field">
+            <label for="agent-url">URL</label>
+            <input id="agent-url" type="text" class="mono" placeholder="http://load-2:5299" spellcheck="false" autocomplete="off" aria-describedby="agent-url-hint" @bind="agent.Url" @bind:event="oninput" />
+            <div class="hint" id="agent-url-hint">The address of the agent's falcon-load, as you would open it in a browser from this machine.</div>
+        </div>
+        <div class="field">
+            <label for="agent-token">Token</label>
+            <input id="agent-token" type="password" class="mono" spellcheck="false" autocomplete="off" aria-describedby="agent-token-hint" @bind="agent.Token" @bind:event="oninput" />
+            <div class="hint" id="agent-token-hint">The agent's <code>FalconLoad:AgentToken</code> setting. It is saved with the agent, like the headers of a saved test.</div>
+        </div>
+        <label class="check"><input type="checkbox" @bind="agent.Enabled" /><span>Enabled<span class="hint">Disabled agents stay registered but get no share of a test.</span></span></label>
+        <div class="actions">
+            <button class="btn-primary" @onclick="SaveEditing"><Icon Name="save" />@(_isNew ? "Add agent" : "Save")</button>
+            <button @onclick="() => _editing = null">Cancel</button>
+        </div>
+    </section>
+}
+
+@if (_agents.Count == 0 && _editing is null)
+{
+    <section class="card empty" aria-labelledby="no-agents-title">
+        <h2 id="no-agents-title">No agents yet</h2>
+        <p>An agent is another falcon-load, started with agent mode on, that this one can run a share of a test on.</p>
+        <ol class="steps">
+            <li><strong>Start falcon-load on the other machine</strong><span>With a token in <code>FalconLoad__AgentToken</code>, listening on an address this machine can reach.</span></li>
+            <li><strong>Register it here</strong><span>Its URL and the same token. "Check" shows whether it answers and how far its clock is off.</span></li>
+            <li><strong>Run a test on the agents</strong><span>From the test editor, or below. The load is split by weight and the results come back merged.</span></li>
+        </ol>
+        <div class="actions actions-center">
+            <button class="btn-primary" @onclick="() => Edit(new AgentDefinition())"><Icon Name="plus" />Add an agent</button>
+        </div>
+    </section>
+}
+else if (_agents.Count > 0)
+{
+    <section class="card card-flush" aria-labelledby="agents-title">
+        <div class="card-header">
+            <h2 id="agents-title">Registered agents</h2>
+            <span class="muted small">@_agents.Count(a => a.Enabled) of @_agents.Count enabled</span>
+        </div>
+        <div class="table-wrap">
+            <table class="table-hover">
+                <thead>
+                    <tr>
+                        <th scope="col">Agent</th>
+                        <th scope="col">Status</th>
+                        <th scope="col" class="hide-sm">Machine</th>
+                        <th scope="col" class="num hide-sm">Clock</th>
+                        <th scope="col" class="num hide-sm">Running</th>
+                        <th scope="col" class="num">Weight</th>
+                        <th scope="col"><span class="sr-only">Actions</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var a in _agents)
+                    {
+                        var status = Registry.GetStatus(a.Id);
+                        <tr class="@(a.Enabled ? "" : "row-disabled")">
+                            <td>
+                                <div class="row-title">@a.Name @if (!a.Enabled) { <span class="badge">Disabled</span> }</div>
+                                <div class="mono small muted">@a.Url</div>
+                            </td>
+                            <td>
+                                @if (_checkingIds.Contains(a.Id))
+                                {
+                                    <span class="badge badge-pending">Checking…</span>
+                                }
+                                else if (status is null)
+                                {
+                                    <span class="badge">Not checked</span>
+                                }
+                                else if (status.IsReachable)
+                                {
+                                    <span class="badge badge-completed" title="Checked @Format.When(status.CheckedAt)">Reachable</span>
+                                }
+                                else
+                                {
+                                    <span class="badge badge-failed" title="Checked @Format.When(status.CheckedAt)">Unreachable</span>
+                                    <div class="small status-err agent-error">@status.Error</div>
+                                }
+                            </td>
+                            <td class="hide-sm muted">
+                                @if (status?.Probe is { } probe)
+                                {
+                                    <div>@probe.Info.Machine</div>
+                                    <div class="small">v@(probe.Info.Version)</div>
+                                }
+                            </td>
+                            <td class="num hide-sm @(status?.Probe is { } p && Math.Abs(p.ClockOffset.TotalSeconds) >= 1 ? "status-err" : "muted")" title="The agent's clock compared with this machine's">
+                                @(status?.Probe is { } o ? Format.SignedMs(o.ClockOffset) : "")
+                            </td>
+                            <td class="num hide-sm">@(status?.Probe?.Info.RunningRuns.ToString() ?? "")</td>
+                            <td class="num">@a.Weight</td>
+                            <td class="actions">
+                                @if (_confirmDelete == a.Id)
+                                {
+                                    <div class="btn-group" role="group" aria-label="Confirm removal">
+                                        <span class="small muted">Remove this agent?</span>
+                                        <button class="btn-sm btn-danger-solid" @onclick="() => Delete(a)">Remove</button>
+                                        <button class="btn-sm" @onclick="() => _confirmDelete = null">Keep</button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="btn-group">
+                                        <button class="btn-sm" @onclick="() => Check(a)" disabled="@_checkingIds.Contains(a.Id)" aria-label="Check @a.Name"><Icon Name="rerun" />Check</button>
+                                        <button class="btn-sm" @onclick="() => Toggle(a)" aria-label="@(a.Enabled ? "Disable" : "Enable") @a.Name">@(a.Enabled ? "Disable" : "Enable")</button>
+                                        <button class="btn-sm btn-ghost btn-icon" @onclick="() => Edit(a)" title="Edit" aria-label="Edit @a.Name"><Icon Name="edit" /></button>
+                                        <button class="btn-sm btn-ghost btn-icon btn-danger" @onclick="() => _confirmDelete = a.Id" title="Remove" aria-label="Remove @a.Name"><Icon Name="trash" /></button>
+                                    </div>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="card" aria-labelledby="run-title">
+        <div class="card-header">
+            <h2 id="run-title">Run a test on the agents</h2>
+            <span class="muted small">@EnabledSummary()</span>
+        </div>
+        @if (_plans.Count == 0)
+        {
+            <div class="muted">Save a test first, then start it here or with <strong>Save &amp; run on agents</strong> in the editor.</div>
+        }
+        else
+        {
+            <div class="combine-add">
+                <select @bind="_planId" aria-label="Saved test to run">
+                    <option value="">Choose a saved test…</option>
+                    @foreach (var plan in _plans)
+                    {
+                        <option value="@plan.Id">@plan.Name · @plan.Profile.Concurrency users, @Format.StopSummary(plan.Profile)</option>
+                    }
+                </select>
+                <button class="btn-primary" disabled="@(_planId == "" || !_agents.Any(a => a.Enabled))" @onclick="RunSelected"><Icon Name="agents" />Run on agents</button>
+            </div>
+            <div class="hint">The virtual users, request count and rate cap are split between the enabled agents by weight; duration, ramp-up and timeout apply on each.</div>
+        }
+    </section>
+}
+
+<section class="card card-flush" aria-labelledby="dist-runs-title">
+    <div class="card-header">
+        <h2 id="dist-runs-title">Distributed runs</h2>
+        <span class="muted small">Kept in memory until the app restarts</span>
+    </div>
+    @if (_runs.Count == 0)
+    {
+        <div class="empty"><p>No distributed runs yet.</p></div>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="table-hover">
+                <thead>
+                    <tr>
+                        <th scope="col">Test</th>
+                        <th scope="col" class="hide-sm">Started</th>
+                        <th scope="col">Agents</th>
+                        <th scope="col">State</th>
+                        <th scope="col" class="num hide-sm">Requests</th>
+                        <th scope="col" class="num">Req/s</th>
+                        <th scope="col" class="num">p95</th>
+                        <th scope="col" class="num">Errors</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var run in _runs)
+                    {
+                        var s = run.Snapshot.Results;
+                        <tr>
+                            <td><a class="row-title" href="distributed/@run.Id">@run.Plan.Name</a></td>
+                            <td class="muted nowrap hide-sm">@Format.When(run.StartedAt)</td>
+                            <td class="small">@string.Join(", ", run.AgentNames)</td>
+                            <td><RunStateBadge State="run.Snapshot.State" /></td>
+                            <td class="num hide-sm">@s.TotalRequests.ToString("#,0")</td>
+                            <td class="num">@Format.Rate(s.RequestsPerSecond)</td>
+                            <td class="num">@Format.Ms(s.Latency.P95Ms)</td>
+                            <td class="num @(s.FailedRequests > 0 ? "status-err" : "")">@Format.Percent(s.ErrorRate)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+<section class="card" aria-labelledby="this-title">
+    <h2 id="this-title">This machine as an agent</h2>
+    @if (AgentMode.IsEnabled)
+    {
+        <div class="alert alert-info alert-compact" role="status">
+            <Icon Name="check" />
+            <div><strong>Agent mode is on.</strong> A controller can run tests on this machine (@Environment.MachineName) with the token from its <code>FalconLoad:AgentToken</code> setting. Those runs show up on the Runs page here.</div>
+        </div>
+    }
+    else
+    {
+        <p class="small muted">
+            Agent mode is off, so no other falcon-load can run tests here. To make this machine an agent, start it with a
+            token and an address the controller can reach:
+        </p>
+        <pre class="code-block">FalconLoad__AgentToken=&lt;a long random token&gt; dotnet run --project src/FalconLoad.Web --urls http://0.0.0.0:5299</pre>
+        <p class="hint">Then register it on the controller's Agents page with that token. Only do this on a private network: anyone with the token can send load from this machine.</p>
+    }
+</section>
+
+@code {
+    private IReadOnlyList<AgentDefinition> _agents = [];
+    private IReadOnlyList<LoadTestPlan> _plans = [];
+    private IReadOnlyList<DistributedRun> _runs = [];
+    private readonly HashSet<Guid> _checkingIds = [];
+    private AgentDefinition? _editing;
+    private bool _isNew;
+    private bool _showProblems;
+    private bool _checking;
+    private Guid? _confirmDelete;
+    private string? _error;
+    private string _planId = "";
+    private Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Reload();
+        Registry.Changed += OnChanged;
+        PlanStore.Changed += OnChanged;
+        DistributedRuns.RunsChanged += OnChanged;
+
+        // Refresh the live numbers of running tests once a second.
+        _timer = new Timer(_ =>
+        {
+            if (_runs.Any(r => !r.Snapshot.IsFinished))
+            {
+                _ = InvokeAsync(StateHasChanged);
+            }
+        }, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void Reload()
+    {
+        _agents = Registry.GetAll();
+        _plans = PlanStore.GetAll();
+        _runs = DistributedRuns.GetAll();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(() =>
+    {
+        Reload();
+        StateHasChanged();
+    });
+
+    private string EnabledSummary()
+    {
+        var enabled = _agents.Where(a => a.Enabled).ToList();
+        return enabled.Count switch
+        {
+            0 => "No agents enabled",
+            1 => $"1 agent: {enabled[0].Name}",
+            _ => $"{enabled.Count} agents: {string.Join(", ", enabled.Select(a => a.Name))}",
+        };
+    }
+
+    private void Edit(AgentDefinition agent)
+    {
+        _isNew = Registry.Get(agent.Id) is null;
+        _editing = agent.Clone();
+        _showProblems = false;
+    }
+
+    private void SaveEditing()
+    {
+        if (_editing is null)
+        {
+            return;
+        }
+
+        if (_editing.Validate().Any())
+        {
+            _showProblems = true;
+            return;
+        }
+
+        var saved = Registry.Save(_editing);
+        _editing = null;
+        _ = Check(saved);
+    }
+
+    private async Task Check(AgentDefinition agent)
+    {
+        _checkingIds.Add(agent.Id);
+        try
+        {
+            await Registry.CheckAsync(agent);
+        }
+        finally
+        {
+            _checkingIds.Remove(agent.Id);
+        }
+    }
+
+    private async Task CheckAll()
+    {
+        _checking = true;
+        try
+        {
+            await Task.WhenAll(_agents.Select(Check));
+        }
+        finally
+        {
+            _checking = false;
+        }
+    }
+
+    private void Toggle(AgentDefinition agent)
+    {
+        var copy = agent.Clone();
+        copy.Enabled = !copy.Enabled;
+        Registry.Save(copy);
+    }
+
+    private void Delete(AgentDefinition agent)
+    {
+        _confirmDelete = null;
+        Registry.Delete(agent.Id);
+    }
+
+    private void RunSelected()
+    {
+        if (!Guid.TryParse(_planId, out var id) || PlanStore.Get(id) is not { } plan)
+        {
+            return;
+        }
+
+        _error = null;
+        if (!EnvironmentStore.TryResolve(plan.Environment, out var environment, out var missing))
+        {
+            _error = $"{plan.Name}: {missing}";
+            return;
+        }
+
+        try
+        {
+            var run = DistributedRuns.Start(plan, environment);
+            Nav.NavigateTo($"distributed/{run.Id}");
+        }
+        catch (ArgumentException ex)
+        {
+            _error = $"{plan.Name}: {ex.Message}";
+        }
+    }
+
+    public void Dispose()
+    {
+        Registry.Changed -= OnChanged;
+        PlanStore.Changed -= OnChanged;
+        DistributedRuns.RunsChanged -= OnChanged;
+        _timer?.Dispose();
+    }
+}

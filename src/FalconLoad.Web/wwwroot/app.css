@@ -243,6 +243,10 @@ td.actions .btn-group { justify-content: flex-end; }
 .badge-completed { background: var(--ok-soft); color: var(--ok); }
 .badge-cancelled { background: var(--info-soft); color: var(--muted); }
 .badge-failed { background: var(--bad-soft); color: var(--bad); }
+.badge-pending { background: var(--info-soft); color: var(--muted); }
+.badge-pending::before { animation: pulse 1.2s ease-in-out infinite; }
+.badge-agents { margin-left: var(--space-2); font-weight: 500; }
+.badge-agents::before { display: none; }
 .badge-unsaved { background: var(--accent-soft); color: var(--accent); }
 .badge-saved { background: var(--ok-soft); color: var(--ok); }
 .badge-once { background: var(--info-soft); color: var(--text); font-weight: 500; }
@@ -433,6 +437,13 @@ label.btn-primary { color: #1b1300; font-weight: 650; }
 .file-button { cursor: pointer; position: relative; }
 .file-button input[type=file] { position: absolute; inset: 0; opacity: 0; width: 1px; height: 1px; overflow: hidden; }
 .file-button:focus-within { box-shadow: var(--focus-ring); }
+
+/* Agents */
+.agent-form.has-error { border-color: color-mix(in srgb, var(--bad) 60%, var(--border)); }
+.agent-form .actions { margin-top: var(--space-4); }
+.agent-error { max-width: 36ch; white-space: normal; margin-top: var(--space-1); }
+.row-disabled .row-title, .row-disabled .mono { opacity: .6; }
+.code-block { margin: 0 0 var(--space-3); padding: var(--space-3); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--mono); font-size: .82rem; white-space: pre-wrap; word-break: break-all; }
 
 /* Combine results */
 .combine-add { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }

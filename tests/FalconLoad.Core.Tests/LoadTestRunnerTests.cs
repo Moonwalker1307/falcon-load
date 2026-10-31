@@ -230,4 +230,25 @@ public class LoadTestRunnerTests
         var plan = Plan(p => p.Requests[0].Url = "not a url");
         Assert.Throws<ArgumentException>(() => new LoadTestRunner(plan, new HttpMessageInvoker(FakeHandler.Returning(HttpStatusCode.OK))));
     }
+
+    [Fact]
+    public async Task VirtualUserOffset_NumbersUsersOnFromIt()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var plan = Plan(p =>
+        {
+            p.Requests[0].Url = "http://api.test/users/{{$vu}}";
+            p.Profile.Concurrency = 2;
+            p.Profile.TotalRequests = 20;
+            p.Profile.VirtualUserOffset = 10;
+        });
+        await using var runner = new LoadTestRunner(plan, new HttpMessageInvoker(handler));
+
+        await runner.RunAsync(cancellationToken: CancellationToken.None);
+
+        // One user may take every request before the other gets going, so only the numbering is checked.
+        var paths = handler.Received.Select(r => r.Request.RequestUri!.AbsolutePath).Distinct().ToList();
+        Assert.NotEmpty(paths);
+        Assert.All(paths, p => Assert.Contains(p, new[] { "/users/11", "/users/12" }));
+    }
 }

@@ -3,6 +3,8 @@
 @inject PlanStore PlanStore
 @inject RunManager RunManager
 @inject EnvironmentStore EnvironmentStore
+@inject AgentRegistry Agents
+@inject DistributedRunManager DistributedRuns
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 
@@ -52,9 +54,14 @@
             <a class="btn btn-ghost" href="api/plans/@savedId/export" download title="Download the saved version of this test, to import on another machine"><Icon Name="download" /><span class="hide-sm">Export</span></a>
         }
         <button @onclick="Save"><Icon Name="save" />Save</button>
+        @if (_agentCount > 0)
+        {
+            <button @onclick="SaveAndRunOnAgents" title="Save, then split this test over the @_agentCount enabled @(_agentCount == 1 ? "agent" : "agents")"><Icon Name="agents" />Save &amp; run on agents</button>
+        }
         <button class="btn-primary" @onclick="SaveAndRun"><Icon Name="play" />Save &amp; run</button>
     </div>
 </div>
+
 
 @if (planProblems.Count > 0)
 {
@@ -651,6 +658,7 @@
 @code {
     private LoadTestPlan _plan = new();
     private bool _notFound;
+    private int _agentCount;
     private bool _showProblems;
     private string? _savedMessage;
     private string _baseline = string.Empty;
@@ -687,6 +695,8 @@
         _plan.Environment = string.IsNullOrWhiteSpace(name) ? null : name;
         _runProblems = [];
     }
+
+    protected override void OnInitialized() => _agentCount = Agents.GetEnabled().Count;
 
     protected override void OnParametersSet()
     {
@@ -865,6 +875,38 @@
 
         var run = RunManager.Start(saved, environment);
         Nav.NavigateTo($"runs/{run.Id}");
+    }
+
+    private void SaveAndRunOnAgents()
+    {
+        _runProblems = [];
+        if (!TrySave(out var saved))
+        {
+            return;
+        }
+
+        if (!EnvironmentStore.TryResolve(saved.Environment, out var environment, out var missing))
+        {
+            _runProblems = [missing!];
+            return;
+        }
+
+        var problems = saved.ValidateForRun(environment);
+        if (problems.Count > 0)
+        {
+            _runProblems = problems;
+            return;
+        }
+
+        try
+        {
+            var run = DistributedRuns.Start(saved, environment);
+            Nav.NavigateTo($"distributed/{run.Id}");
+        }
+        catch (ArgumentException ex)
+        {
+            _runProblems = [ex.Message];
+        }
     }
 
     private async Task ConfirmLeave(LocationChangingContext context)

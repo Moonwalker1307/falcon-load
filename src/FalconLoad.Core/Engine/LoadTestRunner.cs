@@ -192,7 +192,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         {
             for (long iteration = 1; ; iteration++)
             {
-                var context = new TemplateContext(index + 1, iteration, new ParameterValues(_parameters, row), variables);
+                var context = new TemplateContext(profile.VirtualUserOffset + index + 1, iteration, new ParameterValues(_parameters, row), variables);
                 var picked = false;
                 for (var step = 0; step < _requests.Length; step++)
                 {
