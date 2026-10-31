@@ -23,6 +23,7 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 - **Success criteria**: expected status codes per request (e.g. `200,201` or `200-299,404`); defaults to any 2xx/3xx.
 - **Live results**: requests, throughput, error rate, latency (mean, p50, p90, p95, p99, max), per-second throughput and latency charts, per-request breakdown, status code and error tables.
 - **Saved tests** persisted to `App_Data/plans.json` (change with the `FalconLoad:DataDirectory` setting). The last 50 runs are kept in memory and can be exported as JSON.
+- **Export and import tests** to share them between machines: "Export" on a test (or "Export all" on the dashboard) downloads a JSON file, and "Import…" on another machine loads it. Imported tests get new ids, so an import never overwrites a saved test, and a file is only imported when every test in it is valid. The file includes headers such as `Authorization`, so treat it like the tokens in it.
 - **JSON API** for scripting and CI.
 
 ## JSON API
@@ -31,6 +32,9 @@ Then open http://localhost:5299 (or https://localhost:7002 with `--launch-profil
 | --- | --- | --- |
 | `GET` | `/api/plans` | List saved tests |
 | `POST` | `/api/plans` | Create or update a saved test |
+| `GET` | `/api/plans/export` | All saved tests as a JSON download |
+| `GET` | `/api/plans/{id}/export` | One saved test as a JSON download |
+| `POST` | `/api/plans/import` | Save the tests from an exported file (the file is the body) |
 | `DELETE` | `/api/plans/{id}` | Delete a saved test |
 | `POST` | `/api/plans/{id}/run` | Start a saved test |
 | `POST` | `/api/runs` | Start an ad-hoc test (plan in the body, not saved) |

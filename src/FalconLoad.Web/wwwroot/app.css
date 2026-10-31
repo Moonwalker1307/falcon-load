@@ -181,6 +181,10 @@ td.actions > * { margin-left: .25rem; }
 .empty { text-align: center; padding: 2rem 1rem; color: var(--muted); }
 .empty .btn { margin-top: .75rem; }
 
+/* A label styled as a button opens the hidden file picker inside it. */
+.file-button { cursor: pointer; }
+.file-button input[type=file] { display: none; }
+
 .request-card { border-left: 3px solid var(--accent); }
 .step-num { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-strong); font-weight: 700; font-size: .8rem; margin-right: .4rem; }
 
