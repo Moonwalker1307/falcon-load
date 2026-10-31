@@ -47,6 +47,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Combine results from several machines**: when one machine can't generate enough load, run the same test on several machines at the same time, export each run, and add the files on the Combine page. It shows the combined throughput, error rate, latency percentiles, status codes and errors, with a per-machine breakdown and a throughput line per machine.
 - **Agents**: or let one falcon-load drive the others. Register the other machines on the Agents page, and a test started with "Run on agents" is split between them by weight, started on all of them at the same moment, shown live with their results merged, and stopped on all of them with one button. See [Run a test from several machines](#run-a-test-from-several-machines-agents).
 - **Command line runner** that runs exported tests in CI, prints a summary, writes the results as JSON and fails the build when too many requests fail.
+- **HTML and JUnit reports** of a finished run, from the run page, the CLI and the API: a self-contained page to read or attach to a CI job, and JUnit XML that CI systems show as test results. See [Reports](#reports).
 - **Docker images** for the web app and the command line runner.
 - **JSON API** for scripting and CI.
 
@@ -71,6 +72,8 @@ It runs every test in the file in order, shows live progress on standard error, 
 | --- | --- |
 | `--test <name>` | Run only the test with this name |
 | `--out <path>` | Write the results as JSON, in the same format as "Export" on a run in the UI, so they can be added on the Combine page. With several tests, `<path>` is a directory that gets one file per test |
+| `--html <path>` | Write an HTML report of each test; see [Reports](#reports). With several tests, `<path>` is a directory that gets one file per test |
+| `--junit <path>` | Write the results as JUnit XML, one file for all tests, with a test suite per test |
 | `--concurrency <n>` | Use this many virtual users instead of the file's setting |
 | `--duration <seconds>` | Run for this long instead of the file's stop condition |
 | `--requests <n>` | Send this many requests instead of the file's stop condition |
@@ -98,6 +101,31 @@ docker run --rm -v "$PWD:/work" --user "$(id -u):$(id -g)" -e FALCON_LOAD_token 
 
 The `--user` option lets the container write the results file into your folder. Combined with `--machine`, this makes it easy to run the same test from several machines at once and add their result files on the Combine page.
 
+## Reports
+
+A finished run can be written out as an HTML report or as JUnit XML, so a CI job can keep the result and show it.
+
+- **HTML report.** One self-contained page, in the app's colors, with the pass/fail verdict, each threshold with its measured value, throughput, error rate, latency percentiles, throughput and latency charts over time, status codes, the per-request breakdown, response checks and errors. It has no scripts and loads nothing from other sites, so it opens from a CI artifact, an email or a file share years later. Print it for a light version.
+- **JUnit XML.** Each run is a test suite and each condition of its verdict is a test case: every threshold (named like the threshold, such as `p95 latency < 500 ms`, with the measured value in the failure message), "The run completed", "Requests were sent" and, for a test without thresholds or when `--max-error-rate` is given, the error rate limit. A run that couldn't run at all is reported as an error, and a failed or interrupted one as a failure. The suite's properties carry the headline numbers (requests, throughput, error rate, latency percentiles, the environment's name). With several tests in one CLI run, one file holds a suite for each.
+
+Both reports use the same verdict as the CLI's exit code: a test with thresholds passes when they all hold, one without passes when no request failed, and a run that was stopped early or failed never passes. The web app's badge only appears for tests with thresholds, but a report always states the verdict. The reports contain results only: the test's name, the load profile, the environment's name, step names, errors and numbers. They never contain request headers, bodies or an environment's values; error text has secrets masked by the engine as everywhere else.
+
+- **Run page**: the "HTML report" and "JUnit XML" buttons appear when a run has finished; distributed runs have them too.
+- **CLI**: `--html <path>` and `--junit <path>`, written even when the build fails, so a pipeline can publish them on failure:
+
+  ```bash
+  falcon-load run tests.json --html report.html --junit junit.xml
+  ```
+
+  ```yaml
+  # GitHub Actions: publish the files whether the test passed or not
+  - run: falcon-load run tests.json --html report.html --junit junit.xml
+  - uses: actions/upload-artifact@v4
+    if: always()
+    with: { name: load-test-report, path: report.html }
+  ```
+- **API**: `GET /api/runs/{id}/report` and `/api/runs/{id}/junit` (and the same under `/api/distributed/runs/{id}`). A run that is still going answers `409`, since its verdict could still change.
+
 ## JSON API
 
 | Method | Path | Purpose |
@@ -122,6 +150,8 @@ The `--user` option lets the container write the results file into your folder. 
 | `GET` | `/api/runs` | List recent runs, each with its `passed` verdict |
 | `GET` | `/api/runs/{id}` | Live or final results, with `results.passed`, `results.thresholds` and `results.checks` |
 | `GET` | `/api/runs/{id}/export` | Results as a JSON download, with the latency histograms needed to combine them |
+| `GET` | `/api/runs/{id}/report` | A finished run as a self-contained HTML report, as a download |
+| `GET` | `/api/runs/{id}/junit` | A finished run as JUnit XML, as a download |
 | `POST` | `/api/runs/{id}/stop` | Stop a running test |
 | `GET` | `/api/plans/{id}/history` | A saved test's stored runs, newest first, and its baseline run id |
 | `PUT` | `/api/plans/{id}/baseline` | Make a stored run the baseline (`{ "runId": "…" }` in the body) |
@@ -137,6 +167,7 @@ The `--user` option lets the container write the results file into your folder. 
 | `POST` | `/api/distributed/runs` | Start a test on the agents: `{ "planId": … }` or `{ "plan": … }`, optionally `"agentIds": […]` |
 | `GET` | `/api/distributed/runs` | List distributed runs |
 | `GET` | `/api/distributed/runs/{id}` | Live or final merged results, with each agent's state |
+| `GET` | `/api/distributed/runs/{id}/report`, `/api/distributed/runs/{id}/junit` | The merged results of a finished distributed run as an HTML report or JUnit XML |
 | `GET` | `/api/distributed/runs/{id}/export` | The merged results plus every agent's export, as a JSON download |
 | `POST` | `/api/distributed/runs/{id}/stop` | Stop the test on every agent |
 | `GET` | `/api/agent` | *Agent mode.* What this machine says about itself to a controller, including its clock |
@@ -310,7 +341,7 @@ How the history is stored: each finished run of a saved test is written whole, a
 ## Project layout
 
 ```
-src/FalconLoad.Core          Load engine: plan model, runner, metrics (no web dependencies)
+src/FalconLoad.Core          Load engine: plan model, runner, metrics, reports (no web dependencies)
 src/FalconLoad.Web           ASP.NET Core host, Blazor UI and JSON API
 src/FalconLoad.Cli           Headless command line runner (falcon-load run tests.json)
 tests/FalconLoad.Core.Tests  xUnit tests for the engine and metrics

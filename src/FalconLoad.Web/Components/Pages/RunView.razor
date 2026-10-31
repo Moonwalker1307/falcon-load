@@ -75,6 +75,8 @@
         }
         else
         {
+            <a class="btn btn-ghost" href="api/runs/@_run.Id/report" download title="Download a report you can open in any browser or attach to a CI job"><Icon Name="report" />HTML report</a>
+            <a class="btn btn-ghost" href="api/runs/@_run.Id/junit" download title="Download the results as JUnit XML for a CI system's test report"><Icon Name="download" />JUnit XML</a>
             <a class="btn" href="api/runs/@_run.Id/export" download title="Download the full results as JSON"><Icon Name="download" />Export JSON</a>
             <button class="btn-primary" @onclick="RunAgain"><Icon Name="rerun" />Run again</button>
         }

@@ -62,6 +62,8 @@
         }
         else
         {
+            <a class="btn btn-ghost" href="api/distributed/runs/@_run.Id/report" download title="Download a report of the merged results"><Icon Name="report" />HTML report</a>
+            <a class="btn btn-ghost" href="api/distributed/runs/@_run.Id/junit" download title="Download the merged results as JUnit XML for a CI system's test report"><Icon Name="download" />JUnit XML</a>
             <a class="btn" href="api/distributed/runs/@_run.Id/export" download title="Download the merged results and every agent's results as JSON"><Icon Name="download" />Export JSON</a>
             <button class="btn-primary" @onclick="RunAgain"><Icon Name="rerun" />Run again</button>
         }

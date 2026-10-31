@@ -191,6 +191,73 @@ public sealed class CliAppTests : IDisposable
     }
 
     [Fact]
+    public async Task Junit_WritesOneFileWithASuitePerTest_AndTheThresholdVerdict()
+    {
+        var failing = PlanWithThreshold(ThresholdMetric.ErrorRate, ThresholdOperator.LessThan, 10);
+        failing.Name = "Strict";
+        var junit = Path.Combine(_directory, "reports", "junit.xml");
+
+        var code = await Run(EveryFourthFails(), "run", WriteFile(Plan("Lenient", 8), failing), "--junit", junit, "--max-error-rate", "50");
+
+        Assert.Equal(CliApp.TestFailed, code);
+        var suites = System.Xml.Linq.XDocument.Parse(File.ReadAllText(junit)).Root!;
+        Assert.Equal(["Lenient", "Strict"], suites.Elements("testsuite").Select(x => (string?)x.Attribute("name")));
+        var failure = Assert.Single(suites.Descendants("failure"));
+        Assert.Equal("Error rate < 10%", (string?)failure.Parent!.Attribute("name"));
+        Assert.Contains("Error rate < 10%", (string?)failure.Attribute("message"));
+        Assert.Contains($"JUnit report written to {junit}", _error.ToString());
+    }
+
+    [Fact]
+    public async Task Html_WritesAReportPerTest_WithTheSameVerdictAsTheExitCode()
+    {
+        var directory = Path.Combine(_directory, "html");
+
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.InternalServerError), "run", WriteFile(Plan("Browse", 5), Plan("Check out", 7)), "--html", directory);
+
+        Assert.Equal(CliApp.TestFailed, code);
+        var browse = File.ReadAllText(Path.Combine(directory, "browse.html"));
+        Assert.Contains("badge-fail\">Failed", browse);
+        Assert.Contains("100% of requests failed", browse);
+        Assert.Contains("Check out", File.ReadAllText(Path.Combine(directory, "check-out.html")));
+    }
+
+    [Fact]
+    public async Task Html_ForOneTest_IsTheGivenFile_AndAPassingRunSaysPassed()
+    {
+        var report = Path.Combine(_directory, "report.html");
+
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.OK), "run", WriteFile(Plan()), "--html", report);
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.Contains("badge-pass\">Passed", File.ReadAllText(report));
+    }
+
+    [Fact]
+    public async Task Junit_IsStillWrittenWhenTheRunIsInterrupted()
+    {
+        using var stop = new CancellationTokenSource();
+        var handler = new FakeHandler((_, _) =>
+        {
+            stop.Cancel();
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        var plan = Plan();
+        plan.Profile.StopCondition = StopCondition.Duration;
+        plan.Profile.DurationSeconds = 600;
+        var junit = Path.Combine(_directory, "junit.xml");
+
+        var code = await CliApp.RunAsync(
+            ["run", WriteFile(plan), "--junit", junit],
+            new CliConsole(new StringReader(string.Empty), _out, _error, ErrorIsTerminal: false),
+            _ => new HttpMessageInvoker(handler, disposeHandler: false),
+            cancellationToken: stop.Token);
+
+        Assert.Equal(CliApp.Interrupted, code);
+        Assert.Contains("interrupted", File.ReadAllText(junit));
+    }
+
+    [Fact]
     public async Task TestOption_RunsOnlyTheNamedTest()
     {
         var handler = FakeHandler.Returning(HttpStatusCode.OK);
