@@ -19,6 +19,13 @@
     --series-1: #FFD52A;
     --series-2: #A8B0C4;
     --series-3: #F07171;
+    /* One colour per machine on the Combine page, distinct from the series colours above. */
+    --machine-1: #5CCFE6;
+    --machine-2: #B392F0;
+    --machine-3: #78C99A;
+    --machine-4: #F28FAD;
+    --machine-5: #FFA759;
+    --machine-6: #73B8FF;
     --grid: #343846;
     --radius: 10px;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -236,3 +243,12 @@ td.actions > * { margin-left: .25rem; }
 #blazor-error-ui .dismiss { cursor: pointer; position: absolute; right: .75rem; top: .5rem; }
 .blazor-error-boundary { background: var(--bad-soft); color: var(--bad); padding: 1rem; border-radius: 8px; }
 .blazor-error-boundary::after { content: "An error has occurred."; }
+
+/* Combine results */
+.combine-add { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.combine-add select { width: auto; max-width: 22rem; }
+.section-title { margin: 1.5rem 0 .75rem; font-size: 1.25rem; }
+.grid-2 + .stack { margin-top: 1.25rem; }
+.grid-2 + .stack > .card { margin-bottom: 0; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: .45rem; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

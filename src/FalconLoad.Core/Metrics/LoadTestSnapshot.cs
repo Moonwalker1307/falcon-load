@@ -54,3 +54,15 @@ public sealed record StepStats(int StepIndex, string Name, long Requests, long F
 
 /// <summary>Results for one second of the run.</summary>
 public sealed record TimelinePoint(int Second, long Requests, long Failures, double MeanLatencyMs, double P95LatencyMs);
+
+/// <summary>
+/// The histograms behind a finished run's results, kept apart from <see cref="LoadTestSnapshot"/> so live snapshots
+/// stay small. They go into an exported result so that runs from several machines can be combined.
+/// </summary>
+public sealed record ResultHistograms(
+    HistogramData Overall,
+    IReadOnlyList<HistogramData> Steps,
+    IReadOnlyList<SecondHistogram> Timeline);
+
+/// <summary>Latencies of the requests that completed in one second of the run. Seconds without requests are left out.</summary>
+public sealed record SecondHistogram(int Second, long Failures, HistogramData Latency);
