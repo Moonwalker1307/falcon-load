@@ -163,6 +163,9 @@ textarea { font-family: var(--mono); font-size: .88rem; min-height: 140px; resiz
 .header-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.6fr) auto; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }
 .header-row input[type=checkbox] { width: 1rem; height: 1rem; margin: 0 .25rem; }
 .header-row.off input[type=text] { opacity: .5; }
+.parameter-list { border-top: 1px solid var(--border); padding-top: var(--space-4); margin-top: var(--space-4); }
+.parameter-list-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }
+.parameter-list textarea { min-height: 5rem; }
 
 .tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border); margin: var(--space-4) 0 var(--space-4); overflow-x: auto; }
 .tabs button { border: 0; background: none; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); padding: .5rem .8rem; margin-bottom: -1px; }

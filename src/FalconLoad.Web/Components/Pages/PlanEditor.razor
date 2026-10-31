@@ -245,8 +245,44 @@
                     <tr><td><code>{{$randomInt}}</code> or <code>{{$randomInt:1:100}}</code></td><td class="muted">Random integer (0–999999, or within a range)</td></tr>
                     <tr><td><code>{{$timestamp}}</code> / <code>{{$isoTimestamp}}</code></td><td class="muted">Current Unix time / ISO 8601 time</td></tr>
                     <tr><td><code>{{$vu}}</code> / <code>{{$iteration}}</code></td><td class="muted">Virtual user number / its iteration count</td></tr>
+                    <tr><td><code>{{userIds}}</code></td><td class="muted">The next value of your parameter list with that name (below)</td></tr>
                 </tbody>
             </table>
+        </section>
+
+        <section class="card" aria-labelledby="params-title">
+            <div class="card-header">
+                <h2 id="params-title">Parameter lists</h2>
+                <button class="btn-sm" @onclick="AddParameterList"><Icon Name="plus" />Add list</button>
+            </div>
+            @if (_plan.Parameters.Count == 0)
+            {
+                <div class="small muted">
+                    Name a list of values, such as user ids, and write <code>{{name}}</code> in a URL, header value or body to use them.
+                </div>
+            }
+            @for (var k = 0; k < _plan.Parameters.Count; k++)
+            {
+                var list = _plan.Parameters[k];
+                var pid = $"param-{k}";
+                <div class="parameter-list">
+                    <div class="parameter-list-head">
+                        <input id="@pid-name" type="text" class="mono" placeholder="userIds" aria-label="List @(k + 1) name" spellcheck="false" @bind="list.Name" @bind:event="oninput" />
+                        <div class="segmented" role="group" aria-label="How list @(k + 1) picks values">
+                            <button aria-pressed="@(list.Selection == ParameterSelection.Sequential ? "true" : "false")" title="Values in order, shared by all virtual users" @onclick="() => list.Selection = ParameterSelection.Sequential">In order</button>
+                            <button aria-pressed="@(list.Selection == ParameterSelection.Random ? "true" : "false")" title="A random value each iteration" @onclick="() => list.Selection = ParameterSelection.Random">Random</button>
+                        </div>
+                        <button class="btn-sm btn-icon btn-ghost btn-danger" title="Remove list" aria-label="Remove list @(k + 1)" @onclick="() => _plan.Parameters.Remove(list)"><Icon Name="trash" /></button>
+                    </div>
+                    <textarea class="mono" rows="4" placeholder="One value per line" aria-label="List @(k + 1) values" aria-describedby="@pid-hint" spellcheck="false"
+                              @bind:get="string.Join('\n', list.Values)" @bind:set="value => SetValues(list, value)"></textarea>
+                    <div class="hint" id="@pid-hint">
+                        Use as <code>{{@(string.IsNullOrWhiteSpace(list.Name) ? "name" : list.Name)}}</code>.
+                        @list.Values.Count @(list.Values.Count == 1 ? "value" : "values"), one per line.
+                    </div>
+                </div>
+            }
+            <div class="hint">Each iteration takes one value from every list, so all its requests use the same one. "Send once" uses the first value.</div>
         </section>
     </div>
 
@@ -388,7 +424,7 @@
     }
 
     private static string Snapshot(LoadTestPlan plan) =>
-        System.Text.Json.JsonSerializer.Serialize(new { plan.Name, plan.Requests, plan.Profile });
+        System.Text.Json.JsonSerializer.Serialize(new { plan.Name, plan.Requests, plan.Parameters, plan.Profile });
 
     private static string ProfileSummary(LoadProfile p)
     {
@@ -410,6 +446,12 @@
     }
 
     private void AddRequest() => _plan.Requests.Add(new RequestDefinition { Url = _plan.Requests.LastOrDefault()?.Url ?? "https://" });
+
+    private void AddParameterList() => _plan.Parameters.Add(new ParameterList { Name = _plan.Parameters.Count == 0 ? "userIds" : string.Empty });
+
+    // Blank lines are dropped, since a trailing newline in the text box shouldn't become an empty value.
+    private static void SetValues(ParameterList list, string? text) =>
+        list.Values = [.. (text ?? string.Empty).Split('\n').Select(v => v.TrimEnd('\r')).Where(v => v.Trim().Length > 0)];
 
     private void Move(int index, int delta)
     {
@@ -473,7 +515,7 @@
         _probeResults.Remove(request);
         try
         {
-            _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile);
+            _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters);
         }
         finally
         {
