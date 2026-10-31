@@ -24,8 +24,9 @@
 
 @{
     var planProblems = _showProblems ? _plan.Validate() : [];
-    var profileProblems = _showProblems ? _plan.Profile.Validate().ToList() : [];
     var profile = _plan.Profile;
+    var stageProblems = _showProblems ? profile.ValidateStages().ToList() : [];
+    var profileProblems = _showProblems ? profile.Validate().Except(stageProblems).ToList() : [];
     var parameterSet = _showProblems ? new ParameterSet(_plan.Parameters) : null;
     var extracted = _plan.ExtractedVariables();
 }
@@ -454,6 +455,84 @@
             <div class="hint">Each virtual user sends the requests in this order, then starts over. Values it extracts from a response stay with it for its later requests.</div>
         </div>
 
+        @if (profile.IsStaged)
+        {
+            var schedule = new StageSchedule(profile.Stages);
+            var unit = Format.StageUnit(profile);
+            <section class="card @(stageProblems.Count > 0 ? "has-error" : "")" aria-labelledby="stages-title">
+                <div class="card-header">
+                    <h2 id="stages-title">Load stages</h2>
+                    <span class="hint">@Format.Seconds(profile.TotalStageSeconds) in total</span>
+                </div>
+                <p class="small muted">
+                    The load follows these stages one after the other. A <strong>hold</strong> jumps to its target and stays there;
+                    a <strong>ramp</strong> moves to its target in a straight line, starting from where the stage before ended (the first one starts from 0).
+                </p>
+
+                @if (stageProblems.Count > 0)
+                {
+                    <ul class="field-error">
+                        @foreach (var problem in stageProblems)
+                        {
+                            <li>@problem</li>
+                        }
+                    </ul>
+                }
+
+                <StagePreview Schedule="schedule" AriaLabel="@($"Planned load in {unit} over {Format.Seconds(profile.TotalStageSeconds)}")" />
+                <div class="legend"><span><i style="background:var(--series-1)"></i>@(profile.StageMode == StageMode.RequestRate ? "Requests per second" : "Virtual users")</span></div>
+
+                <div class="preset-row">
+                    <div class="field">
+                        <label for="peak">Peak for the templates</label>
+                        <div class="input-suffix">
+                            <input id="peak" type="number" min="1" step="any" @bind="_peak" @bind:event="oninput" />
+                            <span>@(profile.StageMode == StageMode.RequestRate ? "req/s" : "users")</span>
+                        </div>
+                    </div>
+                    <div class="preset-buttons" role="group" aria-label="Start from a template">
+                        <button class="btn-sm" title="Climb to the peak in five equal steps, holding each for a minute" @onclick="() => ApplyPreset(p => StagePresets.Step(p))">Step</button>
+                        <button class="btn-sm" title="A quiet baseline, a 30 second burst to the peak, then two minutes of baseline to see if the system recovers" @onclick="() => ApplyPreset(p => StagePresets.Spike(p))">Spike</button>
+                        <button class="btn-sm" title="Ramp up for two minutes, then hold the peak for half an hour" @onclick="() => ApplyPreset(p => StagePresets.Soak(p))">Soak</button>
+                    </div>
+                </div>
+                <div class="hint">A template replaces the stages below. They stay ordinary stages you can edit.</div>
+
+                <div class="stage-row stage-head" aria-hidden="true">
+                    <span></span><span>Duration</span><span>Target</span><span>Change</span><span></span>
+                </div>
+                @for (var j = 0; j < profile.Stages.Count; j++)
+                {
+                    var stage = profile.Stages[j];
+                    var n = j + 1;
+                    <div class="stage-row">
+                        <span class="step-num" aria-hidden="true">@n</span>
+                        <div class="input-suffix">
+                            <input type="number" min="1" aria-label="Stage @n duration in seconds" @bind="stage.DurationSeconds" @bind:event="oninput" />
+                            <span>sec</span>
+                        </div>
+                        <div class="input-suffix">
+                            <input type="number" min="0" step="any" aria-label="Stage @n target in @unit" @bind="stage.Target" @bind:event="oninput" />
+                            <span>@(profile.StageMode == StageMode.RequestRate ? "req/s" : "users")</span>
+                        </div>
+                        <div class="segmented" role="group" aria-label="How stage @n reaches its target">
+                            <button aria-pressed="@(!stage.Ramp ? "true" : "false")" title="Jump to the target and stay there" @onclick="() => stage.Ramp = false">Hold</button>
+                            <button aria-pressed="@(stage.Ramp ? "true" : "false")" title="Move to the target in a straight line" @onclick="() => stage.Ramp = true">Ramp</button>
+                        </div>
+                        <button class="btn-sm btn-icon btn-ghost btn-danger" title="@(profile.Stages.Count == 1 ? "Switch back to a constant load to remove the last stage" : "Remove stage")" aria-label="Remove stage @n"
+                                disabled="@(profile.Stages.Count == 1)" @onclick="() => profile.Stages.Remove(stage)"><Icon Name="trash" /></button>
+                    </div>
+                }
+                <button class="btn-sm" @onclick="AddStage" disabled="@(profile.Stages.Count >= 100)"><Icon Name="plus" />Add stage</button>
+                @if (profile.StageMode == StageMode.RequestRate)
+                {
+                    <div class="hint">
+                        A request rate is a ceiling: if responses are slow and all the virtual users in the load profile are busy, the test sends fewer requests than the stage asks for, and the run page shows the shortfall.
+                    </div>
+                }
+            </section>
+        }
+
         <section class="card" aria-labelledby="thresholds-title">
             <div class="card-header">
                 <h2 id="thresholds-title">Pass/fail thresholds</h2>
@@ -578,46 +657,74 @@
         }
 
         <div class="field">
-            <label for="vus">Virtual users</label>
-            <input id="vus" type="number" min="1" max="10000" aria-describedby="vus-hint" @bind="profile.Concurrency" @bind:event="oninput" />
-            <div class="hint" id="vus-hint">How many requests are in flight at the same time.</div>
-        </div>
-
-        <div class="field">
-            <div class="label-text" id="stop-label">Stop after</div>
-            <div class="segmented" role="group" aria-labelledby="stop-label">
-                <button aria-pressed="@(profile.StopCondition == StopCondition.Duration ? "true" : "false")" @onclick="() => profile.StopCondition = StopCondition.Duration">Duration</button>
-                <button aria-pressed="@(profile.StopCondition == StopCondition.RequestCount ? "true" : "false")" @onclick="() => profile.StopCondition = StopCondition.RequestCount">Request count</button>
+            <div class="label-text" id="shape-label">Load</div>
+            <div class="segmented" role="group" aria-labelledby="shape-label">
+                <button aria-pressed="@(!profile.IsStaged ? "true" : "false")" title="The same number of virtual users for the whole test" @onclick="UseConstantLoad">Constant</button>
+                <button aria-pressed="@(profile.IsStaged ? "true" : "false")" title="Load that changes over time: steps, spikes, soaks or your own stages" @onclick="UseStages">Stages</button>
             </div>
         </div>
 
-        @if (profile.StopCondition == StopCondition.Duration)
+        @if (profile.IsStaged)
         {
             <div class="field">
-                <label for="duration">Duration</label>
-                <div class="input-suffix">
-                    <input id="duration" type="number" min="1" @bind="profile.DurationSeconds" @bind:event="oninput" />
-                    <span>sec</span>
+                <div class="label-text" id="mode-label">Stages set</div>
+                <div class="segmented" role="group" aria-labelledby="mode-label">
+                    <button aria-pressed="@(profile.StageMode == StageMode.VirtualUsers ? "true" : "false")" title="Each stage's target is a number of virtual users, each sending as fast as it can" @onclick="() => profile.StageMode = StageMode.VirtualUsers">Virtual users</button>
+                    <button aria-pressed="@(profile.StageMode == StageMode.RequestRate ? "true" : "false")" title="Each stage's target is a number of requests per second" @onclick="() => profile.StageMode = StageMode.RequestRate">Requests/s</button>
                 </div>
             </div>
         }
-        else
+
+        @if (!profile.IsStaged || profile.StageMode == StageMode.RequestRate)
         {
             <div class="field">
-                <label for="total">Total requests</label>
-                <input id="total" type="number" min="1" aria-describedby="total-hint" @bind="profile.TotalRequests" @bind:event="oninput" />
-                <div class="hint" id="total-hint">Shared by all virtual users, so the test sends exactly this many.</div>
+                <label for="vus">Virtual users</label>
+                <input id="vus" type="number" min="1" max="10000" aria-describedby="vus-hint" @bind="profile.Concurrency" @bind:event="oninput" />
+                <div class="hint" id="vus-hint">@(profile.IsStaged ? "The most requests that can be in flight at once. Use enough to reach the highest rate." : "How many requests are in flight at the same time.")</div>
             </div>
+        }
+
+        @if (!profile.IsStaged)
+        {
+            <div class="field">
+                <div class="label-text" id="stop-label">Stop after</div>
+                <div class="segmented" role="group" aria-labelledby="stop-label">
+                    <button aria-pressed="@(profile.StopCondition == StopCondition.Duration ? "true" : "false")" @onclick="() => profile.StopCondition = StopCondition.Duration">Duration</button>
+                    <button aria-pressed="@(profile.StopCondition == StopCondition.RequestCount ? "true" : "false")" @onclick="() => profile.StopCondition = StopCondition.RequestCount">Request count</button>
+                </div>
+            </div>
+
+            @if (profile.StopCondition == StopCondition.Duration)
+            {
+                <div class="field">
+                    <label for="duration">Duration</label>
+                    <div class="input-suffix">
+                        <input id="duration" type="number" min="1" @bind="profile.DurationSeconds" @bind:event="oninput" />
+                        <span>sec</span>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="field">
+                    <label for="total">Total requests</label>
+                    <input id="total" type="number" min="1" aria-describedby="total-hint" @bind="profile.TotalRequests" @bind:event="oninput" />
+                    <div class="hint" id="total-hint">Shared by all virtual users, so the test sends exactly this many.</div>
+                </div>
+            }
         }
 
         <div class="field-row">
-            <div class="field">
-                <label for="rampup">Ramp-up</label>
-                <div class="input-suffix">
-                    <input id="rampup" type="number" min="0" @bind="profile.RampUpSeconds" @bind:event="oninput" />
-                    <span>sec</span>
+            @if (!profile.IsStaged)
+            {
+                <div class="field">
+                    <label for="rampup">Ramp-up</label>
+                    <div class="input-suffix">
+                        <input id="rampup" type="number" min="0" @bind="profile.RampUpSeconds" @bind:event="oninput" />
+                        <span>sec</span>
+                    </div>
                 </div>
-            </div>
+            }
             <div class="field">
                 <label for="timeout">Timeout</label>
                 <div class="input-suffix">
@@ -627,14 +734,17 @@
             </div>
         </div>
 
-        <div class="field">
-            <label for="rps">Rate cap</label>
-            <div class="input-suffix">
-                <input id="rps" type="number" min="0" step="any" aria-describedby="rps-hint" @bind="profile.MaxRequestsPerSecond" @bind:event="oninput" />
-                <span>req/s</span>
+        @if (!profile.IsStaged || profile.StageMode == StageMode.VirtualUsers)
+        {
+            <div class="field">
+                <label for="rps">Rate cap</label>
+                <div class="input-suffix">
+                    <input id="rps" type="number" min="0" step="any" aria-describedby="rps-hint" @bind="profile.MaxRequestsPerSecond" @bind:event="oninput" />
+                    <span>req/s</span>
+                </div>
+                <div class="hint" id="rps-hint">0 means unlimited: go as fast as the virtual users can.</div>
             </div>
-            <div class="hint" id="rps-hint">0 means unlimited: go as fast as the virtual users can.</div>
-        </div>
+        }
 
         <div class="subsection-label">Connection</div>
         <label class="check"><input type="checkbox" @bind="profile.FollowRedirects" /><span>Follow redirects</span></label>
@@ -663,6 +773,8 @@
     private bool _showProblems;
     private string? _savedMessage;
     private string _baseline = string.Empty;
+    private double _peak = 50;
+    private List<LoadStage>? _stashedStages;
 
     // Names and variable names only: a secret's value is looked up by the store when a request is sent.
     private IReadOnlyList<TestEnvironment> _environments = [];
@@ -735,6 +847,13 @@
 
     private static string ProfileSummary(LoadProfile p)
     {
+        if (p.IsStaged)
+        {
+            var limit = p.StageMode == StageMode.VirtualUsers && p.MaxRequestsPerSecond > 0 ? $", at most {p.MaxRequestsPerSecond:#,0.##} req/s" : string.Empty;
+            var pool = p.StageMode == StageMode.RequestRate ? $", sent by up to {p.Concurrency:#,0} virtual users" : string.Empty;
+            return $"{char.ToUpperInvariant(Format.LoadSummary(p)[0])}{Format.LoadSummary(p)[1..]} over {Format.Seconds(p.TotalStageSeconds)}{pool}{limit}.";
+        }
+
         var users = p.Concurrency == 1 ? "1 virtual user" : $"{p.Concurrency:#,0} virtual users";
         var stop = p.StopCondition == StopCondition.Duration
             ? $"for {Format.Seconds(p.DurationSeconds)}"
@@ -764,6 +883,34 @@
         {
             _collapsed.Add(request);
         }
+    }
+
+    private void UseStages()
+    {
+        var profile = _plan.Profile;
+        if (profile.IsStaged)
+        {
+            return;
+        }
+
+        // Going back and forth between the two shapes shouldn't throw away stages that were being edited.
+        profile.Stages = _stashedStages is { Count: > 0 } ? _stashedStages : StagePresets.Soak(_peak, 30, 60);
+        profile.StopCondition = StopCondition.Duration;
+        _stashedStages = null;
+    }
+
+    private void UseConstantLoad()
+    {
+        _stashedStages = _plan.Profile.Stages;
+        _plan.Profile.Stages = [];
+    }
+
+    private void ApplyPreset(Func<double, List<LoadStage>> build) => _plan.Profile.Stages = build(_peak);
+
+    private void AddStage()
+    {
+        var last = _plan.Profile.Stages.LastOrDefault();
+        _plan.Profile.Stages.Add(new LoadStage { DurationSeconds = last?.DurationSeconds ?? 60, Target = last?.Target ?? _peak });
     }
 
     private void AddRequest() => _plan.Requests.Add(new RequestDefinition { Url = _plan.Requests.LastOrDefault()?.Url ?? "https://" });

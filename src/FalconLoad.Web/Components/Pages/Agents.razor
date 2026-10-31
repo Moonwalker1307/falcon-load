@@ -197,12 +197,12 @@ else if (_agents.Count > 0)
                     <option value="">Choose a saved test…</option>
                     @foreach (var plan in _plans)
                     {
-                        <option value="@plan.Id">@plan.Name · @plan.Profile.Concurrency users, @Format.StopSummary(plan.Profile)</option>
+                        <option value="@plan.Id">@plan.Name · @(plan.Profile.IsStaged ? Format.LoadSummary(plan.Profile) : $"{plan.Profile.Concurrency} users"), @Format.StopSummary(plan.Profile)</option>
                     }
                 </select>
                 <button class="btn-primary" disabled="@(_planId == "" || !_agents.Any(a => a.Enabled))" @onclick="RunSelected"><Icon Name="agents" />Run on agents</button>
             </div>
-            <div class="hint">The virtual users, request count and rate cap are split between the enabled agents by weight; duration, ramp-up and timeout apply on each.</div>
+            <div class="hint">The virtual users, request count and rate cap are split between the enabled agents by weight, and so is each target of a staged test; duration, ramp-up, stage lengths and timeout apply on each.</div>
         }
     </section>
 }

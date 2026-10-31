@@ -39,13 +39,13 @@
                 <span>Environment <strong>@_run.EnvironmentName</strong></span>
             }
             <span>@d.Agents.Count @(d.Agents.Count == 1 ? "agent" : "agents")</span>
-            <span>@profile.Concurrency virtual @(profile.Concurrency == 1 ? "user" : "users") in all</span>
+            <span>@Format.LoadSummary(profile) in all</span>
             <span>Stops after @Format.StopSummary(profile)</span>
-            @if (profile.RampUpSeconds > 0)
+            @if (profile.RampUpSeconds > 0 && !profile.IsStaged)
             {
                 <span>@Format.Seconds(profile.RampUpSeconds) ramp-up</span>
             }
-            @if (profile.MaxRequestsPerSecond > 0)
+            @if (profile.MaxRequestsPerSecond > 0 && !(profile.IsStaged && profile.StageMode == StageMode.RequestRate))
             {
                 <span>Capped at @profile.MaxRequestsPerSecond req/s in all</span>
             }
@@ -126,7 +126,7 @@
                                 <div class="small status-err agent-error">@agent.Error</div>
                             }
                         </td>
-                        <td class="num">@agent.Share.Concurrency</td>
+                        <td class="num">@agent.Share.PeakVirtualUsers</td>
                         <td class="num hide-sm">@(r?.ActiveVirtualUsers.ToString() ?? "")</td>
                         <td class="num">@(r?.TotalRequests.ToString("#,0") ?? "")</td>
                         <td class="num">@(r is null ? "" : Format.Rate(r.RequestsPerSecond))</td>
@@ -333,8 +333,8 @@
             return 1;
         }
 
-        var fraction = p.StopCondition == StopCondition.Duration
-            ? d.Elapsed.TotalSeconds / p.DurationSeconds
+        var fraction = p.IsStaged ? d.Elapsed.TotalSeconds / p.TotalStageSeconds
+            : p.StopCondition == StopCondition.Duration ? d.Elapsed.TotalSeconds / p.DurationSeconds
             : (double)d.Results.TotalRequests / p.TotalRequests;
         return Math.Clamp(fraction, 0, 1);
     }
@@ -371,6 +371,11 @@
         }
 
         var percent = $"{Math.Round(Progress(d, p) * 100)}%";
+        if (p.IsStaged)
+        {
+            return $"{percent} · {Format.Remaining(TimeSpan.FromSeconds(p.TotalStageSeconds) - d.Elapsed)}";
+        }
+
         if (p.StopCondition == StopCondition.Duration)
         {
             return $"{percent} · {Format.Remaining(TimeSpan.FromSeconds(p.DurationSeconds) - d.Elapsed)}";

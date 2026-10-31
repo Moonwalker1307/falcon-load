@@ -11,6 +11,9 @@ namespace FalconLoad.Core.Engine;
 /// </summary>
 public sealed class LoadTestRunner : IAsyncDisposable
 {
+    /// <summary>How often the staged runner compares the number of virtual users with the target.</summary>
+    private static readonly TimeSpan StageTick = TimeSpan.FromMilliseconds(50);
+
     private readonly LoadTestPlan _plan;
     private readonly PreparedRequest[] _requests;
     private readonly ParameterSet? _parameters;
@@ -23,9 +26,15 @@ public sealed class LoadTestRunner : IAsyncDisposable
     private readonly MetricsCollector _metrics;
     private readonly Stopwatch _clock = new();
 
+    private readonly StageSchedule? _schedule;
+    private readonly bool _stagedRate;
+    private readonly long[] _slotIterations;
+
     private long _remainingRequests;
     private long _nextRateSlot;
     private long _rateIntervalTicks;
+    private long _nextStagedRequest;
+    private int _desiredUsers = int.MaxValue;
     private int _activeVirtualUsers;
     private int _started;
     private volatile RunState _state = RunState.Pending;
@@ -48,6 +57,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         _plan.Environment = environment?.Name;
         _masker = environment?.CreateMasker() ?? SecretMasker.None;
         _parameters = _plan.Parameters.Count > 0 ? new ParameterSet(_plan.Parameters) : null;
+        _schedule = _plan.Profile.IsStaged ? new StageSchedule(_plan.Profile.Stages) : null;
+        _stagedRate = _schedule is not null && _plan.Profile.StageMode == StageMode.RequestRate;
+        _slotIterations = new long[_plan.Profile.PeakVirtualUsers];
         var variables = _plan.EnvironmentValues(environment);
         _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables)).ToArray();
         _extracts = _requests.Any(r => r.Extractor is not null);
@@ -97,13 +109,20 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
 
         var profile = _plan.Profile;
-        _remainingRequests = profile.StopCondition == StopCondition.RequestCount ? profile.TotalRequests : long.MaxValue;
-        _rateIntervalTicks = profile.MaxRequestsPerSecond > 0
+        var staged = _schedule is not null;
+
+        // Stages set how long the test lasts, so a request count doesn't apply to them.
+        _remainingRequests = !staged && profile.StopCondition == StopCondition.RequestCount ? profile.TotalRequests : long.MaxValue;
+        _rateIntervalTicks = profile.MaxRequestsPerSecond > 0 && !_stagedRate
             ? Math.Max(1, (long)(Stopwatch.Frequency / profile.MaxRequestsPerSecond))
             : 0;
 
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (profile.StopCondition == StopCondition.Duration)
+        if (staged)
+        {
+            stop.CancelAfter(TimeSpan.FromSeconds(_schedule!.TotalSeconds));
+        }
+        else if (profile.StopCondition == StopCondition.Duration)
         {
             stop.CancelAfter(TimeSpan.FromSeconds(profile.DurationSeconds));
         }
@@ -112,10 +131,10 @@ public sealed class LoadTestRunner : IAsyncDisposable
         _clock.Start();
         _nextRateSlot = _clock.ElapsedTicks;
 
-        var workers = Enumerable.Range(0, profile.Concurrency)
-            .Select(i => Task.Run(() => VirtualUserAsync(i, stop.Token), CancellationToken.None))
-            .ToArray();
-        var all = Task.WhenAll(workers);
+        var all = staged && profile.StageMode == StageMode.VirtualUsers
+            ? Task.Run(() => RunStagedUsersAsync(stop.Token), CancellationToken.None)
+            : Task.WhenAll(Enumerable.Range(0, profile.Concurrency)
+                .Select(i => Task.Run(() => VirtualUserAsync(i, stop.Token), CancellationToken.None)));
 
         using var reporterStop = new CancellationTokenSource();
         var reporter = onProgress is null
@@ -160,10 +179,54 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Follows the stages by starting virtual users when the target rises. When it falls, users above the target finish
+    /// the iteration they are in and stop, so a scenario is never cut off halfway. A stopped slot is started again when the
+    /// target climbs back over it.
+    /// </summary>
+    private async Task RunStagedUsersAsync(CancellationToken stop)
+    {
+        var slots = new Task?[_slotIterations.Length];
+        try
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                var desired = Math.Min(slots.Length, (int)Math.Ceiling(_schedule!.TargetAt(_clock.Elapsed.TotalSeconds)));
+                Volatile.Write(ref _desiredUsers, desired);
+                for (var i = 0; i < desired; i++)
+                {
+                    if (slots[i] is { IsFaulted: true } faulted)
+                    {
+                        await faulted.ConfigureAwait(false);
+                    }
+
+                    if (slots[i] is not { IsCompleted: false })
+                    {
+                        var index = i;
+                        slots[i] = Task.Run(() => VirtualUserAsync(index, stop), CancellationToken.None);
+                    }
+                }
+
+                try
+                {
+                    await Task.Delay(StageTick, stop).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _desiredUsers, 0);
+            await Task.WhenAll(slots.OfType<Task>()).ConfigureAwait(false);
+        }
+    }
+
     private async Task VirtualUserAsync(int index, CancellationToken stop)
     {
         var profile = _plan.Profile;
-        if (profile.RampUpSeconds > 0 && index > 0)
+        if (profile.RampUpSeconds > 0 && index > 0 && _schedule is null)
         {
             var delay = TimeSpan.FromSeconds((double)profile.RampUpSeconds * index / profile.Concurrency);
             try
@@ -182,6 +245,8 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
         // Each virtual user refills its own row of parameter values per iteration, so lists cost no allocation per request.
         var row = _parameters is null ? null : new string[_parameters.Count];
+        // A user that was stopped by a falling stage target carries on counting when its slot starts again.
+        var iteration = _slotIterations[index];
 
         // Extracted variables belong to one virtual user and last across its iterations, so a token from a login
         // request sent once is reused by every later request. Each user also reuses one buffer for the bodies it keeps.
@@ -190,8 +255,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         var done = _hasOnceRequests ? new bool[_requests.Length] : null;
         try
         {
-            for (long iteration = 1; ; iteration++)
+            while (index < Volatile.Read(ref _desiredUsers))
             {
+                iteration++;
                 var context = new TemplateContext(profile.VirtualUserOffset + index + 1, iteration, new ParameterValues(_parameters, row), variables);
                 var picked = false;
                 for (var step = 0; step < _requests.Length; step++)
@@ -206,7 +272,14 @@ public sealed class LoadTestRunner : IAsyncDisposable
                         return;
                     }
 
-                    if (_rateIntervalTicks > 0 && !await WaitForRateSlotAsync(stop).ConfigureAwait(false))
+                    if (_stagedRate)
+                    {
+                        if (!await WaitForStagedRequestAsync(stop).ConfigureAwait(false))
+                        {
+                            return;
+                        }
+                    }
+                    else if (_rateIntervalTicks > 0 && !await WaitForRateSlotAsync(stop).ConfigureAwait(false))
                     {
                         return;
                     }
@@ -233,7 +306,51 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
         finally
         {
+            _slotIterations[index] = iteration;
             Interlocked.Decrement(ref _activeVirtualUsers);
+        }
+    }
+
+    /// <summary>
+    /// Pacing for stages that set a request rate. Each request takes the next number in a shared sequence and waits until
+    /// the schedule says that request is due. Requests the virtual users were too slow to send are skipped over rather than
+    /// sent later in a burst, so the target is a ceiling and a slow server shows up as a shortfall.
+    /// </summary>
+    private async Task<bool> WaitForStagedRequestAsync(CancellationToken stop)
+    {
+        double? due;
+        while (true)
+        {
+            var taken = Interlocked.Read(ref _nextStagedRequest);
+            var now = _clock.Elapsed.TotalSeconds;
+            var next = Math.Max(taken, (long)Math.Floor(_schedule!.RequestsDueBy(now)));
+            if (Interlocked.CompareExchange(ref _nextStagedRequest, next + 1, taken) == taken)
+            {
+                due = _schedule.DueSecondOfRequest(next);
+                break;
+            }
+        }
+
+        if (due is null)
+        {
+            // The stages call for no more requests; the run ends when their time is up.
+            due = double.PositiveInfinity;
+        }
+
+        var wait = due.Value - _clock.Elapsed.TotalSeconds;
+        if (wait <= 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            await Task.Delay(double.IsPositiveInfinity(wait) ? Timeout.InfiniteTimeSpan : TimeSpan.FromSeconds(wait), stop).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
         }
     }
 

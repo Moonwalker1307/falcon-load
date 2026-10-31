@@ -230,6 +230,12 @@ internal static class CliApp
         foreach (var plan in plans)
         {
             ApplyOverrides(plan.Profile, options);
+            if (StagedOverrideProblem(plan, options) is { } staged)
+            {
+                problems.Add(plans.Count == 1 ? staged : $"{plan.Name}: {staged}");
+                continue;
+            }
+
             var environment = PickEnvironment(plan, environments, options, console.Secrets, out var problem);
             if (problem is not null)
             {
@@ -322,6 +328,28 @@ internal static class CliApp
         }
     }
 
+    /// <summary>
+    /// A staged test lasts as long as its stages and sets its own load, so an option that would change either is refused
+    /// rather than ignored: a run that quietly differs from what was asked for is worse than an error.
+    /// </summary>
+    private static string? StagedOverrideProblem(LoadTestPlan plan, CliOptions options)
+    {
+        var profile = plan.Profile;
+        if (!profile.IsStaged)
+        {
+            return null;
+        }
+
+        if (options.DurationSeconds is not null || options.TotalRequests is not null)
+        {
+            return "This test uses load stages, which set how long it runs, so --duration and --requests don't apply.";
+        }
+
+        return options.Concurrency is not null && profile.StageMode == StageMode.VirtualUsers
+            ? "This test uses load stages that set the number of virtual users, so --concurrency doesn't apply."
+            : null;
+    }
+
     private static void ApplyOverrides(LoadProfile profile, CliOptions options)
     {
         if (options.Concurrency is { } concurrency)
@@ -381,6 +409,14 @@ internal static class CliApp
 
     private static string Describe(LoadProfile profile)
     {
+        if (profile.IsStaged)
+        {
+            var peak = new StageSchedule(profile.Stages).Peak;
+            var unit = profile.StageMode == StageMode.RequestRate ? "req/s" : "virtual users";
+            var pool = profile.StageMode == StageMode.RequestRate ? $", sent by up to {profile.Concurrency:#,0} virtual users" : string.Empty;
+            return $"{profile.Stages.Count} {(profile.Stages.Count == 1 ? "stage" : "stages")} over {profile.TotalStageSeconds}s, up to {peak:#,0.##} {unit}{pool}";
+        }
+
         var stop = profile.StopCondition == StopCondition.Duration
             ? $"for {profile.DurationSeconds}s"
             : $"{profile.TotalRequests:#,0} requests";

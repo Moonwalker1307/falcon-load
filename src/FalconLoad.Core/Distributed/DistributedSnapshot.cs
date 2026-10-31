@@ -65,7 +65,7 @@ public sealed record DistributedSnapshot
     /// <summary>The merged results, or an empty snapshot before any agent has reported.</summary>
     public LoadTestSnapshot Results => Combined?.Combined ?? Empty(State, Elapsed);
 
-    public int Concurrency => Agents.Sum(a => a.Share.Concurrency);
+    public int Concurrency => Agents.Sum(a => a.Share.PeakVirtualUsers);
 
     private static LoadTestSnapshot Empty(RunState state, TimeSpan elapsed) => new()
     {

@@ -76,6 +76,37 @@ public sealed class CliAppTests : IDisposable
         Assert.Equal(CliApp.TestFailed, await Run(handler, "run", file, "--max-error-rate=20%"));
     }
 
+    [Theory]
+    [InlineData("--duration", "10", "--duration and --requests don't apply")]
+    [InlineData("--requests", "10", "--duration and --requests don't apply")]
+    [InlineData("--concurrency", "5", "--concurrency doesn't apply")]
+    public async Task StagedTest_RefusesOptionsThatWouldChangeItsLoad(string option, string value, string expected)
+    {
+        var plan = Plan();
+        plan.Profile.Stages = [new LoadStage { DurationSeconds = 1, Target = 2 }];
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+
+        var code = await Run(handler, "run", WriteFile(plan), option, value);
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Empty(handler.Received);
+        Assert.Contains(expected, _error.ToString());
+    }
+
+    [Fact]
+    public async Task StagedTest_RunsForAsLongAsItsStages()
+    {
+        var plan = Plan();
+        plan.Profile.Stages = [new LoadStage { DurationSeconds = 1, Target = 2 }];
+        var handler = FakeHandler.Returning(HttpStatusCode.OK, delay: TimeSpan.FromMilliseconds(5));
+
+        var code = await Run(handler, "run", WriteFile(plan));
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.True(handler.Received.Count > plan.Profile.TotalRequests);
+        Assert.Contains("1 stage over 1s, up to 2 virtual users", _error.ToString());
+    }
+
     private static FakeHandler EveryFourthFails()
     {
         var count = 0;

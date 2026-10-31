@@ -34,6 +34,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Response extraction and request chaining**: on a request's Extract tab, take a value from its response into a variable, and use it in later requests as `{{name}}`, like a parameter list. A rule reads a JSON path (`$.data.token`, `items[0].id`, `items[-1].id` for the last item, `['odd key']`), a response header by name (such as `Location`), or a regular expression over the body (its first capture group, or the whole match without one). Each virtual user keeps its own variables across its iterations, so with "Once per virtual user" ticked on a login request, every virtual user logs in once and reuses its token; a request sent once is sent again on the next iteration if it fails, until it succeeds. A response with an expected status that lacks a value counts as an error, such as "Couldn't extract 'token': JSON path $.token found nothing", and the variable keeps its previous value; responses with an unexpected status aren't searched. A variable no response has supplied yet is sent as written. Only the first 1 MB of a body is searched, and extraction happens after the request is timed, so it doesn't add to the latency. "Send once" shows what each rule found and passes the values on to "Send once" on later requests.
 - **Environments and secrets**: define named sets of variables, such as `baseUrl` and `token` for "Staging" and "Production", and write `{{baseUrl}}` or `Bearer {{token}}` in a URL, header value or body. Each run picks the environment, so one test can hit several systems without editing. Mark a variable as a **secret** and its value is hidden in the app, replaced by `******` in error messages and echoed responses, and left out of exports. See [Environments](#environments-and-secret-variables).
 - **Load profile**: virtual users (concurrency), stop after a duration or a request count, ramp-up, optional requests-per-second cap, per-request timeout, redirect and TLS options.
+- **Load stages**: instead of a constant load, give the test stages whose targets are virtual users or requests per second. Start from a **step** (climb in equal steps), **spike** (baseline, sudden burst, recovery) or **soak** (ramp up, then hold for a long time) template, or write your own: each stage holds its target or ramps to it in a straight line. A preview chart shows the planned load as you edit, and the run page shows the stage the test is in.
 - **Success criteria**: expected status codes per request (e.g. `200,201` or `200-299,404`); defaults to any 2xx/3xx.
 - **Response checks** per request, on the Checks tab: the body (contains, does not contain, equals, matches a regular expression), a JSON value found by a path such as `$.status`, `$.items[0].id`, `$.items[-1]` or `$.items.length` (exists, equals, contains, matches, is less or greater than a number, and their opposites), or a response header. A response that fails a check counts as an error, named after the check, and the results show how often each check passed. "Send once" shows what each check found. Checks run after the response is timed, so they don't add to its latency. Text comparisons are case-sensitive, and bodies over 8 MB are too large to check, so their body and JSON checks fail.
 - **Pass/fail thresholds** for the whole run, such as `p95 latency < 500 ms`, `error rate < 1%` or `throughput > 200 req/s`, for all requests or one of them. A run passes when it completes and every threshold holds; a stopped or failed run doesn't pass. The run page, the runs list and the JSON API show the verdict (`passed`: `true`, `false`, or `null` for a test without thresholds), so a CI job can fail on it. A threshold over requests that sent nothing fails.
@@ -170,6 +171,34 @@ curl -X POST 'http://localhost:5299/api/runs?environment=Staging' -H 'content-ty
   "profile": { "concurrency": 50, "stopCondition": "Duration", "durationSeconds": 60, "rampUpSeconds": 10, "ignoreTlsErrors": true }
 }'
 ```
+
+A spike, held as a request rate of 20 per second with a burst to 200:
+
+```bash
+curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' -d '{
+  "name": "Spike",
+  "requests": [{ "method": "GET", "url": "https://localhost:5001/api/products" }],
+  "profile": {
+    "concurrency": 100, "stageMode": "RequestRate",
+    "stages": [
+      { "durationSeconds": 60, "target": 20 },
+      { "durationSeconds": 30, "target": 200 },
+      { "durationSeconds": 120, "target": 20 }
+    ]
+  }
+}'
+```
+
+## Staged load
+
+A staged profile is a list of stages, each with a duration, a target and a way of getting there: a **hold** jumps to the target and stays, a **ramp** moves in a straight line from where the previous stage ended (the first stage starts from 0). The test lasts as long as the stages add up to, so the stop condition and ramp-up don't apply, and neither does a request count. A target of 0 pauses the load.
+
+- **Virtual users**: the target is how many virtual users are sending requests, each as fast as it can. Users are started as the target rises. When it falls, users above it finish the iteration they are in and stop, so a multi-request scenario is never cut off halfway, and the "Active users" figure follows the target a little late. A user that starts again after being stopped begins afresh: values it extracted from earlier responses are gone, and its "once per virtual user" requests are sent again. The rate cap still applies.
+- **Requests per second**: the target is a request rate, sent by the "Virtual users" pool of the load profile. Requests are spaced evenly along the stages, so a ramp from 0 spreads its first requests out rather than waiting for a rate that starts at nothing. The rate is a ceiling: when responses are slow and every virtual user is busy, the test sends fewer requests than asked for, and the throughput chart shows the target next to what was sent. Requests that were missed are skipped, never sent later in a burst, so a stage never exceeds its target. Add virtual users if the rate falls short.
+
+On several machines, each agent keeps the stage lengths and gets its weight's share of every target, so the agents together follow the stages. Virtual user targets are rounded up on each agent, which can add up to one user per agent over the target. With the command line, a staged test refuses `--duration` and `--requests`, and `--concurrency` when the stages set virtual users, because the stages decide those.
+
+Plans saved before stages existed have none and run at a constant load as before. In the JSON, a profile gets `"stageMode": "VirtualUsers"` or `"RequestRate"` and `"stages": [{ "durationSeconds": 60, "target": 50, "ramp": false }]`.
 
 Check sources are `Body`, `JsonPath` and `Header`; operators are `Contains`, `NotContains`, `Equals`, `NotEquals`, `Matches`, `Exists`, `NotExists`, `LessThan` and `GreaterThan` (a `Body` check takes `Contains`, `NotContains`, `Equals` or `Matches`; `Exists` and `NotExists` need no `value`). Threshold metrics are `ErrorRate` (percent), `MeanLatency`, `P50Latency`, `P90Latency`, `P95Latency`, `P99Latency`, `MaxLatency` (milliseconds) and `RequestsPerSecond`; operators are `LessThan`, `LessThanOrEqual`, `GreaterThan` and `GreaterThanOrEqual`. `requestIndex` is the zero-based position of the request a threshold applies to; leave it out for all requests.
 

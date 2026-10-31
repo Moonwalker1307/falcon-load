@@ -6,6 +6,8 @@ namespace FalconLoad.Core.Distributed;
 /// Splits one test into the shares that agents run, so that all the shares together send the load the test asks for:
 /// the virtual users, the request count and the rate cap are divided by weight, while the duration, ramp-up and
 /// timeout stay the same on every agent. A test never uses more agents than it has virtual users (or requests).
+/// A staged test keeps its stage lengths on every agent and each stage's target is divided by weight; virtual user
+/// targets are rounded up on each agent, so the agents together may run up to one user more per agent than the target.
 /// </summary>
 public static class LoadSplitter
 {
@@ -32,8 +34,10 @@ public static class LoadSplitter
         }
 
         var profile = plan.Profile;
-        var count = Math.Min(eligible.Count, profile.Concurrency);
-        if (profile.StopCondition == StopCondition.RequestCount)
+        var userStages = profile.IsStaged && profile.StageMode == StageMode.VirtualUsers;
+        var countsRequests = !profile.IsStaged && profile.StopCondition == StopCondition.RequestCount;
+        var count = Math.Min(eligible.Count, userStages ? profile.PeakVirtualUsers : profile.Concurrency);
+        if (countsRequests)
         {
             count = (int)Math.Min(count, profile.TotalRequests);
         }
@@ -41,17 +45,28 @@ public static class LoadSplitter
         var used = eligible.Take(count).ToList();
         var shareWeights = used.Select(i => (long)weights[i]).ToList();
         var totalWeight = shareWeights.Sum();
-        var users = Allocate(profile.Concurrency, shareWeights);
-        var requests = profile.StopCondition == StopCondition.RequestCount ? Allocate(profile.TotalRequests, shareWeights) : null;
+
+        // Virtual user stages set the number of users themselves, so the fixed number is only divided otherwise.
+        var users = userStages ? null : Allocate(profile.Concurrency, shareWeights);
+        var requests = countsRequests ? Allocate(profile.TotalRequests, shareWeights) : null;
 
         var shares = new List<Share>(count);
         var offset = 0;
         for (var j = 0; j < count; j++)
         {
             var share = plan.Clone();
-            share.Profile.Concurrency = (int)users[j];
+            if (users is not null)
+            {
+                share.Profile.Concurrency = (int)users[j];
+            }
+
+            foreach (var stage in share.Profile.Stages)
+            {
+                stage.Target = stage.Target * shareWeights[j] / totalWeight;
+            }
+
             share.Profile.VirtualUserOffset = profile.VirtualUserOffset + offset;
-            offset += (int)users[j];
+            offset += userStages ? share.Profile.PeakVirtualUsers : (int)users![j];
             if (requests is not null)
             {
                 share.Profile.TotalRequests = (int)requests[j];

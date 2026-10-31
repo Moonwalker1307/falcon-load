@@ -1,0 +1,75 @@
+@* Dependency-free SVG preview of a staged load profile: the load over time, with a vertical edge wherever a stage jumps. *@
+@if (Schedule.TotalSeconds <= 0 || Schedule.Peak <= 0)
+{
+    <div class="chart-empty chart-empty-short">Add a stage with a target above 0 to see the load.</div>
+}
+else
+{
+    <div class="chart stage-preview">
+        <svg viewBox="0 0 @Width @Height" role="img" aria-label="@AriaLabel">
+            @for (var i = 0; i <= GridLines; i++)
+            {
+                var y = PadTop + PlotHeight * i / GridLines;
+                <line class="gridline" x1="@PadLeft" x2="@(Width - PadRight)" y1="@F(y)" y2="@F(y)" />
+            }
+            @for (var i = 1; i < Schedule.Stages.Count; i++)
+            {
+                var x = X(StartOf(i));
+                <line class="stage-edge" x1="@F(x)" x2="@F(x)" y1="@PadTop" y2="@(PadTop + PlotHeight)" />
+            }
+            @Labels()
+            <polygon class="area" fill="var(--series-1)" points="@F(X(0)),@F(PadTop + PlotHeight) @Points @F(X(Schedule.TotalSeconds)),@F(PadTop + PlotHeight)" />
+            <polyline class="line" stroke="var(--series-1)" points="@Points" />
+        </svg>
+    </div>
+}
+
+@code {
+    private const int Width = 640, Height = 200, PadLeft = 56, PadRight = 12, PadTop = 10, PadBottom = 24, GridLines = 4;
+    private const double PlotWidth = Width - PadLeft - PadRight, PlotHeight = Height - PadTop - PadBottom;
+
+    private double _max = 1;
+    private string _points = string.Empty;
+
+    [Parameter, EditorRequired] public StageSchedule Schedule { get; set; } = new([]);
+
+    [Parameter] public string AriaLabel { get; set; } = "Load over time";
+
+    private string Points => _points;
+
+    protected override void OnParametersSet()
+    {
+        _max = LineChart.NiceCeiling(Schedule.Peak);
+        _points = string.Join(' ', Schedule.Outline().Select(p => $"{F(X(p.Seconds))},{F(Y(p.Target))}"));
+    }
+
+    private double X(double seconds) => PadLeft + PlotWidth * seconds / Schedule.TotalSeconds;
+
+    private double Y(double value) => PadTop + PlotHeight - PlotHeight * Math.Min(value, _max) / _max;
+
+    private double StartOf(int stage) => Schedule.Stages.Take(stage).Sum(s => s.DurationSeconds);
+
+    /// <summary>SVG &lt;text&gt; elements, built as markup because Razor reserves the &lt;text&gt; tag.</summary>
+    private MarkupString Labels()
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i <= GridLines; i++)
+        {
+            var y = PadTop + PlotHeight * i / GridLines;
+            var value = _max * (GridLines - i) / GridLines;
+            sb.Append($"<text class=\"axis-label\" x=\"{PadLeft - 6}\" y=\"{F(y + 4)}\" text-anchor=\"end\">{Format.Rate(value)}</text>");
+        }
+
+        const int ticks = 4;
+        for (var t = 0; t <= ticks; t++)
+        {
+            var seconds = Schedule.TotalSeconds * t / ticks;
+            var anchor = t == 0 ? "start" : t == ticks ? "end" : "middle";
+            sb.Append($"<text class=\"axis-label\" x=\"{F(X(seconds))}\" y=\"{Height - 6}\" text-anchor=\"{anchor}\">{Format.Seconds((int)Math.Round(seconds))}</text>");
+        }
+
+        return new MarkupString(sb.ToString());
+    }
+
+    private static string F(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+}

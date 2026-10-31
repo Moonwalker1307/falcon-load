@@ -116,7 +116,7 @@ public static class ResultCombiner
             var results = run.Results;
             var histograms = run.Histograms!;
             var offset = (int)Math.Round((run.StartedAt - start).TotalSeconds);
-            machines.Add(new MachineResult(names[i], run.Id, run.StartedAt, offset, run.Plan.Name, run.Plan.Profile.Concurrency, results));
+            machines.Add(new MachineResult(names[i], run.Id, run.StartedAt, offset, run.Plan.Name, run.Plan.Profile.PeakVirtualUsers, results));
 
             overall.Add(LatencyHistogram.FromData(histograms.Overall));
             foreach (var (code, count) in results.StatusCodes)
