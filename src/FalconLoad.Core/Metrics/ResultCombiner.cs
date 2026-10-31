@@ -205,12 +205,24 @@ public static class ResultCombiner
             Timeline = points,
             Checks = checks.OrderBy(c => c.StepIndex).ToList(),
             FailureReason = failures.Count == 0 ? null : string.Join(" ", failures),
+            Auth = CombineAuth(runs),
         };
 
         // The machines ran the same test, so the first one's thresholds judge the combined load.
         combined = ThresholdEvaluator.Apply(runs[0].Plan.Thresholds, combined);
 
         return new CombinedResult(combined, start, machines, Warnings(runs, names, start, live));
+    }
+
+    /// <summary>Each machine fetches its own tokens, so their counts add up.</summary>
+    private static AuthStats? CombineAuth(IReadOnlyList<RunExport> runs)
+    {
+        var stats = runs.Select(r => r.Results.Auth).OfType<AuthStats>().ToList();
+        return stats.Count == 0 ? null : new AuthStats(
+            stats.Sum(a => a.TokensFetched),
+            stats.Sum(a => a.FailedFetches),
+            stats.Select(a => a.LastError).LastOrDefault(e => e is not null),
+            stats.Select(a => a.TokenLifetimeSeconds).FirstOrDefault(l => l is not null));
     }
 
     private static List<string> Warnings(IReadOnlyList<RunExport> runs, IReadOnlyList<string> names, DateTimeOffset start, bool live)

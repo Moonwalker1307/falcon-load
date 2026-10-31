@@ -31,12 +31,16 @@ internal sealed class PreparedRequest
 
     public bool OncePerVirtualUser { get; private set; }
 
+    /// <summary>Whether this request gets the plan's OAuth2 token: it does unless it sets its own Authorization header.</summary>
+    public bool UsesAuth { get; private set; }
+
     /// <param name="variables">
     /// The selected environment's values, without the names a parameter list or an extracted variable supplies (see
     /// <see cref="LoadTestPlan.EnvironmentValues"/>). They don't change during a run, so they are substituted here,
     /// once, and text that only used them is then as cheap to send as text with no variables at all.
     /// </param>
-    public static PreparedRequest From(RequestDefinition definition, IReadOnlyDictionary<string, string>? variables = null)
+    /// <param name="auth">Whether the plan sends an OAuth2 token with its requests.</param>
+    public static PreparedRequest From(RequestDefinition definition, IReadOnlyDictionary<string, string>? variables = null, bool auth = false)
     {
         StatusCodeMatcher.TryParse(definition.ExpectedStatusCodes, out var matcher);
         var url = TemplateRenderer.ResolveVariables(definition.Url, variables);
@@ -63,6 +67,8 @@ internal sealed class PreparedRequest
             OncePerVirtualUser = definition.OncePerVirtualUser,
         };
 
+        prepared.UsesAuth = auth && !prepared._headers.Any(h => string.Equals(h.Name, "Authorization", StringComparison.OrdinalIgnoreCase));
+
         if (!prepared._urlHasVariables)
         {
             prepared._staticUri = new Uri(prepared._url, UriKind.Absolute);
@@ -76,7 +82,8 @@ internal sealed class PreparedRequest
         return prepared;
     }
 
-    public HttpRequestMessage Build(TemplateContext context, out long bytesSent)
+    /// <param name="authorization">The <c>Authorization</c> header value to send when <see cref="UsesAuth"/>, such as <c>Bearer …</c>.</param>
+    public HttpRequestMessage Build(TemplateContext context, out long bytesSent, string? authorization = null)
     {
         var uri = _staticUri ?? new Uri(TemplateRenderer.Render(_url, context), UriKind.Absolute);
         var request = new HttpRequestMessage(_method, uri);
@@ -106,6 +113,11 @@ internal sealed class PreparedRequest
             {
                 request.Headers.TryAddWithoutValidation(name, value);
             }
+        }
+
+        if (UsesAuth && authorization is not null)
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", authorization);
         }
 
         return request;

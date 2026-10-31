@@ -436,6 +436,33 @@ public sealed class CliAppTests : IDisposable
     }
 
     [Fact]
+    public async Task OAuth2_GetsATokenWithASecretFromTheEnvironment_AndKeepsItOutOfTheOutput()
+    {
+        var handler = new FakeHandler((request, _) => Task.FromResult(request.RequestUri!.AbsolutePath == "/token"
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("""{ "access_token": "cli-token-1", "expires_in": 3600 }""") }
+            : new HttpResponseMessage(HttpStatusCode.OK)));
+        var plan = Plan();
+        plan.Auth = new AuthSettings { Type = AuthType.OAuth2ClientCredentials, TokenUrl = "http://auth.test/token", ClientId = "ci", ClientSecret = "{{clientSecret}}" };
+        var output = Path.Combine(_directory, "out.json");
+
+        var code = await CliApp.RunAsync(
+            ["run", WriteFile(plan), "--out", output],
+            new CliConsole(new StringReader(string.Empty), _out, _error, ErrorIsTerminal: false, new Dictionary<string, string> { ["clientSecret"] = "cli-s3cret" }),
+            _ => new HttpMessageInvoker(handler, disposeHandler: false));
+
+        Assert.Equal(CliApp.Passed, code);
+        var token = Assert.Single(handler.Received, r => r.Request.RequestUri!.AbsolutePath == "/token");
+        Assert.Equal("ci:cli-s3cret", System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(token.Request.Headers.Authorization!.Parameter!)));
+        Assert.All(handler.Received.Where(r => r.Request.RequestUri!.Host == "api.test"), r => Assert.Equal("Bearer cli-token-1", r.Request.Headers.Authorization!.ToString()));
+        Assert.Contains("OAuth2        1 token fetched", _out.ToString());
+        foreach (var text in new[] { _out.ToString(), _error.ToString(), File.ReadAllText(output) })
+        {
+            Assert.DoesNotContain("cli-s3cret", text);
+            Assert.DoesNotContain("cli-token-1", text);
+        }
+    }
+
+    [Fact]
     public async Task MissingVariable_ExitsWithTwoAndSaysWhereVariablesComeFrom()
     {
         var handler = FakeHandler.Returning(HttpStatusCode.OK);

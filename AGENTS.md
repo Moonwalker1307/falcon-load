@@ -54,10 +54,12 @@ engine works. It is the only user-facing documentation, so it has to stay true.
     plan; its columns become `{{column}}` variables through `ParameterSet`), `TestEnvironment` and `SecretMasker`
     (variable sets and hiding their secrets), `RequestDefinition`, `LoadProfile`
     (concurrency, stop condition, ramp-up, rate cap, timeout, TLS and redirect options, and optional `LoadStage`s that
-    `StageSchedule` turns into load over time), `StagePresets` (step, spike and soak), `StatusCodeMatcher` (`200,201`
-    or `200-299,404`) and `TemplateRenderer` (the `{{$guid}}`-style dynamic values).
+    `StageSchedule` turns into load over time), `StagePresets` (step, spike and soak), `AuthSettings` (OAuth2 client
+    credentials), `StatusCodeMatcher` (`200,201` or `200-299,404`) and `TemplateRenderer` (the `{{$guid}}`-style
+    dynamic values).
   - `Engine/`: `LoadTestRunner` runs a plan once and reports snapshots; `PreparedRequest` precomputes each request;
-    `HttpHandlerFactory` builds the shared handler; `RequestProbe` sends one request for the "Send once" button and
+    `HttpHandlerFactory` builds the shared handler; `OAuth2TokenSource` fetches a run's tokens and replaces them before
+    they expire; `RequestProbe` sends one request for the "Send once" button and
     `/api/probe`.
   - `Reports/`: `RunVerdict` (the one pass/fail verdict behind the CLI's exit code and both reports), `HtmlReport`
     (a self-contained page with hand-written SVG charts, no script) and `JUnitReport`. Reports show results only,

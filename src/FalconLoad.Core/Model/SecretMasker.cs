@@ -28,6 +28,9 @@ public sealed class SecretMasker
 
     public bool IsEmpty => _secrets.Length == 0;
 
+    /// <summary>The values this masker hides, so another masker can hide them too.</summary>
+    internal IReadOnlyList<string> Secrets => _secrets;
+
     [return: NotNullIfNotNull(nameof(text))]
     public string? Apply(string? text)
     {

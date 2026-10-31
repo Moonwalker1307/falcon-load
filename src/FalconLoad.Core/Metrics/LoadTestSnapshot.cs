@@ -46,6 +46,9 @@ public sealed record LoadTestSnapshot
 
     public string? FailureReason { get; init; }
 
+    /// <summary>How the run's OAuth2 tokens were fetched. Null when the test has no auth, and in results saved before auth existed.</summary>
+    public AuthStats? Auth { get; init; }
+
     /// <summary>
     /// The verdict a CI job checks: null when the plan has no thresholds; otherwise true when every threshold holds and
     /// the run completed. A run that was stopped early or failed doesn't pass. While a test runs it says whether the
@@ -62,6 +65,13 @@ public sealed record LoadTestSnapshot
 
     public bool IsFinished => State is RunState.Completed or RunState.Cancelled or RunState.Failed;
 }
+
+/// <summary>The token requests of a run with OAuth2 auth. They are not part of the load, so they aren't counted as requests.</summary>
+/// <param name="TokensFetched">Tokens received, the first one included; more than one means tokens were replaced during the run.</param>
+/// <param name="FailedFetches">Token requests that failed. Requests went on with the previous token meanwhile.</param>
+/// <param name="LastError">Why the last failed token request failed, with secrets masked.</param>
+/// <param name="TokenLifetimeSeconds">The <c>expires_in</c> of the latest token; null when the server gave none.</param>
+public sealed record AuthStats(long TokensFetched, long FailedFetches, string? LastError, double? TokenLifetimeSeconds);
 
 public sealed record ErrorCount(string Message, long Count);
 

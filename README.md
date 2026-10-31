@@ -34,6 +34,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Data files**: upload a CSV file or a JSON array of objects, such as a list of test users, and each column becomes a variable (`{{email}}`, `{{password}}`). Every iteration of a virtual user takes one whole row, so an email and its password always belong together. See [Data files](#data-files).
 - **Response extraction and request chaining**: on a request's Extract tab, take a value from its response into a variable, and use it in later requests as `{{name}}`, like a parameter list. A rule reads a JSON path (`$.data.token`, `items[0].id`, `items[-1].id` for the last item, `['odd key']`), a response header by name (such as `Location`), or a regular expression over the body (its first capture group, or the whole match without one). Each virtual user keeps its own variables across its iterations, so with "Once per virtual user" ticked on a login request, every virtual user logs in once and reuses its token; a request sent once is sent again on the next iteration if it fails, until it succeeds. A response with an expected status that lacks a value counts as an error, such as "Couldn't extract 'token': JSON path $.token found nothing", and the variable keeps its previous value; responses with an unexpected status aren't searched. A variable no response has supplied yet is sent as written. Only the first 1 MB of a body is searched, and extraction happens after the request is timed, so it doesn't add to the latency. "Send once" shows what each rule found and passes the values on to "Send once" on later requests.
 - **Environments and secrets**: define named sets of variables, such as `baseUrl` and `token` for "Staging" and "Production", and write `{{baseUrl}}` or `Bearer {{token}}` in a URL, header value or body. Each run picks the environment, so one test can hit several systems without editing. Mark a variable as a **secret** and its value is hidden in the app, replaced by `******` in error messages and echoed responses, and left out of exports. See [Environments](#environments-and-secret-variables).
+- **OAuth2 client credentials**: give a test a token URL, client id and secret, and falcon-load gets a token before the run, sends it as `Authorization: Bearer …` with every request and gets a new one before it expires, so an hour-long soak test doesn't fail when its token runs out. Works the same on agents and in the command line runner. See [OAuth2](#oauth2-client-credentials).
 - **Load profile**: virtual users (concurrency), stop after a duration or a request count, ramp-up, optional requests-per-second cap, per-request timeout, redirect and TLS options.
 - **Load stages**: instead of a constant load, give the test stages whose targets are virtual users or requests per second. Start from a **step** (climb in equal steps), **spike** (baseline, sudden burst, recovery) or **soak** (ramp up, then hold for a long time) template, or write your own: each stage holds its target or ramps to it in a straight line. A preview chart shows the planned load as you edit, and the run page shows the stage the test is in.
 - **Success criteria**: expected status codes per request (e.g. `200,201` or `200-299,404`); defaults to any 2xx/3xx.
@@ -148,7 +149,7 @@ Both reports use the same verdict as the CLI's exit code: a test with thresholds
 | `GET` | `/api/environments/{id}/export` | One environment as a JSON download, without secret values |
 | `POST` | `/api/environments/import` | Save the environments from an exported file (the file is the body) |
 | `GET` | `/api/runs` | List recent runs, each with its `passed` verdict |
-| `GET` | `/api/runs/{id}` | Live or final results, with `results.passed`, `results.thresholds` and `results.checks` |
+| `GET` | `/api/runs/{id}` | Live or final results, with `results.passed`, `results.thresholds`, `results.checks` and, for a test with OAuth2, `results.auth` |
 | `GET` | `/api/runs/{id}/export` | Results as a JSON download, with the latency histograms needed to combine them |
 | `GET` | `/api/runs/{id}/report` | A finished run as a self-contained HTML report, as a download |
 | `GET` | `/api/runs/{id}/junit` | A finished run as JUnit XML, as a download |
@@ -158,8 +159,7 @@ Both reports use the same verdict as the CLI's exit code: a test with thresholds
 | `DELETE` | `/api/plans/{id}/baseline` | Clear the baseline |
 | `GET` | `/api/runs/{id}/compare` | Compare a run with the test's baseline, or with `?baseline={runId}`; `hasRegression` is true when anything regressed |
 | `POST` | `/api/results/combine` | Combine an array of exported results from several machines |
-| `POST` | `/api/probe` | Send a single request and return the response, with what its extraction rules found. Takes `?environment=Name` |
-| `POST` | `/api/probe` | Send a single request and return the response |
+| `POST` | `/api/probe` | Send a single request and return the response, with what its extraction rules found. Takes `?environment=Name`, and `?planId=` to send it with that saved test's OAuth2 token (and its environment, unless one is given) |
 | `GET` | `/api/agents` | List registered agents with their last check (tokens are never returned) |
 | `POST` | `/api/agents` | Register or update an agent (`name`, `url`, `token`, `enabled`, `weight`); an update without a token keeps the saved one |
 | `DELETE` | `/api/agents/{id}` | Remove an agent |
@@ -293,6 +293,33 @@ An environment is a named set of variables, kept on the **Environments** page. A
 - **Secrets are write-only.** After saving, a secret's value is not shown again in the app or returned by the API (it comes back as `null`, meaning "set but hidden"); type a new value to replace it, or send `null` to keep it. The engine replaces secret values with `******` in the errors of a run and in the response a "Send once" shows, in case a server echoes a token back. Values shorter than three characters are not searched for, since they would garble ordinary text.
 - **Exports never contain secrets.** The environments file lists the secret's name with no value, so whoever imports it fills the secrets in. A run's export holds the environment's name, not its variables, and a test that uses `{{token}}` exports `{{token}}`. The Combine page warns when the runs used different environments.
 - **Where they are stored.** Environments are saved to `environments.json` next to `plans.json`, in plain text like the headers of saved tests, and on Unix only your user can read the file. Don't commit it or copy it between machines; use an export for that.
+
+## OAuth2 client credentials
+
+For an API that takes OAuth2 tokens, set the test's **Authentication** to *OAuth2 client credentials* in the editor and fill in the token URL, client id and secret, and optionally a scope and an audience. "Get a token" asks the token endpoint right away and says how long the token lasts, without showing it.
+
+- **Before the run** falcon-load asks the token endpoint for a token (the `client_credentials` grant, with the client id and secret in a Basic auth header, or in the form body if you choose). It does this before the clock starts, so it doesn't count towards the duration or throughput. A test that can't get a token fails at once with the server's answer, such as `401 Unauthorized: invalid_client`, without sending a request.
+- **Every request** gets `Authorization: Bearer <token>`, except a request with its own enabled `Authorization` header, which keeps it. "Send once" fetches a token too. Token requests are not part of the load: they aren't counted as requests, and their time isn't part of any request's latency.
+- **During the run** the token is replaced when a quarter of its lifetime (`expires_in`) is left, and at most a minute before it expires. One request to the token endpoint is made for all virtual users, in the background, and requests keep the old token until the new one arrives. If the token endpoint fails, requests carry on with the old token and the request is retried after 1 second, then 2, 4 and so on up to 30. A request whose token has already expired waits for the token request in flight, and goes ahead with the old token if that fails, so the API's answer shows up in the errors. When the API answers 401, the token is replaced on the next request, unless it is less than ten seconds old, since a fresh token being rejected points at a setting rather than an expired token. A token without `expires_in` is kept until the API rejects it.
+- **Results** say how many tokens were fetched, how long they lasted and why the last token request failed, on the run page, in the CLI summary and as `results.auth` in the JSON API and exports (`tokensFetched`, `failedFetches`, `lastError`, `tokenLifetimeSeconds`). Combined and distributed results add up every machine's tokens.
+- **Keep the secret in an environment.** The auth fields can use the environment's variables, so write `{{clientSecret}}` in the secret field and store the value as a secret variable: it is then left out of exports and masked like any other secret. A secret typed straight into the field is saved and exported with the test, and the editor warns about it. The client secret and every token the run fetched are replaced by `******` in errors and in the response "Send once" shows. The fields can't use parameter lists or extracted variables, because one token serves every virtual user.
+- **Agents and the CLI.** Each agent fetches its own tokens with the controller's environment, like the other variables. The command line runner takes the secret from an environment variable, e.g. `FALCON_LOAD_clientSecret=… falcon-load run tests.json`.
+
+In the JSON, a test gets:
+
+```json
+"auth": {
+  "type": "OAuth2ClientCredentials",
+  "tokenUrl": "{{authUrl}}/oauth2/token",
+  "clientId": "load-test",
+  "clientSecret": "{{clientSecret}}",
+  "scope": "orders.read",
+  "audience": "",
+  "clientAuthentication": "BasicHeader"
+}
+```
+
+`clientAuthentication` is `BasicHeader` or `RequestBody`. Tests saved before auth existed have no `auth` and send only the headers they were given.
 ## Run a test from several machines (agents)
 
 When one machine can't send enough load, falcon-load can run a test from several machines at once and show the result as one. One falcon-load is the controller: the one whose UI you use. The others are agents: ordinary falcon-loads started with agent mode on.

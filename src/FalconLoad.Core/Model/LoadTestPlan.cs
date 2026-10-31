@@ -32,6 +32,9 @@ public sealed class LoadTestPlan
     /// </summary>
     public string? Environment { get; set; }
 
+    /// <summary>How requests are authenticated, such as with an OAuth2 token. Plans saved before auth existed have none.</summary>
+    public AuthSettings? Auth { get; set; }
+
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     /// <summary>Returns a list of human readable validation problems; empty when the plan can be saved.</summary>
@@ -116,6 +119,11 @@ public sealed class LoadTestPlan
         if (Requests.Count > 0 && Requests.All(r => r.OncePerVirtualUser))
         {
             errors.Add("At least one request has to run on every iteration; untick \"Once per virtual user\" on one of them.");
+        }
+
+        if (Auth is not null)
+        {
+            errors.AddRange(Auth.Validate(environment?.ToValues(), forRun));
         }
 
         errors.AddRange(Profile.Validate());
