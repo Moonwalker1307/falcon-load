@@ -78,7 +78,7 @@ code, .mono { font-family: var(--mono); font-size: .9em; }
 }
 .brand { white-space: nowrap; display: flex; align-items: center; gap: .5rem; font-weight: 700; font-size: 1.1rem; color: var(--text); }
 .brand:hover { text-decoration: none; }
-.brand img { width: 28px; height: 28px; }
+.brand img { height: 28px; width: auto; image-rendering: pixelated; }
 .brand-name span { color: var(--accent); }
 .topbar nav { display: flex; gap: .25rem; }
 .topbar nav a { white-space: nowrap; padding: .35rem .75rem; border-radius: 6px; color: var(--muted); }
@@ -180,6 +180,32 @@ td.actions > * { margin-left: .25rem; }
 
 .progress { height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; margin: .5rem 0 1.25rem; }
 .progress > div { height: 100%; background: var(--accent); transition: width .4s ease; }
+
+/* Run progress: the falcon flies along the bar while a test runs */
+.flight { position: relative; padding-top: 70px; margin: .25rem 0 1.25rem; }
+.flight .progress { margin: 0; }
+.flight-bird {
+    position: absolute; bottom: 10px; width: 118px; height: 66px;
+    transition: left .4s ease, transform .4s ease;
+}
+.flight-bird img { display: block; width: 118px; height: 66px; image-rendering: pixelated; }
+.flying .flight-bird img { animation: falcon-bob .96s steps(1, end) infinite; }
+.flying .flight-bird::before {
+    content: ""; position: absolute; right: 100%; top: 26px; width: 72px; height: 18px;
+    background:
+        linear-gradient(90deg, transparent 0 6px, var(--muted) 6px 30px, transparent 30px 40px, var(--muted) 40px 58px, transparent 58px) 0 0 / 72px 2px repeat-x,
+        linear-gradient(90deg, transparent 0 18px, var(--muted) 18px 50px, transparent 50px) 0 8px / 72px 2px repeat-x,
+        linear-gradient(90deg, transparent 0 2px, var(--muted) 2px 22px, transparent 22px 34px, var(--muted) 34px 46px, transparent 46px) 0 16px / 72px 2px repeat-x;
+    background-repeat: repeat-x;
+    opacity: .7;
+    animation: falcon-wind .32s steps(4, end) infinite;
+}
+@keyframes falcon-bob { 0% { translate: 0 0; } 25% { translate: 0 -2px; } 50% { translate: 0 -3px; } 75% { translate: 0 -1px; } }
+@keyframes falcon-wind { from { background-position: 0 0, 0 8px, 0 16px; } to { background-position: 72px 0, 72px 8px, 72px 16px; } }
+@media (prefers-reduced-motion: reduce) {
+    .flight-bird { transition: none; }
+    .flying .flight-bird img, .flying .flight-bird::before { animation: none; }
+}
 
 /* Charts */
 .chart svg { width: 100%; height: auto; display: block; }
