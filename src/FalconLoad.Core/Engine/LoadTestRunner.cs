@@ -14,6 +14,10 @@ public sealed class LoadTestRunner : IAsyncDisposable
     private readonly LoadTestPlan _plan;
     private readonly PreparedRequest[] _requests;
     private readonly ParameterSet? _parameters;
+    private readonly bool _extracts;
+    private readonly bool _keepsBodies;
+    private readonly bool _hasOnceRequests;
+    private readonly SecretMasker _masker;
     private readonly HttpMessageInvoker _invoker;
     private readonly bool _ownsInvoker;
     private readonly MetricsCollector _metrics;
@@ -28,17 +32,27 @@ public sealed class LoadTestRunner : IAsyncDisposable
     private string? _failureReason;
     private TimeSpan? _finalElapsed;
 
-    public LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker = null)
+    /// <param name="environment">
+    /// The environment whose variables fill the <c>{{name}}</c> placeholders that no parameter list or extracted variable supplies. Its
+    /// secret values are hidden from error messages. The run is recorded against its name, not its values.
+    /// </param>
+    public LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker = null, TestEnvironment? environment = null)
     {
-        var problems = plan.Validate();
+        var problems = plan.ValidateForRun(environment);
         if (problems.Count > 0)
         {
             throw new ArgumentException("The load test plan is invalid: " + string.Join(" ", problems), nameof(plan));
         }
 
         _plan = plan.Clone();
-        _requests = _plan.Requests.Select(PreparedRequest.From).ToArray();
+        _plan.Environment = environment?.Name;
+        _masker = environment?.CreateMasker() ?? SecretMasker.None;
         _parameters = _plan.Parameters.Count > 0 ? new ParameterSet(_plan.Parameters) : null;
+        var variables = _plan.EnvironmentValues(environment);
+        _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables)).ToArray();
+        _extracts = _requests.Any(r => r.Extractor is not null);
+        _keepsBodies = _requests.Any(r => r.Extractor is { NeedsBody: true });
+        _hasOnceRequests = _requests.Any(r => r.OncePerVirtualUser);
         _metrics = new MetricsCollector(_plan.Requests.Select(r => r.DisplayName).ToList());
 
         if (invoker is null)
@@ -108,7 +122,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _failureReason = ex.Message;
+            _failureReason = _masker.Apply(ex.Message);
             _state = RunState.Failed;
         }
         finally
@@ -160,14 +174,25 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
         // Each virtual user refills its own row of parameter values per iteration, so lists cost no allocation per request.
         var row = _parameters is null ? null : new string[_parameters.Count];
+
+        // Extracted variables belong to one virtual user and last across its iterations, so a token from a login
+        // request sent once is reused by every later request. Each user also reuses one buffer for the bodies it keeps.
+        var variables = _extracts ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) : null;
+        using var kept = _keepsBodies ? new MemoryStream() : null;
+        var done = _hasOnceRequests ? new bool[_requests.Length] : null;
         try
         {
             for (long iteration = 1; ; iteration++)
             {
-                var context = new TemplateContext(index + 1, iteration, new ParameterValues(_parameters, row));
+                var context = new TemplateContext(index + 1, iteration, new ParameterValues(_parameters, row), variables);
                 var picked = false;
                 for (var step = 0; step < _requests.Length; step++)
                 {
+                    if (done is not null && done[step])
+                    {
+                        continue;
+                    }
+
                     if (stop.IsCancellationRequested || Interlocked.Decrement(ref _remainingRequests) < 0)
                     {
                         return;
@@ -186,10 +211,14 @@ public sealed class LoadTestRunner : IAsyncDisposable
                         picked = true;
                     }
 
-                    var result = await SendAsync(step, context, buffer, stop).ConfigureAwait(false);
+                    var result = await SendAsync(step, context, buffer, variables, kept, stop).ConfigureAwait(false);
                     if (result is { } r)
                     {
                         _metrics.Record(r);
+                        if (done is not null && r.Success && _requests[step].OncePerVirtualUser)
+                        {
+                            done[step] = true;
+                        }
                     }
                 }
             }
@@ -222,9 +251,20 @@ public sealed class LoadTestRunner : IAsyncDisposable
     }
 
     /// <summary>Sends one request. Returns null when the run was stopped while the request was in flight.</summary>
-    private async Task<RequestResult?> SendAsync(int step, TemplateContext context, byte[] buffer, CancellationToken stop)
+    /// <param name="variables">The virtual user's extracted variables, the same ones <paramref name="context"/> reads.</param>
+    /// <param name="kept">The virtual user's buffer for bodies that extraction rules read, or null when none do.</param>
+    private async Task<RequestResult?> SendAsync(
+        int step,
+        TemplateContext context,
+        byte[] buffer,
+        Dictionary<string, string>? variables,
+        MemoryStream? kept,
+        CancellationToken stop)
     {
         var prepared = _requests[step];
+        var extractor = prepared.Extractor;
+        var keep = extractor is { NeedsBody: true } ? kept : null;
+        keep?.SetLength(0);
         var startedAt = _clock.Elapsed;
         var start = Stopwatch.GetTimestamp();
         long bytesSent = 0;
@@ -244,21 +284,29 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 while ((read = await body.ReadAsync(buffer, timeout.Token).ConfigureAwait(false)) > 0)
                 {
                     received += read;
+                    if (keep is not null && keep.Length < ResponseExtractor.MaxBodyBytes)
+                    {
+                        keep.Write(buffer, 0, (int)Math.Min(read, ResponseExtractor.MaxBodyBytes - keep.Length));
+                    }
                 }
             }
 
+            // Extraction happens after the clock stops, so parsing a body doesn't add to the measured latency.
             var latency = Stopwatch.GetElapsedTime(start);
             var code = (int)response.StatusCode;
             var success = prepared.Matcher.IsMatch(code);
-            return new RequestResult(
-                step,
-                startedAt,
-                latency,
-                code,
-                success,
-                success ? null : $"Unexpected status {code} {response.StatusCode}",
-                bytesSent,
-                received);
+            var error = success ? null : $"Unexpected status {code} {response.StatusCode}";
+
+            // A response that matches the status codes but lacks a value later requests need counts as an error, since
+            // those requests would otherwise fail in less obvious ways. Failed responses aren't searched at all.
+            if (success && extractor is not null)
+            {
+                var bodyBytes = keep is null ? default : keep.GetBuffer().AsSpan(0, (int)keep.Length);
+                error = extractor.Apply(response, bodyBytes, variables!);
+                success = error is null;
+            }
+
+            return new RequestResult(step, startedAt, latency, code, success, _masker.Apply(error), bytesSent, received);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -279,7 +327,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         }
 
         RequestResult Failure(string error) =>
-            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, error, bytesSent, 0);
+            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, _masker.Apply(error), bytesSent, 0);
     }
 
     private static string DescribeTransportError(HttpRequestException ex)

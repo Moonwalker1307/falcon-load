@@ -13,6 +13,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 
 builder.Services.AddSingleton<PlanStore>();
+builder.Services.AddSingleton<EnvironmentStore>();
 builder.Services.AddSingleton<RunManager>();
 
 var app = builder.Build();

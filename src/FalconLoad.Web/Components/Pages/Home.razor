@@ -2,6 +2,7 @@
 @implements IDisposable
 @inject PlanStore PlanStore
 @inject RunManager RunManager
+@inject EnvironmentStore EnvironmentStore
 @inject NavigationManager Nav
 
 <PageTitle>falcon-load</PageTitle>
@@ -109,6 +110,21 @@ else
                             <td class="load-cell">
                                 <div>@plan.Profile.Concurrency @(plan.Profile.Concurrency == 1 ? "user" : "users")</div>
                                 <div class="small muted">@Format.StopSummary(plan.Profile)</div>
+                                @if (_environmentNames.Count > 0 || !string.IsNullOrWhiteSpace(plan.Environment))
+                                {
+                                    <select class="env-select" aria-label="Environment to run @plan.Name with" title="Environment for this run"
+                                            @bind:get="EnvironmentFor(plan)" @bind:set="value => _chosen[plan.Id] = value ?? string.Empty">
+                                        <option value="">No environment</option>
+                                        @foreach (var name in _environmentNames)
+                                        {
+                                            <option value="@name">@name</option>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(plan.Environment) && !_environmentNames.Contains(plan.Environment, StringComparer.OrdinalIgnoreCase))
+                                        {
+                                            <option value="@plan.Environment">@plan.Environment (not found)</option>
+                                        }
+                                    </select>
+                                }
                             </td>
                             <td class="hide-sm muted nowrap">@Format.When(plan.UpdatedAt)</td>
                             <td class="actions">
@@ -149,6 +165,10 @@ else
 
 @code {
     private IReadOnlyList<LoadTestPlan> _plans = [];
+    private IReadOnlyList<string> _environmentNames = [];
+
+    // The environment picked for the next run of a test, when it differs from the test's own setting.
+    private readonly Dictionary<Guid, string> _chosen = [];
     private string? _error;
     private Guid? _confirmDelete;
     private IReadOnlyList<string> _importProblems = [];
@@ -161,25 +181,37 @@ else
     protected override void OnInitialized()
     {
         _plans = PlanStore.GetAll();
+        _environmentNames = [.. EnvironmentStore.GetAll().Select(e => e.Name)];
         PlanStore.Changed += OnPlansChanged;
+        EnvironmentStore.Changed += OnPlansChanged;
     }
 
     private void OnPlansChanged() => _ = InvokeAsync(() =>
     {
         _plans = PlanStore.GetAll();
+        _environmentNames = [.. EnvironmentStore.GetAll().Select(e => e.Name)];
         StateHasChanged();
     });
 
+    private string EnvironmentFor(LoadTestPlan plan) => _chosen.TryGetValue(plan.Id, out var name) ? name : plan.Environment ?? string.Empty;
+
     private void Run(LoadTestPlan plan)
     {
+        _error = null;
+        if (!EnvironmentStore.TryResolve(EnvironmentFor(plan), out var environment, out var missing))
+        {
+            _error = $"{plan.Name}: {missing}";
+            return;
+        }
+
         try
         {
-            var run = RunManager.Start(plan);
+            var run = RunManager.Start(plan, environment);
             Nav.NavigateTo($"runs/{run.Id}");
         }
         catch (ArgumentException ex)
         {
-            _error = ex.Message;
+            _error = $"{plan.Name}: {ex.Message}";
         }
     }
 
@@ -228,5 +260,9 @@ else
         PlanStore.Delete(plan.Id);
     }
 
-    public void Dispose() => PlanStore.Changed -= OnPlansChanged;
+    public void Dispose()
+    {
+        PlanStore.Changed -= OnPlansChanged;
+        EnvironmentStore.Changed -= OnPlansChanged;
+    }
 }

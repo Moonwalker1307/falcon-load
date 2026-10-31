@@ -25,11 +25,33 @@ public sealed class RequestDefinition
     /// </summary>
     public string? ExpectedStatusCodes { get; set; }
 
+    /// <summary>
+    /// Values to take from the response into the virtual user's variables, for later requests to use as <c>{{name}}</c>.
+    /// Plans saved before extraction existed have none.
+    /// </summary>
+    public List<ExtractionRule> Extractions { get; set; } = [];
+
+    /// <summary>
+    /// Sends this request on a virtual user's first iteration only, such as a login whose token later requests reuse.
+    /// If it fails, it is sent again on the next iteration, until it succeeds once.
+    /// </summary>
+    public bool OncePerVirtualUser { get; set; }
+
     [System.Text.Json.Serialization.JsonIgnore]
     public string DisplayName => string.IsNullOrWhiteSpace(Name) ? $"{Method} {Url}" : Name;
 
     /// <param name="parameters">The plan's parameter lists; URLs that use them are checked with their first values.</param>
-    public IEnumerable<string> Validate(ParameterSet? parameters = null)
+    /// <param name="variables">The names of the plan's extracted variables, which URLs may use too.</param>
+    /// <param name="environment">The selected environment's values, substituted into the URL before it is checked.</param>
+    /// <param name="forRun">
+    /// True when the request is about to be sent, so a variable nothing supplies is a problem. When saving, the
+    /// environment isn't chosen yet, so the URL is only checked as far as it can be.
+    /// </param>
+    public IEnumerable<string> Validate(
+        ParameterSet? parameters = null,
+        IReadOnlyCollection<string>? variables = null,
+        IReadOnlyDictionary<string, string>? environment = null,
+        bool forRun = false)
     {
         if (!SupportedMethods.Contains(Method, StringComparer.OrdinalIgnoreCase))
         {
@@ -37,10 +59,13 @@ public sealed class RequestDefinition
         }
 
         // Validate the URL with template variables replaced by harmless placeholders.
-        var probe = TemplateRenderer.RenderForValidation(Url, parameters);
+        var probe = TemplateRenderer.RenderForValidation(Url, parameters, variables, environment, assumeUnresolvedDefined: !forRun);
         if (!Uri.TryCreate(probe, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
-            yield return "URL must be an absolute http:// or https:// address.";
+            var missing = TemplateRenderer.UnresolvedNames(Url, environment, parameters, variables);
+            yield return missing.Count == 0
+                ? "URL must be an absolute http:// or https:// address."
+                : $"URL must be an absolute http:// or https:// address. No value for {string.Join(", ", missing.Select(m => "{{" + m + "}}"))}: choose an environment that defines it.";
         }
 
         if (!StatusCodeMatcher.TryParse(ExpectedStatusCodes, out _))
@@ -54,6 +79,11 @@ public sealed class RequestDefinition
             {
                 yield return "Header names cannot be empty.";
             }
+        }
+
+        foreach (var problem in Extractions.SelectMany(e => e.Validate()))
+        {
+            yield return problem;
         }
     }
 }

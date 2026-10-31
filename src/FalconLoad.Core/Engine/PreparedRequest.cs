@@ -24,23 +24,40 @@ internal sealed class PreparedRequest
 
     public StatusCodeMatcher Matcher { get; private set; } = StatusCodeMatcher.Default;
 
-    public static PreparedRequest From(RequestDefinition definition)
+    /// <summary>The request's extraction rules, or null when it extracts nothing.</summary>
+    public ResponseExtractor? Extractor { get; private set; }
+
+    public bool OncePerVirtualUser { get; private set; }
+
+    /// <param name="variables">
+    /// The selected environment's values, without the names a parameter list or an extracted variable supplies (see
+    /// <see cref="LoadTestPlan.EnvironmentValues"/>). They don't change during a run, so they are substituted here,
+    /// once, and text that only used them is then as cheap to send as text with no variables at all.
+    /// </param>
+    public static PreparedRequest From(RequestDefinition definition, IReadOnlyDictionary<string, string>? variables = null)
     {
         StatusCodeMatcher.TryParse(definition.ExpectedStatusCodes, out var matcher);
-        var hasBody = !string.IsNullOrEmpty(definition.Body);
+        var url = TemplateRenderer.ResolveVariables(definition.Url, variables);
+        var body = string.IsNullOrEmpty(definition.Body) ? null : TemplateRenderer.ResolveVariables(definition.Body, variables);
         var prepared = new PreparedRequest
         {
             _method = HttpMethod.Parse(definition.Method.ToUpperInvariant()),
-            _url = definition.Url.Trim(),
-            _urlHasVariables = TemplateRenderer.HasVariables(definition.Url),
-            _body = hasBody ? definition.Body : null,
-            _bodyHasVariables = hasBody && TemplateRenderer.HasVariables(definition.Body),
+            _url = url.Trim(),
+            _urlHasVariables = TemplateRenderer.HasVariables(url),
+            _body = body,
+            _bodyHasVariables = body is not null && TemplateRenderer.HasVariables(body),
             _contentType = string.IsNullOrWhiteSpace(definition.ContentType) ? "text/plain" : definition.ContentType.Trim(),
             _headers = definition.Headers
                 .Where(h => h.Enabled && !string.IsNullOrWhiteSpace(h.Name))
-                .Select(h => (h.Name.Trim(), h.Value, TemplateRenderer.HasVariables(h.Value)))
+                .Select(h =>
+                {
+                    var value = TemplateRenderer.ResolveVariables(h.Value, variables);
+                    return (h.Name.Trim(), value, TemplateRenderer.HasVariables(value));
+                })
                 .ToArray(),
             Matcher = matcher,
+            Extractor = ResponseExtractor.From(definition),
+            OncePerVirtualUser = definition.OncePerVirtualUser,
         };
 
         if (!prepared._urlHasVariables)
@@ -48,9 +65,9 @@ internal sealed class PreparedRequest
             prepared._staticUri = new Uri(prepared._url, UriKind.Absolute);
         }
 
-        if (hasBody && !prepared._bodyHasVariables)
+        if (body is not null && !prepared._bodyHasVariables)
         {
-            prepared._staticBody = Encoding.UTF8.GetBytes(definition.Body!);
+            prepared._staticBody = Encoding.UTF8.GetBytes(body);
         }
 
         return prepared;
