@@ -30,6 +30,8 @@ public sealed class LoadTestRun
         Plan = stored.Plan;
         StartedAt = stored.StartedAt;
         Snapshot = stored.Results;
+        Tags = stored.Tags;
+        Note = stored.Note;
     }
 
     public Guid Id { get; }
@@ -41,6 +43,17 @@ public sealed class LoadTestRun
 
     /// <summary>When the virtual users started. A run that waits for a shared start time is stamped when the wait ends.</summary>
     public DateTimeOffset StartedAt { get; private set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Tags such as the build under test. Replaced as a whole, so a reader never sees a half-edited list.</summary>
+    public IReadOnlyList<string> Tags { get; private set; } = [];
+
+    public string? Note { get; private set; }
+
+    internal void Annotate(IReadOnlyList<string> tags, string? note)
+    {
+        Tags = tags;
+        Note = note;
+    }
 
     /// <summary>The controller that asked this agent to run its share of a test, or null for a run started here.</summary>
     public string? Controller { get; init; }
@@ -75,6 +88,8 @@ public sealed class LoadTestRun
             Id = Id,
             StartedAt = StartedAt,
             Machine = Environment.MachineName,
+            Tags = Tags,
+            Note = Note,
             Plan = Plan,
             Results = snapshot,
             Histograms = histograms,
@@ -146,10 +161,18 @@ public sealed class RunManager(RunHistoryStore history, ILogger<RunManager> logg
     /// </summary>
     /// <param name="startAt">Waits until this time before sending anything, so agents of a distributed test start together.</param>
     /// <param name="controller">The controller that asked for the run, when it is a share of a distributed test.</param>
-    public LoadTestRun Start(LoadTestPlan plan, TestEnvironment? environment = null, DateTimeOffset? startAt = null, string? controller = null)
+    /// <param name="tags">Tags to label the run with. They must already be valid, see <see cref="RunLabels"/>.</param>
+    public LoadTestRun Start(
+        LoadTestPlan plan,
+        TestEnvironment? environment = null,
+        DateTimeOffset? startAt = null,
+        string? controller = null,
+        IReadOnlyList<string>? tags = null,
+        string? note = null)
     {
         var runner = new LoadTestRunner(plan, environment: environment);
         var run = new LoadTestRun(runner) { Controller = controller };
+        run.Annotate(tags ?? [], note);
         _runs[run.Id] = run;
         Trim();
 
@@ -204,6 +227,37 @@ public sealed class RunManager(RunHistoryStore history, ILogger<RunManager> logg
         {
             logger.LogError(ex, "Could not store load test {RunId} in the run history", run.Id);
         }
+    }
+
+    /// <summary>
+    /// Replaces a run's tags and note, in memory and in the run history. False if the run is in neither. The values must
+    /// already be valid, see <see cref="RunLabels"/>.
+    /// </summary>
+    public bool Annotate(Guid id, IReadOnlyList<string> tags, string? note)
+    {
+        var found = false;
+        if (_runs.TryGetValue(id, out var run))
+        {
+            run.Annotate(tags, note);
+            found = true;
+        }
+
+        try
+        {
+            found |= history.Annotate(id, tags, note);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            logger.LogError(ex, "Could not store the tags and note of run {RunId}", id);
+            throw;
+        }
+
+        if (found)
+        {
+            RunsChanged?.Invoke();
+        }
+
+        return found;
     }
 
     public bool Remove(Guid id)

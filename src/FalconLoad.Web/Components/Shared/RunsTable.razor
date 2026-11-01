@@ -30,6 +30,7 @@ else
                     <tr>
                         <td>
                             <a class="row-title" href="@row.Href">@row.Name</a>
+                            <RunTags Tags="row.Tags" />
                             @if (row.Agents is { } agents)
                             {
                                 <span class="badge badge-agents" title="@string.Join(", ", agents)"><Icon Name="agents" />@agents.Count @(agents.Count == 1 ? "agent" : "agents")</span>
@@ -80,8 +81,8 @@ else
 
     // Local runs and distributed ones are listed together, newest first, so a test is found where it was started.
     private void Reload() => _rows = RunManager.GetAll()
-        .Select(r => new Row(r.Plan.Name, $"runs/{r.Id}", r.StartedAt, r.Snapshot.State, r.Snapshot, null, r.Controller))
-        .Concat(DistributedRuns.GetAll().Select(r => new Row(r.Plan.Name, $"distributed/{r.Id}", r.StartedAt, r.Snapshot.State, r.Snapshot.Results, r.AgentNames, null)))
+        .Select(r => new Row(r.Plan.Name, $"runs/{r.Id}", r.StartedAt, r.Snapshot.State, r.Snapshot, null, r.Controller, r.Tags))
+        .Concat(DistributedRuns.GetAll().Select(r => new Row(r.Plan.Name, $"distributed/{r.Id}", r.StartedAt, r.Snapshot.State, r.Snapshot.Results, r.AgentNames, null, [])))
         .OrderByDescending(r => r.StartedAt)
         .ToList();
 
@@ -100,7 +101,7 @@ else
 
     /// <param name="Agents">The agents of a distributed run, or null for a run on this machine.</param>
     /// <param name="Controller">The controller a share of a distributed test came from, or null.</param>
-    private sealed record Row(string Name, string Href, DateTimeOffset StartedAt, RunState State, LoadTestSnapshot Results, IReadOnlyList<string>? Agents, string? Controller)
+    private sealed record Row(string Name, string Href, DateTimeOffset StartedAt, RunState State, LoadTestSnapshot Results, IReadOnlyList<string>? Agents, string? Controller, IReadOnlyList<string> Tags)
     {
         public bool IsFinished => State is RunState.Completed or RunState.Cancelled or RunState.Failed;
     }

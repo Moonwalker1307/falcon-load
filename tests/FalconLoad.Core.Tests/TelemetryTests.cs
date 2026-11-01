@@ -73,7 +73,11 @@ public class TelemetryTests
     [Fact]
     public async Task Prometheus_ReportsRequestsByOutcome_StatusCodes_AndALatencyHistogramPerRequest()
     {
-        var run = await RunOnce(TwoRequests(), CartOkPayFails());
+        // One virtual user, so the shared request count always ends after a whole iteration and each request is sent 10 times.
+        // With two, both users can take the last two slots for the first request.
+        var plan = TwoRequests();
+        plan.Profile.Concurrency = 1;
+        var run = await RunOnce(plan, CartOkPayFails());
 
         var text = PrometheusText.Write(TelemetryMetrics.Build([run]));
 

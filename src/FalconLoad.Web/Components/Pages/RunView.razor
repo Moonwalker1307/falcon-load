@@ -83,6 +83,50 @@
     </div>
 </div>
 
+<section class="card run-labels" aria-labelledby="labels-title">
+    <div class="card-header">
+        <h2 id="labels-title"><Icon Name="tag" />Tags and note</h2>
+        @if (!_editingLabels)
+        {
+            <button class="btn-sm" @onclick="EditLabels">@(_run.Tags.Count > 0 || _run.Note is not null ? "Edit" : "Add tags or a note")</button>
+        }
+    </div>
+    @if (_editingLabels)
+    {
+        <form @onsubmit="SaveLabels">
+            <div class="field">
+                <label for="run-tags">Tags</label>
+                <input id="run-tags" type="text" @bind="_tagsText" placeholder="build-42, 3f9c2ab" autocomplete="off" aria-describedby="run-tags-hint" />
+                <div class="hint" id="run-tags-hint">Separate tags with commas, up to @RunLabels.MaxTags. Use them for the build or commit under test; the test's history can be filtered by tag.</div>
+            </div>
+            <div class="field">
+                <label for="run-note">Note</label>
+                <textarea id="run-note" class="short" @bind="_noteText" maxlength="@RunLabels.MaxNoteLength"></textarea>
+            </div>
+            @if (_labelError is not null)
+            {
+                <div class="field-error" role="alert">@_labelError</div>
+            }
+            <div class="btn-group">
+                <button type="submit" class="btn-primary btn-sm">Save</button>
+                <button type="button" class="btn-sm" @onclick="() => _editingLabels = false">Cancel</button>
+            </div>
+        </form>
+    }
+    else if (_run.Tags.Count > 0 || _run.Note is not null)
+    {
+        <RunTags Tags="_run.Tags" />
+        @if (_run.Note is not null)
+        {
+            <p class="run-note">@_run.Note</p>
+        }
+    }
+    else
+    {
+        <p class="hint">Nothing yet. Tag a run with the build or commit it tested, or leave a note on what you changed.</p>
+    }
+</section>
+
 @* Announce state changes only; the numbers change every second and would be too noisy to read out. *@
 <div class="sr-only" role="status" aria-live="polite">@StateMessage(s)</div>
 
@@ -284,6 +328,10 @@
     private bool _stored;
     private bool _isBaseline;
     private RunHistoryEntry? _baseline;
+    private bool _editingLabels;
+    private string _tagsText = "";
+    private string _noteText = "";
+    private string? _labelError;
 
     [Parameter] public Guid Id { get; set; }
 
@@ -320,6 +368,39 @@
         LoadHistory();
         StateHasChanged();
     });
+
+    private void EditLabels()
+    {
+        _tagsText = string.Join(", ", _run!.Tags);
+        _noteText = _run.Note ?? "";
+        _labelError = null;
+        _editingLabels = true;
+    }
+
+    private void SaveLabels()
+    {
+        var problems = RunLabels.NormalizeTags(_tagsText.Split(','), out var tags);
+        var noteProblem = RunLabels.NormalizeNote(_noteText, out var note, out _);
+        if (problems.Count > 0 || noteProblem is not null)
+        {
+            _labelError = problems.Count > 0 ? problems[0] : noteProblem;
+            return;
+        }
+
+        try
+        {
+            RunManager.Annotate(_run!.Id, tags, note);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _labelError = "Couldn't save the tags and note to disk.";
+            return;
+        }
+
+        _editingLabels = false;
+        // A run read back from the history is a fresh object, so read it again to show what was saved.
+        OnParametersSet();
+    }
 
     private void SetBaseline()
     {

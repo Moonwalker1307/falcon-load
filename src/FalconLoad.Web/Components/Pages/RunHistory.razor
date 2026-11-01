@@ -94,6 +94,24 @@ else
             <button class="btn-sm" disabled="@(_selected.Count != 2)" @onclick="CompareSelected"><Icon Name="compare" />Compare selected</button>
         </div>
     </div>
+    @if (_allTags.Count > 0)
+    {
+        <div class="tag-filter" role="group" aria-label="Filter runs by tag">
+            <span class="small muted">Tags</span>
+            @foreach (var tag in _allTags)
+            {
+                <button type="button" class="tag" aria-pressed="@(_filter.Contains(tag, StringComparer.OrdinalIgnoreCase) ? "true" : "false")" @onclick="() => ToggleFilter(tag)">@tag</button>
+            }
+            @if (_filter.Count > 0)
+            {
+                <button type="button" class="btn-sm btn-ghost" @onclick="ClearFilter">Clear filter</button>
+            }
+        </div>
+    }
+    @if (_shown.Count == 0)
+    {
+        <div class="empty"><p>No runs have all of the selected tags.</p></div>
+    }
     <div class="table-wrap">
         <table class="table-hover stack-sm history-table">
             <thead>
@@ -109,7 +127,7 @@ else
                 </tr>
             </thead>
             <tbody>
-                @foreach (var run in _runs)
+                @foreach (var run in _shown)
                 {
                     var s = run.Results;
                     var isBaseline = run.RunId == _baseline?.RunId;
@@ -119,7 +137,13 @@ else
                             <input type="checkbox" checked="@_selected.Contains(run.RunId)" @onchange="e => Toggle(run.RunId, e.Value is true)"
                                    aria-label="Select the run started @run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")" />
                         </td>
-                        <td class="nowrap"><a class="row-title" href="runs/@run.RunId">@run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</a></td>
+                        <td class="nowrap"><a class="row-title" href="runs/@run.RunId">@run.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</a>
+                            <RunTags Tags="run.Tags" />
+                            @if (run.Note is not null)
+                            {
+                                <div class="run-note">@run.Note</div>
+                            }
+                        </td>
                         <td><RunStateBadge State="s.State" /></td>
                         <td class="num">
                             <span class="cell-label">Req/s</span>@Format.Rate(s.RequestsPerSecond)
@@ -189,6 +213,9 @@ else
 @code {
     private LoadTestPlan? _plan;
     private IReadOnlyList<RunHistoryEntry> _runs = [];
+    private IReadOnlyList<RunHistoryEntry> _shown = [];
+    private IReadOnlyList<string> _allTags = [];
+    private readonly List<string> _filter = [];
     private RunHistoryEntry? _baseline;
     private readonly List<Guid> _selected = [];
     private Guid? _confirmDelete;
@@ -209,6 +236,11 @@ else
         _plan = PlanStore.Get(PlanId);
         _runs = History.GetForPlan(PlanId);
         _baseline = History.GetBaseline(PlanId);
+        _allTags = History.GetTags(PlanId);
+
+        // A tag that no run has any more (its run was deleted or re-tagged) can't be selected, so it must not filter.
+        _filter.RemoveAll(t => !_allTags.Contains(t, StringComparer.OrdinalIgnoreCase));
+        _shown = _filter.Count == 0 ? _runs : _runs.Where(r => RunLabels.HasAll(r.Tags, _filter)).ToList();
         _selected.RemoveAll(id => _runs.All(r => r.RunId != id));
     }
 
@@ -217,6 +249,22 @@ else
         Load();
         StateHasChanged();
     });
+
+    private void ToggleFilter(string tag)
+    {
+        if (_filter.RemoveAll(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase)) == 0)
+        {
+            _filter.Add(tag);
+        }
+
+        Load();
+    }
+
+    private void ClearFilter()
+    {
+        _filter.Clear();
+        Load();
+    }
 
     private static MetricChange Metric(RunComparison c, string key) => c.Overall.First(m => m.Key == key);
 
