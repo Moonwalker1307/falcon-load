@@ -15,6 +15,12 @@ public sealed record RunExport
     /// <summary>The name of the machine that ran the test, shown in the combined view.</summary>
     public string? Machine { get; init; }
 
+    /// <summary>What the run tested, such as a build number or commit, so history can be filtered by it. Missing from older files.</summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
+
+    /// <summary>A free-text note about the run.</summary>
+    public string? Note { get; init; }
+
     public required LoadTestPlan Plan { get; init; }
 
     public required LoadTestSnapshot Results { get; init; }

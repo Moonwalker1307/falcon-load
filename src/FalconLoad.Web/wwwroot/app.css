@@ -260,6 +260,13 @@ td.actions .btn-group { justify-content: flex-end; }
 .badge-unsaved { background: var(--accent-soft); color: var(--accent); }
 .badge-saved { background: var(--ok-soft); color: var(--ok); }
 .badge-once { background: var(--info-soft); color: var(--text); font-weight: 500; }
+.tags { display: inline-flex; flex-wrap: wrap; gap: var(--space-1); vertical-align: middle; }
+.tag { display: inline-block; max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px .55em; border: 1px solid var(--border); border-radius: 999px; font-family: var(--mono); font-size: .76rem; color: var(--muted); background: transparent; }
+button.tag { cursor: pointer; }
+button.tag:hover { border-color: var(--info); color: var(--text); }
+button.tag[aria-pressed=true] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.tag-filter { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+.run-note { margin: var(--space-1) 0 0; font-size: .82rem; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .badge-baseline { background: var(--accent-soft); color: var(--accent); }
 @keyframes pulse { 50% { opacity: .3; } }
 .method { display: inline-block; min-width: 3.4em; font-family: var(--mono); font-weight: 700; font-size: .76rem; color: var(--accent); }

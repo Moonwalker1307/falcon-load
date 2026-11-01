@@ -160,14 +160,28 @@ public static class ApiEndpoints
             environments.Delete(id) ? Results.NoContent() : Results.NotFound());
 
         // The environment comes from ?environment=Name, or else from the test's own "environment" setting.
-        api.MapPost("/plans/{id:guid}/run", (Guid id, string? environment, PlanStore store, EnvironmentStore environments, RunManager runs) =>
-            store.Get(id) is { } plan ? StartRun(plan, environment, environments, runs) : Results.NotFound());
+        // ?tag=build-42&tag=abc123 and ?note=... label the run, e.g. with the build under test; see PUT /runs/{id}/annotations.
+        api.MapPost("/plans/{id:guid}/run", (Guid id, string? environment, [FromQuery] string[]? tag, string? note, PlanStore store, EnvironmentStore environments, RunManager runs) =>
+            store.Get(id) is { } plan ? StartRun(plan, environment, tag, note, environments, runs) : Results.NotFound());
 
         // Run an ad-hoc plan without saving it.
-        api.MapPost("/runs", (LoadTestPlan plan, string? environment, EnvironmentStore environments, RunManager runs) =>
-            StartRun(plan, environment, environments, runs));
+        api.MapPost("/runs", (LoadTestPlan plan, string? environment, [FromQuery] string[]? tag, string? note, EnvironmentStore environments, RunManager runs) =>
+            StartRun(plan, environment, tag, note, environments, runs));
 
-        api.MapGet("/runs", (RunManager runs) => runs.GetAll().Select(Summarize));
+        // ?tag= keeps only the runs that have every tag given.
+        api.MapGet("/runs", ([FromQuery] string[]? tag, RunManager runs) =>
+            runs.GetAll().Where(r => RunLabels.HasAll(r.Tags, tag ?? [])).Select(Summarize));
+
+        // Replaces a run's tags and note, also after it has finished; an empty list and note clear them.
+        api.MapPut("/runs/{id:guid}/annotations", (Guid id, AnnotationRequest body, RunManager runs) =>
+        {
+            if (!TryNormalizeLabels(body.Tags, body.Note, out var tags, out var note, out var problems))
+            {
+                return Results.ValidationProblem(problems);
+            }
+
+            return runs.Annotate(id, tags, note) ? Results.Ok(new { Tags = tags, Note = note }) : Results.NotFound();
+        });
 
         api.MapGet("/runs/{id:guid}", (Guid id, RunManager runs) =>
             runs.Get(id) is { } run ? Results.Ok(Detail(run)) : Results.NotFound());
@@ -186,10 +200,11 @@ public static class ApiEndpoints
             runs.Get(id) is { } run ? ReportDownload(run.ToExport(), ReportKind.JUnit) : Results.NotFound());
 
         // A saved test's stored runs and its baseline, so CI can fail a build when a run regresses.
-        api.MapGet("/plans/{id:guid}/history", (Guid id, PlanStore store, RunHistoryStore history) =>
+        // ?tag= keeps only the runs that have every tag given.
+        api.MapGet("/plans/{id:guid}/history", (Guid id, [FromQuery] string[]? tag, PlanStore store, RunHistoryStore history) =>
             store.Get(id) is null
                 ? Results.NotFound()
-                : Results.Ok(new { BaselineRunId = history.GetBaselineId(id), Runs = history.GetForPlan(id) }));
+                : Results.Ok(new { BaselineRunId = history.GetBaselineId(id), Runs = history.GetForPlan(id, tag) }));
 
         api.MapPut("/plans/{id:guid}/baseline", (Guid id, BaselineRequest body, PlanStore store, RunHistoryStore history) =>
         {
@@ -488,8 +503,35 @@ public static class ApiEndpoints
         P95LatencyMs = run.Snapshot.Results.Latency.P95Ms,
     };
 
-    private static IResult StartRun(LoadTestPlan plan, string? environmentName, EnvironmentStore environments, RunManager runs)
+    private static bool TryNormalizeLabels(
+        IEnumerable<string?>? rawTags,
+        string? rawNote,
+        out IReadOnlyList<string> tags,
+        out string? note,
+        out Dictionary<string, string[]> problems)
     {
+        problems = [];
+        var tagProblems = RunLabels.NormalizeTags(rawTags, out tags);
+        if (tagProblems.Count > 0)
+        {
+            problems["tags"] = [.. tagProblems];
+        }
+
+        if (RunLabels.NormalizeNote(rawNote, out note, out var noteProblem) is not null)
+        {
+            problems["note"] = [noteProblem!];
+        }
+
+        return problems.Count == 0;
+    }
+
+    private static IResult StartRun(LoadTestPlan plan, string? environmentName, string[]? rawTags, string? rawNote, EnvironmentStore environments, RunManager runs)
+    {
+        if (!TryNormalizeLabels(rawTags, rawNote, out var tags, out var note, out var labelProblems))
+        {
+            return Results.ValidationProblem(labelProblems);
+        }
+
         if (!environments.TryResolve(string.IsNullOrWhiteSpace(environmentName) ? plan.Environment : environmentName, out var environment, out var missing))
         {
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = [missing!] });
@@ -501,7 +543,7 @@ public static class ApiEndpoints
             return Results.ValidationProblem(new Dictionary<string, string[]> { ["plan"] = [.. problems] });
         }
 
-        var run = runs.Start(plan, environment);
+        var run = runs.Start(plan, environment, tags: tags, note: note);
         return Results.Accepted($"/api/runs/{run.Id}", Summarize(run));
     }
 
@@ -518,6 +560,8 @@ public static class ApiEndpoints
         PlanName = run.Plan.Name,
         run.StartedAt,
         run.EnvironmentName,
+        run.Tags,
+        run.Note,
         run.Snapshot.State,
         run.Snapshot.Elapsed,
         run.Snapshot.TotalRequests,
@@ -533,6 +577,8 @@ public static class ApiEndpoints
     {
         run.Id,
         run.StartedAt,
+        run.Tags,
+        run.Note,
         run.Plan,
         Results = run.Snapshot,
     };
@@ -571,6 +617,8 @@ public static class ApiEndpoints
 }
 
 public sealed record BaselineRequest(Guid RunId);
+
+public sealed record AnnotationRequest(string[]? Tags, string? Note);
 
 file static class ResultExtensions
 {

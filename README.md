@@ -45,6 +45,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Pass/fail thresholds** for the whole run, such as `p95 latency < 500 ms`, `error rate < 1%` or `throughput > 200 req/s`, for all requests or one of them. A run passes when it completes and every threshold holds; a stopped or failed run doesn't pass. The run page, the runs list and the JSON API show the verdict (`passed`: `true`, `false`, or `null` for a test without thresholds), so a CI job can fail on it. A threshold over requests that sent nothing fails.
 - **Live results**: a pixel-art falcon flies along the progress bar while a test runs. Requests, throughput, error rate, latency (mean, p50, p90, p95, p99, max), per-second throughput and latency charts, per-request breakdown, status code and error tables.
 - **Saved tests** persisted to `App_Data/plans.json` (change with the `FalconLoad:DataDirectory` setting). The last 50 runs are kept in memory and can be exported as JSON.
+- **Run tags and notes**: label a run with tags such as the build number or commit and a free-text note, when you start it (`?tag=` and `?note=` on the API, `--tag` and `--note` on the CLI) or afterwards on the run's page. The test's History page then filters by tag, so you can look at one build's runs on their own. Tags are kept with the run's export file, so they survive a restart and a combine of exports.
 - **Run history and baselines**: every finished run of a saved test is stored on disk, so a test's history survives a restart. A test's History page lists its last 30 runs with trend charts. Mark a good run as the **baseline**, and every other run shows its change from it, on the History page, on the run's own page (live while it runs) and on a side-by-side Compare page with both runs' charts overlaid and a per-request breakdown. Changes beyond the regression thresholds are highlighted: red for a regression, green for an improvement. You can also tick any two runs and compare them.
 - **Export and import tests** to share them between machines: "Export" on a test (or "Export all" on the dashboard) downloads a JSON file, and "Import…" on another machine loads it. Imported tests get new ids, so an import never overwrites a saved test, and a file is only imported when every test in it is valid. The file includes any header you typed in directly, such as `Authorization: Bearer abc`, so treat it like the tokens in it, or keep the token in an environment as a secret and write `{{token}}` in the header, which exports as `{{token}}`. The editor warns when a header like `Authorization` holds a plain value.
 - **Import requests** from a pasted curl command, a Postman collection (v2.0/v2.1) or an OpenAPI 3 spec (JSON or YAML) on the Import page, then create a new test or add them to an existing one. See [Importing requests](#importing-requests).
@@ -87,6 +88,8 @@ It runs every test in the file in order, shows live progress on standard error, 
 | `--env <name>` | The environment to run with. Default: the test's own environment, or the only one in the file |
 | `--var <name>=<value>` | Set a variable, overriding the environment's value. Can be repeated |
 | `--data <name>=<path>` | Use the CSV or JSON file at `<path>` instead of the rows saved in the test's [data file](#data-files) called `<name>`, such as `--data users.csv=./users.csv`. Can be repeated. A name no test uses, or a file that can't be read as a table, exits with `2` |
+| `--tag <tag>` | Tag the results, such as the build or commit under test. Can be repeated |
+| `--note <text>` | Attach a note to the results |
 | `--machine <name>` | The machine name recorded in the results; useful in containers, whose host names are random |
 | `--influx <url>` | Write live metrics to InfluxDB at this address, such as `http://localhost:8086`, with the token from the `INFLUX_TOKEN` environment variable. Needs `--influx-bucket` |
 | `--influx-bucket <name>`, `--influx-org <name>` | The InfluxDB bucket (the database on InfluxDB 1.8 and 3) and, for InfluxDB 2, the organization |
@@ -147,8 +150,8 @@ Both reports use the same verdict as the CLI's exit code: a test with thresholds
 | `POST` | `/api/import` | Turn a curl command, Postman collection or OpenAPI spec (the body) into a test; see [Importing requests](#importing-requests) |
 | `POST` | `/api/import/operations` | List the operations of an OpenAPI spec (the body), so you can choose which to import |
 | `DELETE` | `/api/plans/{id}` | Delete a saved test |
-| `POST` | `/api/plans/{id}/run` | Start a saved test. `?environment=Name` picks the environment; otherwise the test's own `environment` is used |
-| `POST` | `/api/runs` | Start an ad-hoc test (plan in the body, not saved). Takes `?environment=Name` too |
+| `POST` | `/api/plans/{id}/run` | Start a saved test. `?environment=Name` picks the environment; otherwise the test's own `environment` is used. Repeated `?tag=` and `?note=` label the run |
+| `POST` | `/api/runs` | Start an ad-hoc test (plan in the body, not saved). Takes `?environment=Name`, `?tag=` and `?note=` too |
 | `GET` | `/api/environments` | List environments. Secret values are `null` |
 | `GET` | `/api/environments/{id}` | One environment, secrets hidden |
 | `POST` | `/api/environments` | Create or update an environment. A secret sent with `"value": null` keeps its stored value |
@@ -156,13 +159,14 @@ Both reports use the same verdict as the CLI's exit code: a test with thresholds
 | `GET` | `/api/environments/export` | All environments as a JSON download, without secret values |
 | `GET` | `/api/environments/{id}/export` | One environment as a JSON download, without secret values |
 | `POST` | `/api/environments/import` | Save the environments from an exported file (the file is the body) |
-| `GET` | `/api/runs` | List recent runs, each with its `passed` verdict |
+| `GET` | `/api/runs` | List recent runs, each with its `passed` verdict, `tags` and `note`. Repeated `?tag=` keeps the runs that have every tag |
+| `PUT` | `/api/runs/{id}/annotations` | Replace a run's tags and note (`{ "tags": ["build-42"], "note": "…" }`), also after it finished |
 | `GET` | `/api/runs/{id}` | Live or final results, with `results.passed`, `results.thresholds`, `results.checks` and, for a test with OAuth2, `results.auth` |
 | `GET` | `/api/runs/{id}/export` | Results as a JSON download, with the latency histograms needed to combine them |
 | `GET` | `/api/runs/{id}/report` | A finished run as a self-contained HTML report, as a download |
 | `GET` | `/api/runs/{id}/junit` | A finished run as JUnit XML, as a download |
 | `POST` | `/api/runs/{id}/stop` | Stop a running test |
-| `GET` | `/api/plans/{id}/history` | A saved test's stored runs, newest first, and its baseline run id |
+| `GET` | `/api/plans/{id}/history` | A saved test's stored runs, newest first, and its baseline run id. Repeated `?tag=` keeps the runs that have every tag |
 | `PUT` | `/api/plans/{id}/baseline` | Make a stored run the baseline (`{ "runId": "…" }` in the body) |
 | `DELETE` | `/api/plans/{id}/baseline` | Clear the baseline |
 | `GET` | `/api/runs/{id}/compare` | Compare a run with the test's baseline, or with `?baseline={runId}`; `hasRegression` is true when anything regressed |
@@ -480,6 +484,8 @@ A run is compared with the baseline metric by metric. A change counts as a regre
 They apply to the whole run and to each request, matched by position in the test. Request counts, bytes and the maximum latency are shown but never judged, because the count follows from the load profile and one slow request moves the maximum. Change the defaults in `appsettings.json` under `FalconLoad:Regression`, or per call with query parameters of the same names in camel case, e.g. `/api/runs/{id}/compare?latencyPercent=5`. The comparison also warns when the load profile or a request's URL changed between the two runs, or when a run was stopped early, since those change what the numbers mean.
 
 How the history is stored: each finished run of a saved test is written whole, as its export file, to `runs/{id}.json` in the data directory, and `runs/index.json` holds the summaries and each test's baseline. A test keeps its newest 30 runs plus its baseline, however old; deleting a test deletes its history. Runs of tests that aren't saved, such as ad-hoc API runs, are not stored. A stored run opens, exports and combines like a run still in memory.
+
+Tags and notes: a run can have up to 10 tags of at most 64 characters (no commas) and a note of up to 2,000 characters. Tags are compared ignoring case, and filtering by several tags keeps the runs that have all of them. They are stored in the run's file and in the index like the rest of the summary, and `PUT /api/runs/{id}/annotations` rewrites both. Reports don't show them, and runs from before this feature simply have none. In CI, `curl -X POST "http://localhost:5299/api/plans/$id/run?tag=build-$BUILD&tag=$GIT_SHA"` ties a run to the commit it tested.
 
 ## Project layout
 
