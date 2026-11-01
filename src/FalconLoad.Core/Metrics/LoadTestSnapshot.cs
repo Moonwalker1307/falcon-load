@@ -34,6 +34,15 @@ public sealed record LoadTestSnapshot
 
     public required IReadOnlyList<ErrorCount> Errors { get; init; }
 
+    /// <summary>The errors of each request, so failures can be traced to the call that made them. Missing from results saved before error samples existed.</summary>
+    public IReadOnlyList<RequestErrorCount> RequestErrors { get; init; } = [];
+
+    /// <summary>
+    /// A few failed requests per request of the plan, kept whole enough to see why they failed: the URL, headers and the
+    /// start of the bodies, with secrets hidden. Missing from results saved before error samples existed.
+    /// </summary>
+    public IReadOnlyList<ErrorSample> ErrorSamples { get; init; } = [];
+
     public required IReadOnlyList<StepStats> Steps { get; init; }
 
     public required IReadOnlyList<TimelinePoint> Timeline { get; init; }
@@ -74,6 +83,66 @@ public sealed record LoadTestSnapshot
 public sealed record AuthStats(long TokensFetched, long FailedFetches, string? LastError, double? TokenLifetimeSeconds);
 
 public sealed record ErrorCount(string Message, long Count);
+
+/// <summary>How often one request of the plan failed with one error.</summary>
+public sealed record RequestErrorCount(int StepIndex, string Message, long Count);
+
+/// <summary>
+/// One failed request, kept as an example of an error. Secrets of the run's environment and its OAuth2 tokens are
+/// hidden everywhere in it, and the values of headers that carry credentials are never kept.
+/// </summary>
+public sealed record ErrorSample
+{
+    /// <summary>The headers whose values are always hidden, whatever their value is.</summary>
+    public static readonly IReadOnlySet<string> CredentialHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "X-Api-Key", "Api-Key", "X-Auth-Token", "X-Access-Token",
+    };
+
+    /// <summary>How much of each body is kept.</summary>
+    public const int MaxBodyChars = 2048;
+
+    public int StepIndex { get; init; }
+
+    /// <summary>The method for HTTP, otherwise the protocol: GraphQL, WS or gRPC.</summary>
+    public string Method { get; init; } = string.Empty;
+
+    /// <summary>The request's <see cref="Model.RequestDefinition.Route"/>.</summary>
+    public string Route { get; init; } = string.Empty;
+
+    /// <summary>The URL that was called, with its placeholders filled in.</summary>
+    public string? Url { get; init; }
+
+    /// <summary>When the request started, in seconds from the start of the run.</summary>
+    public double AtSeconds { get; init; }
+
+    public double LatencyMs { get; init; }
+
+    /// <summary>The status code, the protocol's status such as a gRPC code, or "No response".</summary>
+    public string Status { get; init; } = RequestResult.NoResponseStatus;
+
+    public string Error { get; init; } = string.Empty;
+
+    public IReadOnlyList<SampleHeader> RequestHeaders { get; init; } = [];
+
+    /// <summary>The body that was sent, or null when there was none.</summary>
+    public SampleBody? RequestBody { get; init; }
+
+    public IReadOnlyList<SampleHeader> ResponseHeaders { get; init; } = [];
+
+    /// <summary>The start of the response body, or null when no response came back or its body wasn't read.</summary>
+    public SampleBody? ResponseBody { get; init; }
+
+    /// <summary>The machine that sent the request, in the combined results of several machines.</summary>
+    public string? Machine { get; init; }
+}
+
+public sealed record SampleHeader(string Name, string Value);
+
+/// <param name="Text">The start of the body as text; null when it is binary, such as a protobuf message.</param>
+/// <param name="Bytes">The size of the whole body, or of the part that was read.</param>
+/// <param name="Truncated">True when <paramref name="Text"/> is only the start of the body.</param>
+public sealed record SampleBody(string? Text, long Bytes, bool Truncated);
 
 /// <summary>How often one check on a request passed and failed. Only responses are checked, not transport errors.</summary>
 public sealed record CheckStats(int StepIndex, string Name, long Passed, long Failed);

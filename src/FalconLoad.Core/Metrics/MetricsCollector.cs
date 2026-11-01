@@ -15,6 +15,7 @@ public sealed class MetricsCollector
     private readonly long[] _checkedResponses;
     private readonly Dictionary<string, long> _statusCodes = new();
     private readonly Dictionary<string, long> _errors = new();
+    private readonly Dictionary<(int Step, string Message), long> _stepErrors = new();
     private readonly SortedDictionary<int, SecondBucket> _timeline = new();
 
     private long _successful;
@@ -36,7 +37,11 @@ public sealed class MetricsCollector
         _checkNames = stepNames.Select((_, i) => stepChecks is null || i >= stepChecks.Count ? [] : stepChecks[i].ToArray()).ToArray();
         _checkFailures = _checkNames.Select(names => new long[names.Length]).ToArray();
         _checkedResponses = new long[stepNames.Count];
+        Sampler = new ErrorSampler(stepNames.Count);
     }
+
+    /// <summary>The failed requests kept as examples; they appear in every snapshot.</summary>
+    public ErrorSampler Sampler { get; }
 
     public void Record(in RequestResult result)
     {
@@ -78,6 +83,15 @@ public sealed class MetricsCollector
                 {
                     _errors["Other errors"] = _errors.GetValueOrDefault("Other errors") + 1;
                 }
+
+                // The same error on two requests is counted apart, so a failure can be traced to its call.
+                var key = (result.StepIndex, message);
+                if (!_stepErrors.ContainsKey(key) && _stepErrors.Count >= MaxDistinctErrors)
+                {
+                    key = (result.StepIndex, "Other errors");
+                }
+
+                _stepErrors[key] = _stepErrors.GetValueOrDefault(key) + 1;
             }
 
             // Attribute the request to the second in which it completed.
@@ -155,6 +169,9 @@ public sealed class MetricsCollector
             Latency = _overall.ToStats(),
             StatusCodes = new SortedDictionary<string, long>(_statusCodes),
             Errors = _errors.OrderByDescending(e => e.Value).Select(e => new ErrorCount(e.Key, e.Value)).ToList(),
+            RequestErrors = _stepErrors.OrderBy(e => e.Key.Step).ThenByDescending(e => e.Value)
+                .Select(e => new RequestErrorCount(e.Key.Step, e.Key.Message, e.Value)).ToList(),
+            ErrorSamples = Sampler.Samples(),
             Steps = _steps.Select((h, i) => new StepStats(i, _stepNames[i], h.Count, _stepFailures[i], h.ToStats())).ToList(),
             Timeline = timeline,
             Checks = CheckStatsLocked(),

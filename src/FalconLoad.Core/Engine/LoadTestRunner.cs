@@ -302,6 +302,8 @@ public sealed class LoadTestRunner : IAsyncDisposable
         // request sent once is reused by every later request. Each user also reuses one buffer for the bodies it keeps.
         var variables = _extracts ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) : null;
         var kept = _keepsBodies ? new ResponseBuffer() : null;
+        // Where the start of a body is kept for an error sample when nothing else keeps it. It only grows once a failure is sampled.
+        var sampled = new ResponseBuffer(initialSize: 0);
         var done = _hasOnceRequests ? new bool[_requests.Length] : null;
         // WebSocket connections belong to the virtual user and stay open across its iterations until it stops.
         var sockets = _hasWebSockets ? new WebSocketConnections(_webSockets) : null;
@@ -346,7 +348,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
                     var result = _requests[step].Protocol == RequestProtocol.WebSocket
                         ? await SendWebSocketAsync(step, context, buffer, variables, kept, sockets!, stop).ConfigureAwait(false)
-                        : await SendAsync(step, context, buffer, variables, kept, stop).ConfigureAwait(false);
+                        : await SendAsync(step, context, buffer, variables, kept, sampled, stop).ConfigureAwait(false);
                     if (result is { } r)
                     {
                         _metrics.Record(r);
@@ -436,12 +438,14 @@ public sealed class LoadTestRunner : IAsyncDisposable
     /// <summary>Sends one request. Returns null when the run was stopped while the request was in flight.</summary>
     /// <param name="variables">The virtual user's extracted variables, the same ones <paramref name="context"/> reads.</param>
     /// <param name="kept">The virtual user's buffer for bodies that checks or extraction rules read, or null when none do.</param>
+    /// <param name="sampled">The virtual user's buffer for the start of a body an error sample may show.</param>
     private async Task<RequestResult?> SendAsync(
         int step,
         TemplateContext context,
         byte[] buffer,
         Dictionary<string, string>? variables,
         ResponseBuffer? kept,
+        ResponseBuffer sampled,
         CancellationToken stop)
     {
         var prepared = _requests[step];
@@ -474,10 +478,18 @@ public sealed class LoadTestRunner : IAsyncDisposable
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop);
         timeout.CancelAfter(TimeSpan.FromSeconds(_plan.Profile.TimeoutSeconds));
 
+        // The request outlives the try block, so an error sample of a transport error can still show what was sent.
+        HttpRequestMessage? request = null;
         try
         {
-            using var request = prepared.Build(context, out bytesSent, token?.Header);
+            request = prepared.Build(context, out bytesSent, token?.Header);
             using var response = await _invoker.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            var code = (int)response.StatusCode;
+
+            // An unexpected status is a failure whatever the body says, so the start of the body is kept for an error
+            // sample while one is wanted. A body that checks read is kept already.
+            var sample = keep is null && !prepared.HttpStatusMatches(code) && _metrics.Sampler.Wants(step) ? sampled : null;
+            sample?.Reset(ErrorSampleBuilder.MaxBodyBytes);
 
             long received = 0;
             await using (var body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false))
@@ -487,12 +499,12 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 {
                     received += read;
                     keep?.Append(buffer.AsSpan(0, read));
+                    sample?.Append(buffer.AsSpan(0, read));
                 }
             }
 
             // The clock stops once the body is read; checks and extraction are not part of the request's latency.
             var latency = Stopwatch.GetElapsedTime(start);
-            var code = (int)response.StatusCode;
             if (code == 401 && token is not null)
             {
                 _tokens!.Reject(token);
@@ -501,6 +513,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
             var statusMatches = prepared.HttpStatusMatches(code);
             var statusLabel = prepared.StatusLabel(response);
             var keptBody = keep?.Memory ?? ReadOnlyMemory<byte>.Empty;
+            var decodedBody = false;
             string? error = null;
             var protocolError = statusMatches ? prepared.ProtocolError(response, keptBody.Span, keep?.TooLarge ?? false) : null;
             if (keep is not null && prepared.Protocol == RequestProtocol.Grpc && !keep.TooLarge)
@@ -509,6 +522,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 try
                 {
                     keptBody = prepared.ReadableBody(keptBody, decoded ??= new System.Buffers.ArrayBufferWriter<byte>());
+                    decodedBody = true;
                 }
                 catch (Grpc.ProtobufException ex)
                 {
@@ -544,13 +558,27 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 error ??= extractError;
             }
 
+            var masked = Mask(error);
+            if (masked is not null && _metrics.Sampler.TryReserve(step, masked))
+            {
+                // A gRPC body is protobuf, so it is shown as the JSON the checks read when it was decoded, and otherwise not at all.
+                SampleBody? responseBody = prepared.Protocol == RequestProtocol.Grpc
+                    ? decodedBody ? ErrorSampleBuilder.Body(keptBody.Span, received, false, MaskText) : new SampleBody(null, received, false)
+                    : keep is not null ? ErrorSampleBuilder.Body(keep.Memory.Span, received, keep.TooLarge || keep.Length < received, MaskText)
+                    : sample is not null ? ErrorSampleBuilder.Body(sample.Memory.Span, received, sample.Length < received, MaskText)
+                    : null;
+                _metrics.Sampler.Add(ErrorSampleBuilder.Build(
+                    prepared, step, startedAt, latency, statusLabel ?? code.ToString(System.Globalization.CultureInfo.InvariantCulture), masked, MaskText,
+                    request.RequestUri?.ToString(), ErrorSampleBuilder.RequestHeaders(request), SentBody(request, bytesSent), response, responseBody));
+            }
+
             return new RequestResult(
                 step,
                 startedAt,
                 latency,
                 statusLabel is null ? code : null,
                 error is null,
-                Mask(error),
+                masked,
                 bytesSent,
                 received,
                 failedChecks,
@@ -578,13 +606,33 @@ public sealed class LoadTestRunner : IAsyncDisposable
         {
             return Failure($"{ex.GetType().Name}: {ex.Message}");
         }
+        finally
+        {
+            request?.Dispose();
+        }
 
-        RequestResult Failure(string error) =>
-            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, Mask(error), bytesSent, 0);
+        RequestResult Failure(string error)
+        {
+            var latency = Stopwatch.GetElapsedTime(start);
+            var masked = MaskText(error);
+            if (_metrics.Sampler.TryReserve(step, masked))
+            {
+                _metrics.Sampler.Add(ErrorSampleBuilder.Build(
+                    prepared, step, startedAt, latency, RequestResult.NoResponseStatus, masked, MaskText,
+                    request?.RequestUri?.ToString(), request is null ? null : ErrorSampleBuilder.RequestHeaders(request), SentBody(request, bytesSent)));
+            }
+
+            return new(step, startedAt, latency, null, false, masked, bytesSent, 0);
+        }
+
+        SampleBody? SentBody(HttpRequestMessage? sent, long length) =>
+            ErrorSampleBuilder.RequestBody(sent, length, prepared.Protocol == RequestProtocol.Grpc, MaskText);
     }
 
     /// <summary>Hides secrets, and the OAuth2 tokens of the run, in text that people will see.</summary>
-    private string? Mask(string? text) => text is null ? null : _tokens?.Mask(text) ?? _masker.Apply(text);
+    private string? Mask(string? text) => text is null ? null : MaskText(text);
+
+    private string MaskText(string text) => _tokens?.Mask(text) ?? _masker.Apply(text);
 
     /// <summary>
     /// Sends one WebSocket message on the virtual user's connection to its address, connecting first when there is none,
@@ -610,6 +658,8 @@ public sealed class LoadTestRunner : IAsyncDisposable
         var start = Stopwatch.GetTimestamp();
         long bytesSent = 0;
         Uri? uri = null;
+        IReadOnlyList<KeyValuePair<string, string>>? handshake = null;
+        var message = ReadOnlyMemory<byte>.Empty;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop);
         timeout.CancelAfter(TimeSpan.FromSeconds(_plan.Profile.TimeoutSeconds));
@@ -631,8 +681,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         try
         {
             uri = prepared.ResolveUri(context);
-            var socket = await sockets.GetAsync(uri, prepared.HandshakeHeaders(context, token?.Header), timeout.Token).ConfigureAwait(false);
-            var message = prepared.Message(context);
+            handshake = prepared.HandshakeHeaders(context, token?.Header);
+            var socket = await sockets.GetAsync(uri, handshake, timeout.Token).ConfigureAwait(false);
+            message = prepared.Message(context);
             if (message.Length > 0)
             {
                 await socket.SendAsync(message, WebSocketMessageType.Text, endOfMessage: true, timeout.Token).ConfigureAwait(false);
@@ -664,7 +715,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
             if (error is not null)
             {
                 sockets.Drop(uri);
-                return new RequestResult(step, startedAt, latency, null, false, Mask(error), bytesSent, received);
+                return new RequestResult(step, startedAt, latency, null, false, Sample(error, latency, RequestResult.NoResponseStatus, null), bytesSent, received);
             }
 
             ulong failedChecks = 0;
@@ -690,13 +741,19 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 await sockets.CloseAsync(uri, stop).ConfigureAwait(false);
             }
 
+            var masked = error is null ? null : Sample(
+                error,
+                latency,
+                RequestResult.ReplyStatus,
+                keep is null ? null : ErrorSampleBuilder.Body(keep.Memory.Span, received, keep.TooLarge, MaskText));
+
             return new RequestResult(
                 step,
                 startedAt,
                 latency,
                 null,
                 error is null,
-                Mask(error),
+                masked,
                 bytesSent,
                 received,
                 failedChecks,
@@ -736,8 +793,29 @@ public sealed class LoadTestRunner : IAsyncDisposable
             }
         }
 
-        RequestResult Failure(string error) =>
-            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, Mask(error), bytesSent, 0);
+        RequestResult Failure(string error)
+        {
+            var latency = Stopwatch.GetElapsedTime(start);
+            return new(step, startedAt, latency, null, false, Sample(error, latency, RequestResult.NoResponseStatus, null), bytesSent, 0);
+        }
+
+        // Masks the error and keeps the request as an error sample while one is wanted. The handshake's headers stand
+        // for the request's headers, and the message for its body.
+        string Sample(string error, TimeSpan latency, string status, SampleBody? reply)
+        {
+            var masked = MaskText(error);
+            if (_metrics.Sampler.TryReserve(step, masked))
+            {
+                _metrics.Sampler.Add(ErrorSampleBuilder.Build(
+                    prepared, step, startedAt, latency, status, masked, MaskText,
+                    uri?.ToString(),
+                    handshake is null ? null : ErrorSampleBuilder.Pairs(handshake),
+                    message.IsEmpty ? null : ErrorSampleBuilder.Body(message.Span, message.Length, false, MaskText),
+                    responseBody: reply));
+            }
+
+            return masked;
+        }
     }
 
     internal static string DescribeWebSocketError(WebSocketException ex)

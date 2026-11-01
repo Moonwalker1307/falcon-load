@@ -46,6 +46,19 @@ public static class ReportFormat
 
     public static string Count(long n) => n.ToString("#,0", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// A request of the plan as its method and route, such as <c>GET /users/{{id}}</c>. The route comes from the URL as
+    /// written, so it holds no environment values and may appear in reports.
+    /// </summary>
+    public static string RequestRoute(LoadTestPlan plan, int step) =>
+        step >= 0 && step < plan.Requests.Count ? $"{plan.Requests[step].Label} {plan.Requests[step].Route}" : $"Request {step + 1}";
+
+    /// <summary>The most frequent errors with the request that made them, for text reports; falls back to the errors alone for results saved before errors were counted per request.</summary>
+    public static IEnumerable<(long Count, string Text)> ErrorLines(LoadTestPlan plan, Metrics.LoadTestSnapshot s, int max) =>
+        s.RequestErrors.Count > 0
+            ? s.RequestErrors.OrderByDescending(e => e.Count).Take(max).Select(e => (e.Count, $"{RequestRoute(plan, e.StepIndex)}: {e.Message}"))
+            : s.Errors.Take(max).Select(e => (e.Count, e.Message));
+
     /// <summary>The load a profile applies, in one line, such as "20 virtual users, for 30s".</summary>
     public static string DescribeProfile(LoadProfile profile)
     {

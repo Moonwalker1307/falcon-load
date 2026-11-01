@@ -1,0 +1,96 @@
+@* The errors of each request with the call's method and route, and the failed requests kept as samples. Renders nothing until a request fails. *@
+@if (_failing.Count > 0)
+{
+    <section class="card card-flush" aria-labelledby="@_id">
+        <div class="card-header">
+            <h2 id="@_id">Errors by request</h2>
+            <span class="hint">up to @ErrorSampler.MaxPerRequest sampled failures per request, secrets hidden</span>
+        </div>
+        @foreach (var step in _failing)
+        {
+            var def = Plan is not null && step.StepIndex < Plan.Requests.Count ? Plan.Requests[step.StepIndex] : null;
+            var samples = Snapshot.ErrorSamples.Where(e => e.StepIndex == step.StepIndex).ToList();
+            var method = samples.FirstOrDefault()?.Method ?? def?.Label ?? "";
+            var route = samples.FirstOrDefault()?.Route ?? def?.Route ?? "";
+            <div class="error-group">
+                <div class="error-group-head">
+                    <span class="step-num">@(step.StepIndex + 1)</span>
+                    <span class="@Format.MethodClass(method)">@method</span>
+                    <span class="mono error-route" title="@route">@route</span>
+                    @if (def is not null && !string.IsNullOrWhiteSpace(def.Name))
+                    {
+                        <span class="muted small">@def.Name</span>
+                    }
+                    <span class="error-group-count status-err">@step.Failures.ToString("#,0") failed (@Format.Percent(step.Requests == 0 ? 0 : (double)step.Failures / step.Requests))</span>
+                </div>
+                <table class="error-messages">
+                    <tbody>
+                        @foreach (var error in Snapshot.RequestErrors.Where(e => e.StepIndex == step.StepIndex))
+                        {
+                            <tr>
+                                <td class="small">@error.Message</td>
+                                <td class="num status-err">@error.Count.ToString("#,0")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                @foreach (var sample in samples)
+                {
+                    <details class="error-sample">
+                        <summary>
+                            <strong class="mono @Format.StatusClass(sample.Status)">@sample.Status</strong>
+                            <span class="error-sample-message">@sample.Error</span>
+                            <span class="muted small">at @sample.AtSeconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)s · @Format.Ms(sample.LatencyMs)@(sample.Machine is null ? "" : $" · {sample.Machine}")</span>
+                        </summary>
+                        <div class="probe">
+                            @if (sample.Url is not null)
+                            {
+                                <span class="probe-label">Request</span>
+                                <pre>@sample.Method @sample.Url</pre>
+                            }
+                            @if (sample.RequestHeaders.Count > 0)
+                            {
+                                <span class="probe-label">@(sample.Method == "WS" ? "Handshake headers" : "Request headers")</span>
+                                <pre>@Lines(sample.RequestHeaders)</pre>
+                            }
+                            @if (sample.RequestBody is { } sent)
+                            {
+                                <span class="probe-label">@(sample.Method == "WS" ? "Message" : "Request body") · @Format.Bytes(sent.Bytes)</span>
+                                <pre>@BodyText(sent)</pre>
+                            }
+                            @if (sample.ResponseHeaders.Count > 0)
+                            {
+                                <span class="probe-label">@(sample.Method == "gRPC" ? "Response headers and trailers" : "Response headers")</span>
+                                <pre>@Lines(sample.ResponseHeaders)</pre>
+                            }
+                            @if (sample.ResponseBody is { } received)
+                            {
+                                <span class="probe-label">@(sample.Method == "WS" ? "Reply" : "Response body") · @Format.Bytes(received.Bytes)</span>
+                                <pre>@BodyText(received)</pre>
+                            }
+                        </div>
+                    </details>
+                }
+            </div>
+        }
+    </section>
+}
+
+@code {
+    private readonly string _id = $"error-drill-{Guid.NewGuid():N}";
+    private List<StepStats> _failing = [];
+
+    [Parameter, EditorRequired] public LoadTestSnapshot Snapshot { get; set; } = default!;
+
+    /// <summary>The plan the results belong to, for the routes of requests that have no sample.</summary>
+    [Parameter] public LoadTestPlan? Plan { get; set; }
+
+    protected override void OnParametersSet() => _failing = Snapshot.Steps.Where(s => s.Failures > 0).ToList();
+
+    private static string Lines(IReadOnlyList<SampleHeader> headers) => string.Join("\n", headers.Select(h => $"{h.Name}: {h.Value}"));
+
+    private static string BodyText(SampleBody body) =>
+        body.Text is null ? "(binary data, not shown)"
+        : body.Text.Length == 0 ? "(empty)"
+        : body.Truncated ? body.Text + "\n…" : body.Text;
+}

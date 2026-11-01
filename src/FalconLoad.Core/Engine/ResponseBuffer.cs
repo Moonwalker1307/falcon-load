@@ -8,8 +8,14 @@ namespace FalconLoad.Core.Engine;
 /// </summary>
 internal sealed class ResponseBuffer
 {
-    private byte[] _bytes = new byte[16 * 1024];
+    private byte[] _bytes;
     private int _limit = Assertion.MaxBodyBytes;
+
+    /// <param name="initialSize">The bytes to set aside at once; a buffer that is rarely used can start empty.</param>
+    public ResponseBuffer(int initialSize = 16 * 1024)
+    {
+        _bytes = new byte[initialSize];
+    }
 
     public int Length { get; private set; }
 

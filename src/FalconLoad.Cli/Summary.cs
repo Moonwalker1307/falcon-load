@@ -61,14 +61,15 @@ internal static class Summary
         if (s.Errors.Count > 0)
         {
             text.AppendLine("  Errors");
-            foreach (var error in s.Errors.Take(10))
+            foreach (var (count, error) in ErrorLines(plan, s, 10))
             {
-                text.AppendLine(Invariant($"    {error.Count,10:#,0} x {error.Message}"));
+                text.AppendLine(Invariant($"    {count,10:#,0} x {error}"));
             }
 
-            if (s.Errors.Count > 10)
+            var kinds = s.RequestErrors.Count > 0 ? s.RequestErrors.Count : s.Errors.Count;
+            if (kinds > 10)
             {
-                text.AppendLine(Invariant($"    and {s.Errors.Count - 10} other kinds of error"));
+                text.AppendLine(Invariant($"    and {kinds - 10} other kinds of error"));
             }
         }
 
