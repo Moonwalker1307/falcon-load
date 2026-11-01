@@ -21,11 +21,14 @@ internal sealed record CliOptions
         Options:
           --test <name>               Run only the test with this name. By default every test in the file runs, in order.
           --out <path>                Write the results as JSON, in the same format as an export from the web UI.
-                                      When several tests run, <path> is a directory that gets one file per test.
-          --html <path>               Write an HTML report of each test. When several tests run, <path> is a directory
-                                      that gets one file per test.
+                                      When several tests run, or <path> ends in a slash, <path> is a directory that
+                                      gets one file per test.
+          --html <path>               Write an HTML report of each test. When several tests run, or <path> ends in a
+                                      slash, <path> is a directory that gets one file per test.
           --junit <path>              Write the results as JUnit XML for a CI system's test report: one file, with a
                                       test suite per test and a test case per threshold.
+          --markdown <path>           Write a Markdown summary of every test to one file, for a pull request comment
+                                      or a CI job's summary page.
           --concurrency <n>           Use this many virtual users instead of the number in the file.
           --duration <seconds>        Run each test for this long instead of the file's stop condition.
           --requests <n>              Send this many requests per test instead of the file's stop condition.
@@ -66,6 +69,8 @@ internal sealed record CliOptions
     public string? Html { get; init; }
 
     public string? Junit { get; init; }
+
+    public string? Markdown { get; init; }
 
     public int? Concurrency { get; init; }
 
@@ -200,6 +205,9 @@ internal sealed record CliOptions
                 case "--junit":
                     options = options with { Junit = value };
                     break;
+                case "--markdown":
+                    options = options with { Markdown = value };
+                    break;
                 case "--machine":
                     options = options with { Machine = value };
                     break;
@@ -319,7 +327,7 @@ internal sealed record CliOptions
             return null;
         }
 
-        foreach (var (name, path) in new[] { ("--out", options.Out), ("--html", options.Html), ("--junit", options.Junit) })
+        foreach (var (name, path) in new[] { ("--out", options.Out), ("--html", options.Html), ("--junit", options.Junit), ("--markdown", options.Markdown) })
         {
             if (path is not null && !IsValidPath(path, out var problem))
             {
@@ -354,7 +362,7 @@ internal sealed record CliOptions
 
     private static readonly HashSet<string> ValueOptions =
         [
-            "--test", "--out", "--html", "--junit", "--machine", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate",
+            "--test", "--out", "--html", "--junit", "--markdown", "--machine", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate",
             "--influx", "--influx-bucket", "--influx-org", "--otlp", "--metrics-interval",
         ];
 

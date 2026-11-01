@@ -1,0 +1,177 @@
+# The falcon-load step template for Azure Pipelines: checks out and builds falcon-load, runs the tests in an exported
+# falcon-load file, publishes the JUnit results, the reports and a summary, comments on the pull request, and fails the
+# job when a test fails its thresholds. See "CI integrations" in README.md for how to reference it.
+#
+# The scripts run in PowerShell 7 (pwsh), which every Microsoft-hosted agent has, so the template works on Linux,
+# Windows and macOS agents alike.
+parameters:
+  # The exported falcon-load file with the tests to run, relative to workingDirectory.
+  - name: file
+    type: string
+  # Run only the test with this name. By default every test in the file runs.
+  - name: test
+    type: string
+    default: ''
+  # An environments file exported from the web UI, and the environment to use from it.
+  - name: envFile
+    type: string
+    default: ''
+  - name: env
+    type: string
+    default: ''
+  # Variables to set, one name=value per line.
+  - name: vars
+    type: string
+    default: ''
+  # Secret variables, as a mapping from FALCON_LOAD_<name> to a secret pipeline variable, such as
+  # { FALCON_LOAD_token: $(apiToken) }. Azure Pipelines hands secrets to a script only when they are mapped like this.
+  - name: secrets
+    type: object
+    default: {}
+  # Data files to use instead of the rows saved in the test, one name=path per line, such as users.csv=./users.csv.
+  - name: data
+    type: string
+    default: ''
+  - name: concurrency
+    type: string
+    default: ''
+  - name: duration
+    type: string
+    default: ''
+  - name: requests
+    type: string
+    default: ''
+  # Fail a test when more than this percentage of its requests fail.
+  - name: maxErrorRate
+    type: string
+    default: ''
+  # More options for falcon-load run, one option and its value per line, split on spaces.
+  - name: args
+    type: string
+    default: ''
+  # The folder that relative paths start from.
+  - name: workingDirectory
+    type: string
+    default: $(System.DefaultWorkingDirectory)
+  # Where the JSON results, HTML reports, JUnit XML and Markdown summary are written.
+  - name: resultsDirectory
+    type: string
+    default: $(Build.ArtifactStagingDirectory)/falcon-load
+  # Fail the job when a test fails. Set it to false to only report the result. Invalid input always fails.
+  - name: failOnError
+    type: boolean
+    default: true
+  # Post the summary on the pull request (Azure Repos only), updating the same comment on every run.
+  - name: comment
+    type: boolean
+    default: true
+  # Tells comments apart when several jobs of one pull request use the template. Default: the job's name.
+  - name: commentKey
+    type: string
+    default: ''
+  - name: publishTestResults
+    type: boolean
+    default: true
+  - name: publishArtifact
+    type: boolean
+    default: true
+  - name: artifactName
+    type: string
+    default: falcon-load-results
+  # The repository resource that holds falcon-load, checked out by the template. Set it to '' when an earlier step has
+  # already put the falcon-load source at falconLoadPath.
+  - name: falconLoadRepository
+    type: string
+    default: falconload
+  - name: falconLoadPath
+    type: string
+    default: $(Agent.BuildDirectory)/falcon-load
+
+steps:
+  - ${{ if ne(parameters.falconLoadRepository, '') }}:
+      - checkout: ${{ parameters.falconLoadRepository }}
+        path: falcon-load
+        fetchDepth: 1
+        displayName: Check out falcon-load
+
+  - task: UseDotNet@2
+    displayName: Set up .NET for falcon-load
+    inputs:
+      useGlobalJson: true
+      workingDirectory: ${{ parameters.falconLoadPath }}
+
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $out = Join-Path $env:AGENT_TEMPDIRECTORY 'falcon-load-tool'
+      dotnet publish (Join-Path $env:FALCON_LOAD_SOURCE 'src/FalconLoad.Cli/FalconLoad.Cli.csproj') -c Release -o $out --nologo -v quiet
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      Write-Host "##vso[task.setvariable variable=FalconLoadTool]$(Join-Path $out 'falcon-load.dll')"
+    displayName: Build falcon-load
+    env:
+      FALCON_LOAD_SOURCE: ${{ parameters.falconLoadPath }}
+
+  # Parameters reach the script as environment variables, never pasted into it, so a value can't run as code.
+  - pwsh: '& (Join-Path $env:FALCON_LOAD_SOURCE "ci/azure-pipelines/run.ps1")'
+    displayName: Run falcon-load
+    workingDirectory: ${{ parameters.workingDirectory }}
+    env:
+      FALCON_LOAD_SOURCE: ${{ parameters.falconLoadPath }}
+      FALCON_LOAD_TOOL: $(FalconLoadTool)
+      INPUT_FILE: ${{ parameters.file }}
+      INPUT_TEST: ${{ parameters.test }}
+      INPUT_ENV_FILE: ${{ parameters.envFile }}
+      INPUT_ENV: ${{ parameters.env }}
+      INPUT_VARS: ${{ parameters.vars }}
+      INPUT_DATA: ${{ parameters.data }}
+      INPUT_CONCURRENCY: ${{ parameters.concurrency }}
+      INPUT_DURATION: ${{ parameters.duration }}
+      INPUT_REQUESTS: ${{ parameters.requests }}
+      INPUT_MAX_ERROR_RATE: ${{ parameters.maxErrorRate }}
+      INPUT_ARGS: ${{ parameters.args }}
+      INPUT_RESULTS: ${{ parameters.resultsDirectory }}
+      ${{ each secret in parameters.secrets }}:
+        ${{ secret.key }}: ${{ secret.value }}
+
+  - ${{ if parameters.publishTestResults }}:
+      - task: PublishTestResults@2
+        displayName: Publish falcon-load test results
+        condition: and(succeededOrFailed(), ne(variables['FalconLoadJunit'], ''))
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: $(FalconLoadJunit)
+          testRunTitle: falcon-load
+          failTaskOnFailedTests: false
+
+  - ${{ if parameters.publishArtifact }}:
+      - task: PublishPipelineArtifact@1
+        displayName: Publish falcon-load reports
+        condition: and(succeededOrFailed(), ne(variables['FalconLoadResults'], ''))
+        inputs:
+          targetPath: $(FalconLoadResults)
+          artifact: ${{ parameters.artifactName }}
+
+  - ${{ if parameters.comment }}:
+      - pwsh: '& (Join-Path $env:FALCON_LOAD_SOURCE "ci/azure-pipelines/comment.ps1")'
+        displayName: Comment on the pull request
+        condition: and(succeededOrFailed(), eq(variables['Build.Reason'], 'PullRequest'), ne(variables['FalconLoadSummary'], ''))
+        env:
+          FALCON_LOAD_SOURCE: ${{ parameters.falconLoadPath }}
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+          SUMMARY: $(FalconLoadSummary)
+          COMMENT_KEY: ${{ coalesce(parameters.commentKey, '$(Agent.JobName)') }}
+          ARTIFACT_NAME: ${{ parameters.artifactName }}
+          UPLOADED: ${{ parameters.publishArtifact }}
+
+  - pwsh: |
+      $code = "$env:EXIT_CODE"
+      if ($code -eq '0') { Write-Host 'Every falcon-load test passed.'; exit 0 }
+      if ($env:FAIL_ON_ERROR -ne 'True' -and $code -ne '2') {
+        Write-Host "##vso[task.logissue type=warning]The load test failed (exit code $code), but failOnError is false."
+        exit 0
+      }
+      Write-Host "##vso[task.logissue type=error]The load test failed (exit code $code). See the falcon-load summary for the conditions it missed."
+      exit ([int]$code)
+    displayName: Fail when a test failed
+    env:
+      EXIT_CODE: $(FalconLoadExitCode)
+      FAIL_ON_ERROR: ${{ parameters.failOnError }}
