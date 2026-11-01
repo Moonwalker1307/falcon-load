@@ -32,6 +32,12 @@ public sealed class LoadTestPlan
     /// </summary>
     public string? Environment { get; set; }
 
+    /// <summary>
+    /// The <c>.proto</c> files that describe the services gRPC requests call, by file name so they can import each other.
+    /// Plans saved before gRPC existed have none.
+    /// </summary>
+    public List<Grpc.ProtoFile> ProtoFiles { get; set; } = [];
+
     /// <summary>How requests are authenticated, such as with an OAuth2 token. Plans saved before auth existed have none.</summary>
     public AuthSettings? Auth { get; set; }
 
@@ -121,6 +127,8 @@ public sealed class LoadTestPlan
             errors.Add("At least one request has to run on every iteration; untick \"Once per virtual user\" on one of them.");
         }
 
+        errors.AddRange(ValidateGrpc());
+
         if (Auth is not null)
         {
             errors.AddRange(Auth.Validate(environment?.ToValues(), forRun));
@@ -129,6 +137,72 @@ public sealed class LoadTestPlan
         errors.AddRange(Profile.Validate());
         errors.AddRange(Thresholds.Where(t => t.Enabled).SelectMany(t => t.Validate(Requests.Count)));
         return errors;
+    }
+
+    /// <summary>
+    /// Reads the proto files and checks every gRPC request against them: its method has to exist, and its message has
+    /// to fit the method's request type, with placeholders standing in as <c>1</c> since their values aren't known yet.
+    /// </summary>
+    internal IEnumerable<string> ValidateGrpc()
+    {
+        var grpc = Requests.Select((r, i) => (Request: r, Index: i)).Where(x => x.Request.Protocol == RequestProtocol.Grpc).ToList();
+        if (grpc.Count == 0)
+        {
+            yield break;
+        }
+
+        if (ProtoFiles.All(f => string.IsNullOrWhiteSpace(f.Content)))
+        {
+            yield return "gRPC requests need the service's .proto files; add them under Proto files.";
+            yield break;
+        }
+
+        var duplicate = ProtoFiles.GroupBy(f => f.Name.Trim(), StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+        {
+            yield return $"There is more than one proto file named '{duplicate.Key}'.";
+        }
+
+        if (!Grpc.ProtoSchema.TryParse(ProtoFiles, out var schema, out var problems))
+        {
+            foreach (var problem in problems)
+            {
+                yield return $"Proto files: {problem}";
+            }
+
+            yield break;
+        }
+
+        foreach (var (request, index) in grpc)
+        {
+            var label = $"Request {index + 1} ({request.DisplayName})";
+            if (string.IsNullOrWhiteSpace(request.Grpc?.Method))
+            {
+                continue;
+            }
+
+            var method = schema!.FindMethod(request.Grpc.Method);
+            if (method is null)
+            {
+                yield return $"{label}: the proto files have no method '{request.Grpc.Method}'. Use package.Service/Method, such as {schema.Methods[0].Path}.";
+                continue;
+            }
+
+            string? error = null;
+            try
+            {
+                Grpc.GrpcMessages.EncodeRequest(method, TemplateRenderer.ReplaceVariables(request.Body ?? string.Empty, "1"));
+            }
+            catch (Exception ex) when (ex is Grpc.ProtobufException or System.Text.Json.JsonException)
+            {
+                error = ex.Message;
+            }
+
+            if (error is not null)
+            {
+                yield return $"{label}: the message doesn't fit {method.Input.FullName}: {error}";
+            }
+        }
     }
 
     /// <summary>

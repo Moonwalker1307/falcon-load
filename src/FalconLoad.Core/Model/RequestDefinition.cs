@@ -30,6 +30,9 @@ public sealed class RequestDefinition
     /// <summary>How a WebSocket request waits and closes. Null for other protocols.</summary>
     public WebSocketOptions? WebSocket { get; set; }
 
+    /// <summary>The method a gRPC request calls. Null for other protocols.</summary>
+    public GrpcOptions? Grpc { get; set; }
+
     public string ContentType { get; set; } = "application/json";
 
     /// <summary>
@@ -62,6 +65,7 @@ public sealed class RequestDefinition
     {
         RequestProtocol.GraphQL => "GraphQL",
         RequestProtocol.WebSocket => "WS",
+        RequestProtocol.Grpc => "gRPC",
         _ => Method,
     };
 
@@ -135,7 +139,20 @@ public sealed class RequestDefinition
                 : $"URL must be an absolute {schemes} address. No value for {string.Join(", ", missing.Select(m => "{{" + m + "}}"))}: choose an environment that defines it.";
         }
 
-        if (!webSocket && !StatusCodeMatcher.TryParse(ExpectedStatusCodes, out _))
+        if (Protocol == RequestProtocol.Grpc)
+        {
+            // The method and the message are checked against the plan's proto files, in LoadTestPlan.Validate.
+            if (string.IsNullOrWhiteSpace(Grpc?.Method))
+            {
+                yield return "A gRPC request needs the method to call, such as shop.v1.Catalog/GetProduct.";
+            }
+
+            if (!GrpcStatusMatcher.TryParse(ExpectedStatusCodes, out _))
+            {
+                yield return "Expected gRPC status codes must be names or numbers from 0 to 16, such as \"OK\" or \"OK,NOT_FOUND\".";
+            }
+        }
+        else if (!webSocket && !StatusCodeMatcher.TryParse(ExpectedStatusCodes, out _))
         {
             yield return "Expected status codes must look like \"200,201\" or \"200-299\".";
         }

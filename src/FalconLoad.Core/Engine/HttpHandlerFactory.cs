@@ -15,6 +15,10 @@ internal static class HttpHandlerFactory
             PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             MaxConnectionsPerServer = int.MaxValue,
             ConnectTimeout = TimeSpan.FromSeconds(profile.TimeoutSeconds),
+
+            // gRPC calls share HTTP/2 connections; a server allows about a hundred calls at once on one, so without
+            // more connections a test with many virtual users would queue behind that limit instead of measuring the server.
+            EnableMultipleHttp2Connections = true,
         };
 
         if (profile.IgnoreTlsErrors)

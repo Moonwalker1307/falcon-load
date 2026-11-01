@@ -18,6 +18,9 @@ internal sealed class FakeHandler(Func<HttpRequestMessage, CancellationToken, Ta
             return new HttpResponseMessage(code) { Content = new StringContent(body) };
         });
 
+    /// <summary>Lets one fake hand a request on to another, to record what was sent and answer like a given server.</summary>
+    public Task<HttpResponseMessage> SendAsyncPublic(HttpRequestMessage request, CancellationToken cancellationToken) => SendAsync(request, cancellationToken);
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);

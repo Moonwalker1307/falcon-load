@@ -304,6 +304,7 @@
                             <option value="@RequestProtocol.Http">HTTP</option>
                             <option value="@RequestProtocol.GraphQL">GraphQL</option>
                             <option value="@RequestProtocol.WebSocket">WebSocket</option>
+                            <option value="@RequestProtocol.Grpc">gRPC</option>
                         </select>
                         @if (request.Protocol == RequestProtocol.Http)
                         {
@@ -329,8 +330,35 @@
                         {
                             <span>A <code>ws://</code> or <code>wss://</code> address. Each virtual user opens its own connection and keeps it open for its later messages. </span>
                         }
+                        else if (request.Protocol == RequestProtocol.Grpc)
+                        {
+                            <span>The server's address, such as <code>https://localhost:5001</code>; calls go over HTTP/2, and <code>http://</code> uses HTTP/2 without TLS. </span>
+                        }
                         Dynamic values such as <code>{{$guid}}</code> and environment variables such as <code>{{baseUrl}}</code> work here too.
                     </div>
+                    @if (request.Protocol == RequestProtocol.Grpc)
+                    {
+                        var grpcOptions = request.Grpc ??= new GrpcOptions();
+                        <div class="field">
+                            <label for="@idp-rpc">Method</label>
+                            <input id="@idp-rpc" type="text" class="mono" list="grpc-methods" placeholder="@(_schema?.Methods.FirstOrDefault()?.Path ?? "package.Service/Method")"
+                                   spellcheck="false" autocomplete="off" aria-describedby="@idp-rpc-hint" @bind="grpcOptions.Method" @bind:event="oninput" />
+                            <div class="hint" id="@idp-rpc-hint">
+                                @if (_schema is null)
+                                {
+                                    <span>Add the service's <code>.proto</code> files under <a href="@($"plans/{_plan.Id}#protos-title")" @onclick:preventDefault @onclick="FocusProtos">Proto files</a> to pick a method.</span>
+                                }
+                                else if (_schema.FindMethod(grpcOptions.Method) is { } method)
+                                {
+                                    <span>Takes <code>@method.Input.FullName</code>@(method.ClientStreaming ? " (a stream: write a JSON array of messages)" : ""), returns <code>@method.Output.FullName</code>@(method.ServerStreaming ? " (a stream, read as a JSON array)" : "").</span>
+                                }
+                                else
+                                {
+                                    <span>@_schema.Methods.Count @(_schema.Methods.Count == 1 ? "method" : "methods") in the proto files. Start typing to pick one.</span>
+                                }
+                            </div>
+                        </div>
+                    }
 
                     <div class="tabs" role="tablist" aria-label="Request @(index + 1) details">
                         <button role="tab" id="@idp-tab-headers" aria-selected="@(tab == "headers" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "headers"'>
@@ -411,6 +439,23 @@
                                 A connection is opened by the first message that needs it, which includes the handshake in its time, like the first HTTP request on a connection.
                             </div>
                         }
+                        else if (tab == "body" && request.Protocol == RequestProtocol.Grpc)
+                        {
+                            var method = _schema?.FindMethod(request.Grpc?.Method);
+                            <div class="label-row">
+                                <label for="@idp-bodytext">Message <span class="optional">(JSON)</span></label>
+                                <button class="btn-sm" disabled="@(method is null)" title="@(method is null ? "Pick a method first" : $"Replace the message with every field of {method.Input.FullName}")" @onclick="() => request.Body = FalconLoad.Core.Grpc.ProtoSample.For(method!)">
+                                    <Icon Name="plus" />Fill in the fields
+                                </button>
+                            </div>
+                            <textarea id="@idp-bodytext" class="mono" placeholder='{ "id": {{$randomInt:1:1000}} }' spellcheck="false" @bind="request.Body" @bind:event="oninput"></textarea>
+                            <div class="hint">
+                                The request message in protobuf's JSON form, encoded with the proto files for every call: field names as in the <code>.proto</code> file or in camelCase,
+                                enums by name, 64-bit numbers as numbers or strings, bytes as base64. Leave it empty to send a message with no fields set.
+                                The response is decoded the same way, so checks and extractions read <code>$.name</code>, or <code>$[0].name</code> for a stream.
+                                The headers are sent as gRPC metadata.
+                            </div>
+                        }
                         else if (tab == "body" && request.Protocol == RequestProtocol.GraphQL)
                         {
                             var graphQL = request.GraphQL ??= new GraphQLOptions();
@@ -481,7 +526,15 @@
                         }
                         else
                         {
-                            @if (request.Protocol != RequestProtocol.WebSocket)
+                            @if (request.Protocol == RequestProtocol.Grpc)
+                            {
+                                <div class="field field-narrow">
+                                    <label for="@idp-codes">Expected gRPC status</label>
+                                    <input id="@idp-codes" type="text" class="mono" placeholder="OK (default)" aria-describedby="@idp-codes-hint" @bind="request.ExpectedStatusCodes" />
+                                    <div class="hint" id="@idp-codes-hint">Names or numbers, e.g. <code>OK</code> or <code>OK,NOT_FOUND</code>. Any other <code>grpc-status</code> counts as an error, named with its <code>grpc-message</code>.</div>
+                                </div>
+                            }
+                            else if (request.Protocol != RequestProtocol.WebSocket)
                             {
                                 <div class="field field-narrow">
                                     <label for="@idp-codes">Expected status codes</label>
@@ -570,9 +623,9 @@
                                 }
                                 else if (probe.StatusLabel is { } label)
                                 {
-                                    <strong class="status-2xx">@label</strong>
+                                    <strong class="@Format.StatusClass(label)">@label</strong>
                                     <span>@Format.Ms(probe.Latency.TotalMilliseconds)</span>
-                                    @if (label == RequestResult.ReplyStatus)
+                                    @if (label != RequestResult.SentStatus)
                                     {
                                         <span>@Format.Bytes(probe.BodyBytes)</span>
                                     }
@@ -615,7 +668,7 @@
                             {
                                 @if (probe.Headers.Count > 0)
                                 {
-                                    <span class="probe-label">@(probe.StatusLabel is null ? "Response headers" : "Handshake response headers")</span>
+                                    <span class="probe-label">@(probe.StatusLabel is null ? "Response headers" : request.Protocol == RequestProtocol.Grpc ? "Response headers and trailers" : "Handshake response headers")</span>
                                     <pre>@string.Join("\n", probe.Headers.Select(h => $"{h.Key}: {h.Value}"))</pre>
                                 }
                                 @if (probe.Extractions is { Count: > 0 } extractions)
@@ -640,7 +693,7 @@
                                 }
                                 @if (!string.IsNullOrEmpty(probe.BodyPreview))
                                 {
-                                    <span class="probe-label">@(probe.StatusLabel is null ? "Body" : "Reply")</span>
+                                    <span class="probe-label">@(probe.StatusLabel is null ? "Body" : request.Protocol == RequestProtocol.Grpc ? "Response message" : "Reply")</span>
                                     <pre>@probe.BodyPreview</pre>
                                 }
                             }
@@ -654,6 +707,64 @@
             <button class="add-request" @onclick="AddRequest"><Icon Name="plus" />Add request</button>
             <div class="hint">Each virtual user sends the requests in this order, then starts over. Values it extracts from a response stay with it for its later requests.</div>
         </div>
+
+        @if (_plan.ProtoFiles.Count > 0 || _plan.Requests.Any(r => r.Protocol == RequestProtocol.Grpc))
+        {
+            var protoProblems = _plan.Requests.Any(r => r.Protocol == RequestProtocol.Grpc) ? _protoErrors : [];
+            <section class="card @(protoProblems.Count > 0 ? "has-error" : "")" aria-labelledby="protos-title">
+                <div class="card-header">
+                    <h2 id="protos-title" tabindex="-1" @ref="_protosHeading">Proto files</h2>
+                    <div class="btn-group">
+                        <label class="btn btn-sm file-button" title="Add .proto files, such as the ones the service is built from">
+                            <Icon Name="upload" />Add file…
+                            <InputFile accept=".proto,text/plain" multiple OnChange="AddProtoFiles" aria-label="Add a .proto file" />
+                        </label>
+                        <button class="btn-sm" @onclick="AddProtoFile"><Icon Name="plus" />Paste one</button>
+                    </div>
+                </div>
+                <div class="small muted">
+                    The <code>.proto</code> files that describe the service, so gRPC requests can be written and read as JSON. Name each file as other files import it,
+                    such as <code>shop/v1/shop.proto</code>. The usual <code>google/protobuf/*.proto</code> imports are built in. The files are saved with the test.
+                </div>
+                @if (_protoProblem is not null)
+                {
+                    <div class="field-error" role="alert">@_protoProblem</div>
+                }
+                @if (protoProblems.Count > 0)
+                {
+                    <ul class="field-error">
+                        @foreach (var problem in protoProblems)
+                        {
+                            <li>@problem</li>
+                        }
+                    </ul>
+                }
+                @for (var k = 0; k < _plan.ProtoFiles.Count; k++)
+                {
+                    var file = _plan.ProtoFiles[k];
+                    var pid = $"proto-{k}";
+                    <div class="data-file">
+                        <div class="data-file-head">
+                            <input id="@pid-name" type="text" class="mono" placeholder="service.proto" aria-label="Proto file @(k + 1) name" spellcheck="false" @bind="file.Name" @bind:event="oninput" @bind:after="ParseProtos" />
+                            <span class="spacer"></span>
+                            <button class="btn-sm btn-icon btn-ghost btn-danger" title="Remove proto file" aria-label="Remove proto file @(k + 1)" @onclick="() => RemoveProtoFile(file)"><Icon Name="trash" /></button>
+                        </div>
+                        <textarea class="mono" aria-label="Proto file @(k + 1) contents" placeholder='syntax = "proto3";&#10;package shop.v1;&#10;&#10;service Catalog {&#10;  rpc GetProduct (GetProductRequest) returns (Product);&#10;}' spellcheck="false"
+                                  @bind="file.Content" @bind:event="oninput" @bind:after="ParseProtos"></textarea>
+                    </div>
+                }
+                @if (_schema is not null)
+                {
+                    <div class="hint">
+                        Methods:
+                        @foreach (var method in _schema.Methods)
+                        {
+                            <code class="var-chip">@method.Path</code>@(" ")
+                        }
+                    </div>
+                }
+            </section>
+        }
 
         @if (profile.IsStaged)
         {
@@ -1050,6 +1161,13 @@
     </section>
 </div>
 
+<datalist id="grpc-methods">
+    @foreach (var method in _schema?.Methods ?? [])
+    {
+        <option value="@method.Path" />
+    }
+</datalist>
+
 <datalist id="content-types">
     <option value="application/json" />
     <option value="application/x-www-form-urlencoded" />
@@ -1162,6 +1280,7 @@
             };
         }
 
+        ParseProtos();
         _baseline = Snapshot(_plan);
     }
 
@@ -1175,6 +1294,7 @@
             plan.Parameters,
             plan.Profile,
             plan.Thresholds,
+            plan.ProtoFiles,
 
             // A file's text can be megabytes, so only a fingerprint of it is compared.
             DataFiles = plan.DataFiles.Select(f => new { f.Name, f.Format, f.Selection, f.Content.Length, Hash = f.Content.GetHashCode() }),
@@ -1202,13 +1322,14 @@
     {
         RequestProtocol.GraphQL => "https://api.example.com/graphql",
         RequestProtocol.WebSocket => "wss://api.example.com/socket",
+        RequestProtocol.Grpc => "https://localhost:5001",
         _ => "https://api.example.com/items",
     };
 
     private static string BodyTabName(RequestProtocol protocol) => protocol switch
     {
         RequestProtocol.GraphQL => "Query",
-        RequestProtocol.WebSocket => "Message",
+        RequestProtocol.WebSocket or RequestProtocol.Grpc => "Message",
         _ => "Body",
     };
 
@@ -1218,6 +1339,19 @@
     {
         request.GraphQL = request.Protocol == RequestProtocol.GraphQL ? request.GraphQL ?? new GraphQLOptions() : null;
         request.WebSocket = request.Protocol == RequestProtocol.WebSocket ? request.WebSocket ?? new WebSocketOptions() : null;
+        request.Grpc = request.Protocol == RequestProtocol.Grpc ? request.Grpc ?? new GrpcOptions { Method = _schema?.Methods.FirstOrDefault()?.Path ?? string.Empty } : null;
+
+        // An HTTP status range means nothing to gRPC, whose codes are names such as OK, and the other way round.
+        if (request.Protocol == RequestProtocol.Grpc ? !GrpcStatusMatcher.TryParse(request.ExpectedStatusCodes, out _) : !StatusCodeMatcher.TryParse(request.ExpectedStatusCodes, out _))
+        {
+            request.ExpectedStatusCodes = null;
+        }
+
+        if (request.Protocol == RequestProtocol.Grpc && Uri.TryCreate(request.Url, UriKind.Absolute, out var address) && address.AbsolutePath.Length > 1)
+        {
+            // A gRPC method has its own path, so only the server's address is kept.
+            request.Url = address.GetLeftPart(UriPartial.Authority);
+        }
         if (request.Protocol == RequestProtocol.WebSocket && request.Url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
             request.Url = "ws" + request.Url[4..];
@@ -1293,11 +1427,89 @@
             Protocol = last?.Protocol ?? RequestProtocol.Http,
             GraphQL = last?.Protocol == RequestProtocol.GraphQL ? new GraphQLOptions() : null,
             WebSocket = last?.Protocol == RequestProtocol.WebSocket ? new WebSocketOptions() : null,
+            Grpc = last?.Protocol == RequestProtocol.Grpc ? new GrpcOptions { Method = last.Grpc?.Method ?? string.Empty } : null,
         });
     }
 
     private const int PreviewRows = 5;
     private string? _dataProblem;
+    private string? _protoProblem;
+    private ElementReference _protosHeading;
+
+    // The proto files are read again only when they change, not on every render.
+    private FalconLoad.Core.Grpc.ProtoSchema? _schema;
+    private IReadOnlyList<string> _protoErrors = [];
+
+    private void ParseProtos()
+    {
+        if (_plan.ProtoFiles.All(f => string.IsNullOrWhiteSpace(f.Content)))
+        {
+            (_schema, _protoErrors) = (null, []);
+            return;
+        }
+
+        FalconLoad.Core.Grpc.ProtoSchema.TryParse(_plan.ProtoFiles, out _schema, out _protoErrors);
+    }
+
+    private const int MaxProtoBytes = 1_000_000;
+
+    private async Task AddProtoFiles(InputFileChangeEventArgs e)
+    {
+        _protoProblem = null;
+        foreach (var upload in e.GetMultipleFiles(20))
+        {
+            if (upload.Size > MaxProtoBytes)
+            {
+                _protoProblem = $"{upload.Name} is larger than 1 MB, which is more than a .proto file should be.";
+                continue;
+            }
+
+            try
+            {
+                await using var stream = upload.OpenReadStream(MaxProtoBytes);
+                using var reader = new StreamReader(stream);
+                var content = await reader.ReadToEndAsync();
+                _plan.ProtoFiles.RemoveAll(f => string.Equals(f.Name, upload.Name, StringComparison.OrdinalIgnoreCase));
+                _plan.ProtoFiles.Add(new FalconLoad.Core.Grpc.ProtoFile { Name = upload.Name, Content = content });
+            }
+            catch (IOException ex)
+            {
+                _protoProblem = $"Couldn't read {upload.Name}: {ex.Message}";
+            }
+        }
+
+        ParseProtos();
+        FillMissingMethods();
+    }
+
+    private void AddProtoFile() => _plan.ProtoFiles.Add(new FalconLoad.Core.Grpc.ProtoFile { Name = _plan.ProtoFiles.Count == 0 ? "service.proto" : string.Empty });
+
+    private void RemoveProtoFile(FalconLoad.Core.Grpc.ProtoFile file)
+    {
+        _plan.ProtoFiles.Remove(file);
+        ParseProtos();
+    }
+
+    // gRPC requests made before their proto files were added get the first method, so they are ready to send.
+    private void FillMissingMethods()
+    {
+        foreach (var request in _plan.Requests.Where(r => r.Protocol == RequestProtocol.Grpc && string.IsNullOrWhiteSpace(r.Grpc?.Method)))
+        {
+            (request.Grpc ??= new GrpcOptions()).Method = _schema?.Methods.FirstOrDefault()?.Path ?? string.Empty;
+        }
+    }
+
+    private async Task FocusProtos()
+    {
+        if (_plan.ProtoFiles.Count == 0)
+        {
+            AddProtoFile();
+            StateHasChanged();
+            await Task.Yield();
+        }
+
+        await _protosHeading.FocusAsync();
+    }
 
     private async Task AddDataFiles(InputFileChangeEventArgs e)
     {
@@ -1488,7 +1700,7 @@
         {
             if (EnvironmentStore.TryResolve(_plan.Environment, out var environment, out var missing))
             {
-                _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables, environment: environment, dataFiles: _plan.DataFiles, auth: _plan.Auth);
+                _probeResults[request] = await RequestProbe.SendAsync(request, _plan.Profile, parameters: _plan.Parameters, variables: _probeVariables, environment: environment, dataFiles: _plan.DataFiles, auth: _plan.Auth, protoFiles: _plan.ProtoFiles);
             }
             else
             {
