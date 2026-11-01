@@ -236,6 +236,46 @@ public sealed class CliAppTests : IDisposable
     }
 
     [Fact]
+    public async Task Markdown_WritesOneSummaryOfEveryTest_WithTheSameVerdictAsTheExitCode()
+    {
+        var failing = PlanWithThreshold(ThresholdMetric.ErrorRate, ThresholdOperator.LessThan, 10);
+        failing.Name = "Strict";
+        var markdown = Path.Combine(_directory, "reports", "summary.md");
+
+        var code = await Run(EveryFourthFails(), "run", WriteFile(Plan("Lenient", 8), failing), "--markdown", markdown, "--max-error-rate", "50");
+
+        Assert.Equal(CliApp.TestFailed, code);
+        var text = File.ReadAllText(markdown);
+        Assert.StartsWith("## ❌ falcon-load: 1 of 2 tests failed", text);
+        Assert.Contains("| Lenient | ✅ Passed |", text);
+        Assert.Contains("| Strict | ❌ Failed |", text);
+        Assert.Contains("| ❌ | Error rate &lt; 10% | measured 25% |", text);
+        Assert.Contains($"Markdown summary written to {markdown}", _error.ToString());
+    }
+
+    [Fact]
+    public async Task OutputPathEndingInASlash_IsADirectory_EvenForOneTest()
+    {
+        var json = Path.Combine(_directory, "json") + "/";
+        var html = Path.Combine(_directory, "html") + "/";
+
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.OK), "run", WriteFile(Plan("Browse", 3)), "--out", json, "--html", html);
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.True(File.Exists(Path.Combine(_directory, "json", "browse.json")));
+        Assert.True(File.Exists(Path.Combine(_directory, "html", "browse.html")));
+    }
+
+    [Fact]
+    public async Task Markdown_WithAnEmptyPath_WritesNothingAndPasses()
+    {
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.OK), "run", WriteFile(Plan()), "--markdown", "");
+
+        Assert.Equal(CliApp.Passed, code);
+        Assert.DoesNotContain("Markdown summary", _error.ToString());
+    }
+
+    [Fact]
     public async Task Html_WritesAReportPerTest_WithTheSameVerdictAsTheExitCode()
     {
         var directory = Path.Combine(_directory, "html");
@@ -727,6 +767,7 @@ public sealed class CliAppTests : IDisposable
     [InlineData("--out")]
     [InlineData("--html")]
     [InlineData("--junit")]
+    [InlineData("--markdown")]
     public async Task OutputPathThatCantBeAFile_IsInvalidInputBeforeAnyLoad(string option)
     {
         var handler = FakeHandler.Returning(HttpStatusCode.OK);

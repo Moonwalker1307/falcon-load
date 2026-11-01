@@ -64,8 +64,9 @@ engine works. It is the only user-facing documentation, so it has to stay true.
     `HttpHandlerFactory` builds the shared handler; `OAuth2TokenSource` fetches a run's tokens and replaces them before
     they expire; `RequestProbe` sends one request for the "Send once" button and
     `/api/probe`.
-  - `Reports/`: `RunVerdict` (the one pass/fail verdict behind the CLI's exit code and both reports), `HtmlReport`
-    (a self-contained page with hand-written SVG charts, no script) and `JUnitReport`. Reports show results only,
+  - `Reports/`: `RunVerdict` (the one pass/fail verdict behind the CLI's exit code and the reports), `HtmlReport`
+    (a self-contained page with hand-written SVG charts, no script), `JUnitReport` and `MarkdownReport` (the pull request
+    comment, which escapes every text from a test or a server). Reports show results only,
     never headers, bodies or environment values.
   - `Metrics/`: `MetricsCollector` aggregates `RequestResult`s into a `LoadTestSnapshot`, overall, per request and per
     second, using `LatencyHistogram`.
@@ -85,6 +86,10 @@ engine works. It is the only user-facing documentation, so it has to stay true.
 - `tests/FalconLoad.Fuzz/`: a dependency-free fuzzer for every input parser, run with `dotnet run --project
   tests/FalconLoad.Fuzz -c Release`. A change to a parser should survive a round of it; each bug it finds gets a test in
   `FuzzRegressionTests`. See its README.
+- `action.yml` and `ci/`: the GitHub Action (a composite action at the root, with its scripts in `ci/github/`) and the
+  Azure Pipelines step template (`ci/azure-pipelines/`). Both build the CLI from source and pass every input to their
+  scripts as environment variables, never pasted into a script. The CI `action` job runs the action against a local
+  server, so a change to them is tested there.
 - `Dockerfile` (web app) and `Dockerfile.cli`: multi-stage images built from the repository root. A new project the
   web app or the CLI references must also be copied in its Dockerfile.
 - `.github/workflows/ci.yml`: restore, build and test in Release on Ubuntu for every push to `main` and every PR, and

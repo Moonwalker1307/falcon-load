@@ -1,0 +1,18 @@
+{
+  "format": "falcon-load/plans",
+  "version": 1,
+  "plans": [
+    {
+      "name": "Smoke test of the GitHub Action",
+      "requests": [
+        { "name": "home", "method": "GET", "url": "{{baseUrl}}/" },
+        { "name": "missing page", "method": "GET", "url": "{{baseUrl}}/missing", "expectedStatusCodes": "404" }
+      ],
+      "profile": { "concurrency": 2, "stopCondition": "RequestCount", "totalRequests": 50 },
+      "thresholds": [
+        { "metric": "ErrorRate", "operator": "LessThan", "value": 1 },
+        { "metric": "P95Latency", "operator": "LessThan", "value": 2000 }
+      ]
+    }
+  ]
+}

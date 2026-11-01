@@ -33,3 +33,50 @@ jobs:
       - run: docker build -t falcon-load .
       - run: docker build -f Dockerfile.cli -t falcon-load-cli .
       - run: docker run --rm falcon-load-cli --version
+
+  # Runs the GitHub Action in this repository against a local server, the way a user's workflow would, and comments the
+  # result on the pull request.
+  action:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start a local target
+        run: |
+          mkdir -p "$RUNNER_TEMP/site" && echo ok > "$RUNNER_TEMP/site/index.html"
+          python3 -m http.server 8080 --bind 127.0.0.1 --directory "$RUNNER_TEMP/site" > /dev/null 2>&1 &
+          for i in $(seq 1 20); do curl -sf http://127.0.0.1:8080/ > /dev/null && exit 0; sleep 0.5; done
+          exit 1
+      - name: Run a passing test
+        id: pass
+        uses: ./
+        with:
+          file: .github/falcon-load/smoke.json
+          vars: baseUrl=http://127.0.0.1:8080
+          comment-key: ci-smoke
+      - name: Run a failing test without failing the job
+        id: fail
+        uses: ./
+        with:
+          file: .github/falcon-load/smoke.json
+          vars: baseUrl=http://127.0.0.1:8080/no-such-folder
+          results-directory: failing-results
+          fail-on-error: 'false'
+          comment: 'false'
+          upload-artifact: 'false'
+      - name: Check the outputs
+        env:
+          PASS_PASSED: ${{ steps.pass.outputs.passed }}
+          PASS_SUMMARY: ${{ steps.pass.outputs.summary }}
+          FAIL_PASSED: ${{ steps.fail.outputs.passed }}
+          FAIL_CODE: ${{ steps.fail.outputs.exit-code }}
+          FAIL_RESULTS: ${{ steps.fail.outputs.results-directory }}
+        run: |
+          test "$PASS_PASSED" = true
+          grep -q "passed" "$PASS_SUMMARY"
+          test "$FAIL_PASSED" = false
+          test "$FAIL_CODE" = 1
+          test -f "$FAIL_RESULTS/junit.xml"
+          ls "$FAIL_RESULTS/html/"*.html "$FAIL_RESULTS/json/"*.json

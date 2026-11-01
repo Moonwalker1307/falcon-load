@@ -1,0 +1,153 @@
+# The falcon-load GitHub Action: runs the tests in an exported falcon-load file with the command line tool, fails the
+# job when a test fails its thresholds, and posts the result on the pull request. See "CI integrations" in README.md.
+name: falcon-load
+description: Run a falcon-load API load test, fail the job when it misses its thresholds, and comment the result on the pull request.
+author: falcon-load
+branding:
+  icon: activity
+  color: yellow
+
+inputs:
+  file:
+    description: The exported falcon-load file with the tests to run, relative to working-directory.
+    required: true
+  test:
+    description: Run only the test with this name. By default every test in the file runs.
+    default: ''
+  env-file:
+    description: An environments file exported from the web UI, for tests that use {{variables}}.
+    default: ''
+  env:
+    description: The environment to use from env-file.
+    default: ''
+  vars:
+    description: Variables to set, one name=value per line. Pass secrets as FALCON_LOAD_<name> environment variables instead.
+    default: ''
+  data:
+    description: Data files to use instead of the rows saved in the test, one name=path per line, such as users.csv=./users.csv.
+    default: ''
+  concurrency:
+    description: Use this many virtual users instead of the number in the file.
+    default: ''
+  duration:
+    description: Run each test for this many seconds instead of the file's stop condition.
+    default: ''
+  requests:
+    description: Send this many requests per test instead of the file's stop condition.
+    default: ''
+  max-error-rate:
+    description: Fail a test when more than this percentage of its requests fail. By default a test with thresholds is judged by them, and one without fails on any error.
+    default: ''
+  args:
+    description: More options for falcon-load run, one option and its value per line, such as --otlp http://collector:4318. Words are split on spaces.
+    default: ''
+  working-directory:
+    description: The folder that relative paths start from.
+    default: '.'
+  results-directory:
+    description: Where the JSON results, HTML reports, JUnit XML and Markdown summary are written, relative to working-directory.
+    default: falcon-load-results
+  fail-on-error:
+    description: Fail the job when a test fails. Set it to false to only report the result.
+    default: 'true'
+  comment:
+    description: Post the summary on the pull request, updating the same comment on every run. Needs pull-requests write permission.
+    default: 'true'
+  comment-key:
+    description: Tells comments apart when several jobs of one pull request use the action. Jobs with the same key share one comment.
+    default: ''
+  upload-artifact:
+    description: Upload the results directory as a workflow artifact.
+    default: 'true'
+  artifact-name:
+    description: The name of the uploaded artifact. Give each job its own when several jobs use the action.
+    default: falcon-load-results
+  github-token:
+    description: The token used to comment on the pull request.
+    default: ${{ github.token }}
+
+outputs:
+  passed:
+    description: '"true" when every test passed, otherwise "false".'
+    value: ${{ steps.run.outputs.passed }}
+  exit-code:
+    description: 'The exit code of falcon-load: 0 passed, 1 failed, 2 invalid input, 130 interrupted.'
+    value: ${{ steps.run.outputs.exit-code }}
+  results-directory:
+    description: The absolute path of the results directory.
+    value: ${{ steps.run.outputs.results-directory }}
+  summary:
+    description: The absolute path of the Markdown summary.
+    value: ${{ steps.run.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    # The tool is built from the same commit as this action, so a workflow pinned to a tag or commit always runs the
+    # falcon-load it was written against.
+    - name: Set up .NET for falcon-load
+      uses: actions/setup-dotnet@v4
+      with:
+        global-json-file: ${{ github.action_path }}/global.json
+
+    - name: Build falcon-load
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        dotnet publish "$ACTION_PATH/src/FalconLoad.Cli/FalconLoad.Cli.csproj" -c Release -o "$RUNNER_TEMP/falcon-load" --nologo -v quiet
+        echo "FALCON_LOAD_TOOL=$RUNNER_TEMP/falcon-load/falcon-load.dll" >> "$GITHUB_ENV"
+
+    # Inputs reach the script as environment variables, never pasted into it, so a value can't run as shell code.
+    - name: Run falcon-load
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_FILE: ${{ inputs.file }}
+        INPUT_TEST: ${{ inputs.test }}
+        INPUT_ENV_FILE: ${{ inputs.env-file }}
+        INPUT_ENV: ${{ inputs.env }}
+        INPUT_VARS: ${{ inputs.vars }}
+        INPUT_DATA: ${{ inputs.data }}
+        INPUT_CONCURRENCY: ${{ inputs.concurrency }}
+        INPUT_DURATION: ${{ inputs.duration }}
+        INPUT_REQUESTS: ${{ inputs.requests }}
+        INPUT_MAX_ERROR_RATE: ${{ inputs.max-error-rate }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_RESULTS: ${{ inputs.results-directory }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/ci/github/run.sh"
+
+    - name: Upload falcon-load results
+      if: always() && inputs.upload-artifact == 'true' && steps.run.outputs.results-directory != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.run.outputs.results-directory }}
+        if-no-files-found: ignore
+
+    - name: Comment on the pull request
+      if: always() && inputs.comment == 'true' && github.event.pull_request && steps.run.outputs.summary != ''
+      uses: actions/github-script@v7
+      env:
+        SUMMARY: ${{ steps.run.outputs.summary }}
+        COMMENT_KEY: ${{ inputs.comment-key || github.job }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        UPLOADED: ${{ inputs.upload-artifact }}
+        ACTION_PATH: ${{ github.action_path }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const script = require(require('path').join(process.env.ACTION_PATH, 'ci', 'github', 'comment.js'));
+          await script({ github, context, core });
+
+    # Invalid input (exit code 2) always fails, because then nothing was tested.
+    - name: Fail when a test failed
+      if: steps.run.outputs.exit-code != '0' && (inputs.fail-on-error == 'true' || steps.run.outputs.exit-code == '2')
+      shell: bash
+      env:
+        EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+      run: |
+        echo "::error title=falcon-load::The load test failed (exit code $EXIT_CODE). See the job summary for the conditions it missed."
+        exit "$EXIT_CODE"

@@ -222,6 +222,85 @@ public class ReportTests
     }
 
     [Fact]
+    public void Markdown_ShowsTheVerdictNumbersAndConditions()
+    {
+        var snapshot = Snapshot(thresholds: [Pass(), Fail()], errors: [new ErrorCount("HTTP 500", 2)]);
+
+        var md = MarkdownReport.Render(Export(snapshot, environment: "Staging"), RunVerdict.Evaluate(snapshot, null));
+
+        Assert.StartsWith("## ❌ falcon-load: Checkout failed\n", md);
+        Assert.Contains("5 virtual users, for 10s · ran 10.0s · environment Staging · machine runner\\-1", md);
+        Assert.Contains("| 100 | 10 req/s | 2% (2 failed) | 100 ms | 400 ms | 900 ms |", md);
+        Assert.Contains("| ✅ | p95 latency &lt; 500 ms | measured 400 ms |", md);
+        Assert.Contains("| ❌ | Error rate &lt; 1% | measured 2% |", md);
+        Assert.Contains("| 2 | HTTP 500 |", md);
+        Assert.Contains("<summary>Requests</summary>", md);
+    }
+
+    [Fact]
+    public void Markdown_ForSeveralRuns_HasATableOfRunsThenASectionEach()
+    {
+        var passing = Snapshot(failed: 0);
+        var failing = Snapshot(state: RunState.Cancelled);
+
+        var md = MarkdownReport.Render(
+        [
+            (Export(passing, "Browse"), RunVerdict.Evaluate(passing, null)),
+            (Export(failing, "Check out"), RunVerdict.Evaluate(failing, null)),
+        ]);
+
+        Assert.StartsWith("## ❌ falcon-load: 1 of 2 tests failed\n", md);
+        Assert.Contains("| Browse | ✅ Passed |", md);
+        Assert.Contains("| Check out | ❌ Interrupted |", md);
+        Assert.Contains("### ✅ Browse", md);
+        Assert.Contains("### ❌ Check out", md);
+        Assert.Contains("stopped after 10.0s", md);
+    }
+
+    [Fact]
+    public void Markdown_APassingRun_SaysPassed()
+    {
+        var snapshot = Snapshot(failed: 0);
+
+        var md = MarkdownReport.Render(Export(snapshot), RunVerdict.Evaluate(snapshot, null));
+
+        Assert.StartsWith("## ✅ falcon-load: Checkout passed\n", md);
+        Assert.Contains("no thresholds", md);
+        Assert.DoesNotContain("<summary>Errors</summary>", md);
+    }
+
+    [Fact]
+    public void Markdown_TextFromUsersAndServers_CantAddMarkupMentionsOrRows()
+    {
+        var snapshot = Snapshot(errors: [new ErrorCount("<img src=x> [click](http://evil.test) | @octocat fixes #12\n## Heading", 1)]);
+
+        var md = MarkdownReport.Render(Export(snapshot, "*bold* `code`"), RunVerdict.Evaluate(snapshot, null));
+
+        Assert.DoesNotContain("<img", md);
+        Assert.DoesNotContain("[click](", md);
+        Assert.DoesNotContain("@octocat", md, StringComparison.Ordinal);
+        Assert.DoesNotContain("#12", md, StringComparison.Ordinal);
+        Assert.DoesNotContain("\n## Heading", md);
+        Assert.Contains("&lt;img src\\=x&gt; \\[click\\]\\(http://evil.test\\) \\| @\u2060octocat fixes #\u206012 ## Heading", md);
+        Assert.Contains("\\*bold\\* \\`code\\`", md);
+    }
+
+    [Fact]
+    public void Markdown_CutsLongTextAndListsAtMostTenErrors()
+    {
+        var errors = Enumerable.Range(0, 15).Select(i => new ErrorCount($"error {i} " + new string('x', 400), 1)).ToList();
+        var snapshot = Snapshot(errors: errors);
+
+        var md = MarkdownReport.Render(Export(snapshot), RunVerdict.Evaluate(snapshot, null));
+
+        Assert.Contains("error 9 ", md);
+        Assert.DoesNotContain("error 10 ", md);
+        Assert.Contains("5 more in the full report.", md);
+        Assert.DoesNotContain(new string('x', 400), md);
+        Assert.Contains("x…", md);
+    }
+
+    [Fact]
     public void ARunWithoutATimeline_StillRenders()
     {
         var snapshot = Snapshot() with { Timeline = [] };
@@ -273,6 +352,13 @@ public class ReportTests
         var html = HtmlReport.Render(export, verdict);
         var xml = JUnitReport.Render(export, verdict);
 
+        // The Markdown escapes punctuation such as the hyphens in the token, so it is compared without the escapes.
+        var markdown = MarkdownReport.Render(export, verdict).Replace("\\", string.Empty);
+
+        Assert.Contains("rejected key", markdown);
+        Assert.DoesNotContain(Token, markdown);
+        Assert.DoesNotContain(TypedToken, markdown);
+        Assert.DoesNotContain("staging.test", markdown);
         Assert.Contains("rejected key", html);
         Assert.Contains("rejected key", xml);
         Assert.DoesNotContain(Token, html);

@@ -80,7 +80,7 @@ internal static class CliApp
 
         var outputs = OutputPaths(options.Out, plans.Select(p => p.Plan).ToList(), ".json");
         var htmlOutputs = OutputPaths(options.Html, plans.Select(p => p.Plan).ToList(), ".html");
-        var junit = new List<(RunExport, RunVerdict)>();
+        var finished = new List<(RunExport, RunVerdict)>();
         var machine = string.IsNullOrWhiteSpace(options.Machine) ? Environment.MachineName : options.Machine;
 
         // With --influx or --otlp, the test that is running is pushed in the background, and each test once more when it ends.
@@ -163,7 +163,7 @@ internal static class CliApp
                 written &= await WriteAsync(htmlOutputs[i], HtmlReport.Render(export, verdict), console, "Report");
             }
 
-            junit.Add((export, verdict));
+            finished.Add((export, verdict));
 
             if (snapshot.State == RunState.Cancelled)
             {
@@ -176,9 +176,14 @@ internal static class CliApp
         }
 
         // Written after the loop so one file covers every test, also when an interrupt skipped the last ones.
-        if (options.Junit is { } junitPath && junit.Count > 0)
+        if (options.Junit is { } junitPath && finished.Count > 0)
         {
-            written &= await WriteAsync(junitPath, JUnitReport.Render(junit), console, "JUnit report");
+            written &= await WriteAsync(junitPath, JUnitReport.Render(finished), console, "JUnit report");
+        }
+
+        if (options.Markdown is { } markdownPath && !string.IsNullOrWhiteSpace(markdownPath) && finished.Count > 0)
+        {
+            written &= await WriteAsync(markdownPath, MarkdownReport.Render(finished), console, "Markdown summary");
         }
 
         await stopPublishing.CancelAsync();
@@ -457,7 +462,10 @@ internal static class CliApp
         return true;
     }
 
-    /// <summary>One file per test: the given path for a single test, otherwise files named after the tests in that directory.</summary>
+    /// <summary>
+    /// One file per test: the given path for a single test, otherwise files named after the tests in that directory. A path
+    /// ending in a slash is always a directory, so a script can name the folder without knowing how many tests a file holds.
+    /// </summary>
     internal static IReadOnlyList<string>? OutputPaths(string? output, IReadOnlyList<LoadTestPlan> plans, string extension)
     {
         if (string.IsNullOrWhiteSpace(output))
@@ -465,7 +473,8 @@ internal static class CliApp
             return null;
         }
 
-        if (plans.Count == 1)
+        var isDirectory = output.EndsWith('/') || output.EndsWith(Path.DirectorySeparatorChar);
+        if (plans.Count == 1 && !isDirectory)
         {
             return [output];
         }

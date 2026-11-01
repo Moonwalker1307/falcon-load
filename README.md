@@ -54,6 +54,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Live metrics in Grafana**: Prometheus scrapes every running test from `/metrics`, and falcon-load can push to InfluxDB and to an OpenTelemetry (OTLP) endpoint while tests run, from the web app and from the command line. A test run on agents is reported by the controller, one series per agent. A ready-made Grafana dashboard and a Docker Compose stack are included. See [Monitoring](#monitoring-with-prometheus-influxdb-and-opentelemetry).
 - **Command line runner** that runs exported tests in CI, prints a summary, writes the results as JSON and fails the build when too many requests fail.
 - **HTML and JUnit reports** of a finished run, from the run page, the CLI and the API: a self-contained page to read or attach to a CI job, and JUnit XML that CI systems show as test results. See [Reports](#reports).
+- **CI integrations**: a GitHub Action and an Azure Pipelines template that run a test, fail the build when it misses its thresholds, publish the reports and post the result as a pull request comment. See [CI integrations](#ci-integrations).
 - **Docker images** for the web app and the command line runner.
 - **JSON API** for scripting and CI.
 
@@ -70,16 +71,17 @@ It runs every test in the file in order, shows live progress on standard error, 
 | Code | Meaning |
 | --- | --- |
 | `0` | Every test passed |
-| `1` | A test failed: one of its thresholds wasn't met, or, for a test without thresholds, any request failed (or more than `--max-error-rate` allows), or it couldn't run. Also when every test passed but a result file from `--out`, `--html` or `--junit` couldn't be written, so a pipeline never goes on without its results |
+| `1` | A test failed: one of its thresholds wasn't met, or, for a test without thresholds, any request failed (or more than `--max-error-rate` allows), or it couldn't run. Also when every test passed but a result file from `--out`, `--html`, `--junit` or `--markdown` couldn't be written, so a pipeline never goes on without its results |
 | `2` | The command line or the test file is invalid, including an output path that can't name a file; nothing was sent |
 | `130` | Interrupted with Ctrl+C or `docker stop`; the results so far are still printed and written |
 
 | Option | Purpose |
 | --- | --- |
 | `--test <name>` | Run only the test with this name |
-| `--out <path>` | Write the results as JSON, in the same format as "Export" on a run in the UI, so they can be added on the Combine page. With several tests, `<path>` is a directory that gets one file per test |
-| `--html <path>` | Write an HTML report of each test; see [Reports](#reports). With several tests, `<path>` is a directory that gets one file per test |
+| `--out <path>` | Write the results as JSON, in the same format as "Export" on a run in the UI, so they can be added on the Combine page. With several tests, or when `<path>` ends in `/`, `<path>` is a directory that gets one file per test |
+| `--html <path>` | Write an HTML report of each test; see [Reports](#reports). With several tests, or when `<path>` ends in `/`, `<path>` is a directory that gets one file per test |
 | `--junit <path>` | Write the results as JUnit XML, one file for all tests, with a test suite per test |
+| `--markdown <path>` | Write a short Markdown summary of all tests to one file, for a pull request comment or a CI job's summary page |
 | `--concurrency <n>` | Use this many virtual users instead of the file's setting |
 | `--duration <seconds>` | Run for this long instead of the file's stop condition |
 | `--requests <n>` | Send this many requests instead of the file's stop condition |
@@ -115,10 +117,11 @@ The `--user` option lets the container write the results file into your folder. 
 
 ## Reports
 
-A finished run can be written out as an HTML report or as JUnit XML, so a CI job can keep the result and show it.
+A finished run can be written out as an HTML report, as JUnit XML or as a Markdown summary, so a CI job can keep the result and show it.
 
 - **HTML report.** One self-contained page, in the app's colors, with the pass/fail verdict, each threshold with its measured value, throughput, error rate, latency percentiles, throughput and latency charts over time, status codes, the per-request breakdown, response checks and errors. It has no scripts and loads nothing from other sites, so it opens from a CI artifact, an email or a file share years later. Print it for a light version.
 - **JUnit XML.** Each run is a test suite and each condition of its verdict is a test case: every threshold (named like the threshold, such as `p95 latency < 500 ms`, with the measured value in the failure message), "The run completed", "Requests were sent" and, for a test without thresholds or when `--max-error-rate` is given, the error rate limit. A run that couldn't run at all is reported as an error, and a failed or interrupted one as a failure. The suite's properties carry the headline numbers (requests, throughput, error rate, latency percentiles, the environment's name). With several tests in one CLI run, one file holds a suite for each.
+- **Markdown summary** (CLI only, `--markdown`). The verdict, the headline numbers, each condition with its measured value, and the per-request breakdown and most frequent errors in collapsed sections; with several tests, a table of all of them first. It is what the [CI integrations](#ci-integrations) post on a pull request. Text that comes from a test or a server, such as an error message, is escaped, so it can't add links, HTML or @mentions to the comment.
 
 Both reports use the same verdict as the CLI's exit code: a test with thresholds passes when they all hold, one without passes when no request failed, and a run that was stopped early or failed never passes. The web app's badge only appears for tests with thresholds, but a report always states the verdict. The reports contain results only: the test's name, the load profile, the environment's name, step names, errors and numbers. They never contain request headers, bodies or an environment's values; error text has secrets masked by the engine as everywhere else.
 
@@ -137,6 +140,73 @@ Both reports use the same verdict as the CLI's exit code: a test with thresholds
     with: { name: load-test-report, path: report.html }
   ```
 - **API**: `GET /api/runs/{id}/report` and `/api/runs/{id}/junit` (and the same under `/api/distributed/runs/{id}`). A run that is still going answers `409`, since its verdict could still change.
+
+## CI integrations
+
+Two ready-made integrations run a test from your repository with the [command line](#command-line) runner, built from the same falcon-load commit you reference, so a pinned version always runs the falcon-load it was written for. Both write the JSON results, an HTML report per test, JUnit XML and the [Markdown summary](#reports); publish them; post the summary on the pull request, updating one comment per job on every push; and then fail the job when a test failed. Point them only at systems you are allowed to load test, such as a staging deployment or a server the job starts itself.
+
+### GitHub Action
+
+```yaml
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # for the comment
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Moonwalker1307/falcon-load@main   # or a tag or commit
+        with:
+          file: load-tests/tests.json
+          env-file: load-tests/environments.json
+          env: Staging
+        env:
+          FALCON_LOAD_token: ${{ secrets.STAGING_API_TOKEN }}
+```
+
+| Input | Purpose |
+| --- | --- |
+| `file` | The exported test file, relative to `working-directory`. Required |
+| `test`, `env-file`, `env`, `concurrency`, `duration`, `requests`, `max-error-rate` | The CLI options of the same name |
+| `vars`, `data` | `--var` and `--data`, one `name=value` per line |
+| `args` | Any other CLI options, one option and its value per line, such as `--otlp http://collector:4318` |
+| `working-directory` | Where relative paths start. Default: the workspace |
+| `results-directory` | Where the results are written. Default: `falcon-load-results` |
+| `fail-on-error` | `false` to report a failed test without failing the job. Invalid input always fails it. Default: `true` |
+| `comment` | `false` to skip the pull request comment. Default: `true` |
+| `comment-key` | Jobs with the same key share one comment. Default: the job's id |
+| `upload-artifact`, `artifact-name` | Upload the results directory as an artifact. Default: `true`, `falcon-load-results`; give each job its own name when several jobs use the action |
+| `github-token` | The token that writes the comment. Default: the job's `GITHUB_TOKEN` |
+
+The outputs are `passed` (`true` or `false`), `exit-code`, `results-directory` and `summary` (the Markdown file's path). The summary also goes on the job's summary page. Secrets go in `FALCON_LOAD_<name>` environment variables, as for the CLI, so they never appear in the workflow's inputs. A pull request from a fork gets a read-only token, so there the comment is skipped with a warning and the result is on the summary page only. The action builds the CLI with the .NET SDK it installs, which takes about half a minute, and runs on Linux, Windows and macOS runners. While this repository is private, other repositories can use the action only after "Access" under Settings, Actions, General allows it.
+
+### Azure Pipelines
+
+The template in `ci/azure-pipelines/falcon-load.yml` checks out falcon-load as a repository resource, then does the same as the action: it publishes the JUnit XML as test results, the results directory as a pipeline artifact and the summary on the run's Extensions tab, and comments on Azure Repos pull requests.
+
+```yaml
+resources:
+  repositories:
+    - repository: falconload          # the name the template checks out
+      type: github
+      name: Moonwalker1307/falcon-load
+      endpoint: my-github-connection   # a GitHub service connection
+      ref: refs/heads/main             # or a tag
+
+steps:
+  - checkout: self
+  - template: ci/azure-pipelines/falcon-load.yml@falconload
+    parameters:
+      workingDirectory: $(Build.SourcesDirectory)/my-repo
+      file: load-tests/tests.json
+      envFile: load-tests/environments.json
+      env: Staging
+      secrets:
+        FALCON_LOAD_token: $(stagingApiToken)
+```
+
+With two checkouts, Azure Pipelines puts your repository in a folder named after it under `$(Build.SourcesDirectory)`, hence `workingDirectory`. The parameters match the action's inputs in camel case (`envFile`, `maxErrorRate`, `failOnError`, `commentKey`, `resultsDirectory`, `artifactName` and so on), plus `secrets`, a mapping from `FALCON_LOAD_<name>` to secret pipeline variables, because Azure Pipelines hands a secret to a script only when it is mapped. The comment is posted with the job's access token, so the project's build service needs "Contribute to pull requests" on the repository; without it the comment is skipped with a warning. The comment's thread is closed, so it never holds up a policy that requires resolved comments. For a GitHub repository built in Azure Pipelines, the comment is skipped; use the GitHub Action there. The scripts run in PowerShell 7, so the template works on Linux, Windows and macOS agents.
 
 ## JSON API
 
@@ -497,6 +567,7 @@ tests/FalconLoad.Core.Tests  xUnit tests for the engine and metrics
 tests/FalconLoad.Cli.Tests   xUnit tests for the command line runner
 tests/FalconLoad.Fuzz        A fuzzer for every input parser (plan files, imports, data files, templates, .proto, CLI arguments)
 Dockerfile, Dockerfile.cli   Container images for the web app and the CLI
+action.yml, ci/              The GitHub Action and the Azure Pipelines template
 docs/monitoring              Grafana dashboard and a Docker Compose stack with Prometheus and Grafana
 ```
 
