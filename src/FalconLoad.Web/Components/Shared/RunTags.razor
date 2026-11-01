@@ -1,0 +1,14 @@
+@* The tags of a run as small labels, e.g. the build or commit it tested. *@
+@if (Tags.Count > 0)
+{
+    <span class="tags" aria-label="Tags">
+        @foreach (var tag in Tags)
+        {
+            <span class="tag">@tag</span>
+        }
+    </span>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<string> Tags { get; set; } = [];
+}

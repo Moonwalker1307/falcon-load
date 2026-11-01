@@ -1,4 +1,5 @@
 using System.Globalization;
+using FalconLoad.Core.Model;
 
 namespace FalconLoad.Cli;
 
@@ -40,6 +41,8 @@ internal sealed record CliOptions
           --data <name>=<path>        Use the CSV or JSON file at <path> instead of the rows saved in the test's data
                                       file called <name>, such as --data users.csv=./users.csv. Can be repeated.
           --machine <name>            The machine name recorded in the results. Default: this machine's name.
+          --tag <tag>                 Tag the results, such as the build or commit under test. Can be repeated.
+          --note <text>               Attach a note to the results.
           --influx <url>              Write live metrics to InfluxDB at this address, e.g. http://localhost:8086. The token
                                       comes from the INFLUX_TOKEN environment variable.
           --influx-bucket <name>      The InfluxDB bucket (the database on InfluxDB 1.8 and 3). Needed with --influx.
@@ -97,6 +100,11 @@ internal sealed record CliOptions
 
     /// <summary>Data files given with --data: the name of a data file in the test and the path of the file to use instead.</summary>
     public IReadOnlyList<KeyValuePair<string, string>> DataFiles { get; init; } = [];
+
+    /// <summary>Tags given with --tag, to store with each test's results.</summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
+
+    public string? Note { get; init; }
 
     public bool Quiet { get; init; }
 
@@ -211,6 +219,12 @@ internal sealed record CliOptions
                 case "--machine":
                     options = options with { Machine = value };
                     break;
+                case "--tag":
+                    options = options with { Tags = [.. options.Tags, value] };
+                    break;
+                case "--note":
+                    options = options with { Note = value };
+                    break;
                 case "--env-file":
                     options = options with { EnvironmentFile = value };
                     break;
@@ -309,6 +323,21 @@ internal sealed record CliOptions
             return null;
         }
 
+        var labelProblems = RunLabels.NormalizeTags(options.Tags, out var tags);
+        if (labelProblems.Count > 0)
+        {
+            error = $"--tag: {labelProblems[0]}";
+            return null;
+        }
+
+        if (RunLabels.NormalizeNote(options.Note, out var note, out var noteProblem) is not null)
+        {
+            error = $"--note: {noteProblem}";
+            return null;
+        }
+
+        options = options with { Tags = tags, Note = note };
+
         if (options.InfluxUrl is null && (options.InfluxBucket ?? options.InfluxOrganization) is not null)
         {
             error = "--influx-bucket and --influx-org need --influx with the InfluxDB address.";
@@ -362,7 +391,7 @@ internal sealed record CliOptions
 
     private static readonly HashSet<string> ValueOptions =
         [
-            "--test", "--out", "--html", "--junit", "--markdown", "--machine", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate",
+            "--test", "--out", "--html", "--junit", "--markdown", "--machine", "--tag", "--note", "--env-file", "--env", "--var", "--data", "--concurrency", "--duration", "--requests", "--max-error-rate",
             "--influx", "--influx-bucket", "--influx-org", "--otlp", "--metrics-interval",
         ];
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FalconLoad.Core.Metrics;
+using FalconLoad.Core.Model;
 
 namespace FalconLoad.Web.Services;
 
@@ -16,6 +17,11 @@ public sealed record RunHistoryEntry
     public required DateTimeOffset StartedAt { get; init; }
 
     public string? Machine { get; init; }
+
+    /// <summary>What the run tested, such as a build or commit. Missing from runs stored before tags existed.</summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
+
+    public string? Note { get; init; }
 
     /// <summary>The final results with an empty timeline, which is enough to compare runs in a table.</summary>
     public required LoadTestSnapshot Results { get; init; }
@@ -55,12 +61,31 @@ public sealed class RunHistoryStore : IDisposable
     /// <summary>Raised when a run is added or deleted, or a baseline changes. May be raised on a background thread.</summary>
     public event Action? Changed;
 
-    /// <summary>The test's stored runs, newest first.</summary>
-    public IReadOnlyList<RunHistoryEntry> GetForPlan(Guid planId)
+    /// <summary>The test's stored runs, newest first, only those with every tag in <paramref name="tags"/> when given.</summary>
+    public IReadOnlyList<RunHistoryEntry> GetForPlan(Guid planId, IReadOnlyCollection<string>? tags = null)
     {
         lock (_gate)
         {
-            return _index.Runs.Where(r => r.PlanId == planId).OrderByDescending(r => r.StartedAt).ToList();
+            return _index.Runs
+                .Where(r => r.PlanId == planId && (tags is null || RunLabels.HasAll(r.Tags, tags)))
+                .OrderByDescending(r => r.StartedAt)
+                .ToList();
+        }
+    }
+
+    /// <summary>Every tag used in the test's history, most used first, for the filter.</summary>
+    public IReadOnlyList<string> GetTags(Guid planId)
+    {
+        lock (_gate)
+        {
+            return _index.Runs
+                .Where(r => r.PlanId == planId)
+                .SelectMany(r => r.Tags)
+                .GroupBy(t => t, StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(g => g.Count())
+                .ThenBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.Key)
+                .ToList();
         }
     }
 
@@ -124,6 +149,8 @@ public sealed class RunHistoryStore : IDisposable
             PlanName = run.Plan.Name,
             StartedAt = run.StartedAt,
             Machine = run.Machine,
+            Tags = run.Tags,
+            Note = run.Note,
             Results = run.Results with { Timeline = [] },
         };
 
@@ -132,6 +159,30 @@ public sealed class RunHistoryStore : IDisposable
             _index.Runs.RemoveAll(r => r.RunId == run.Id);
             _index.Runs.Add(entry);
             Trim(run.Plan.Id);
+            PersistIndex();
+        }
+
+        Changed?.Invoke();
+        return true;
+    }
+
+    /// <summary>
+    /// Replaces the tags and note of a stored run, in its file and in the index. False if the run isn't stored or can't
+    /// be read. The values must already be valid, see <see cref="RunLabels"/>.
+    /// </summary>
+    public bool Annotate(Guid runId, IReadOnlyList<string> tags, string? note)
+    {
+        // The whole check-and-write is under the lock so two edits of one run can't interleave their file and index.
+        lock (_gate)
+        {
+            var entry = _index.Runs.FirstOrDefault(r => r.RunId == runId);
+            if (entry is null || Load(runId) is not { } run)
+            {
+                return false;
+            }
+
+            WriteAtomically(RunPath(runId), JsonSerializer.Serialize(run with { Tags = tags, Note = note }, PlanStore.JsonOptions));
+            _index.Runs[_index.Runs.IndexOf(entry)] = entry with { Tags = tags, Note = note };
             PersistIndex();
         }
 
@@ -294,6 +345,8 @@ public sealed class RunHistoryStore : IDisposable
                         PlanName = run.Plan.Name,
                         StartedAt = run.StartedAt,
                         Machine = run.Machine,
+                        Tags = run.Tags,
+                        Note = run.Note,
                         Results = run.Results with { Timeline = [] },
                     });
                 }

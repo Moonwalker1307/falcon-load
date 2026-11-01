@@ -146,6 +146,8 @@ internal static class CliApp
                 Id = runId,
                 StartedAt = startedAt,
                 Machine = machine,
+                Tags = options.Tags,
+                Note = options.Note,
                 Plan = ran,
                 Results = snapshot,
                 Histograms = histograms,

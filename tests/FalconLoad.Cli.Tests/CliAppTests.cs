@@ -176,6 +176,33 @@ public sealed class CliAppTests : IDisposable
     }
 
     [Fact]
+    public async Task TagsAndNote_AreStoredWithTheResults()
+    {
+        var output = Path.Combine(_directory, "results", "tagged.json");
+
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.OK), "run", WriteFile(Plan()), "--out", output,
+            "--tag", "build-42", "--tag=3f9c2ab", "--tag", "BUILD-42", "--note", "  after the cache change ");
+
+        Assert.Equal(CliApp.Passed, code);
+        var export = JsonSerializer.Deserialize<RunExport>(File.ReadAllText(output), PlanFile.JsonOptions)!;
+        Assert.Equal(["build-42", "3f9c2ab"], export.Tags);
+        Assert.Equal("after the cache change", export.Note);
+    }
+
+    [Theory]
+    [InlineData("--tag", "a,b")]
+    [InlineData("--note", "too long")]
+    public async Task InvalidTagsOrNote_AreRejectedBeforeAnythingRuns(string option, string value)
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+
+        var code = await Run(handler, "run", WriteFile(Plan()), option, option == "--note" ? new string('x', 2001) : value);
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Empty(handler.Received);
+    }
+
+    [Fact]
     public async Task SeveralTests_RunInOrderAndWriteOneFileEach()
     {
         var handler = FakeHandler.Returning(HttpStatusCode.OK);
