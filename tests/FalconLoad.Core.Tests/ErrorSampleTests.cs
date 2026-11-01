@@ -72,9 +72,10 @@ public class ErrorSampleTests
         Assert.All(s.ErrorSamples.Where(e => e.StepIndex == 1), e => Assert.Equal(("POST", "/b"), (e.Method, e.Route)));
         Assert.All(s.ErrorSamples.GroupBy(e => (e.StepIndex, e.Error)), g => Assert.True(g.Count() <= ErrorSampler.MaxPerError));
 
-        // The errors of each request are counted apart, and add up to its failures.
-        Assert.Equal(100, s.RequestErrors.Where(e => e.StepIndex == 0).Sum(e => e.Count));
-        Assert.Equal(100, s.RequestErrors.Where(e => e.StepIndex == 1).Sum(e => e.Count));
+        // The errors of each request are counted apart, and add up to its failures. Two users share the request count,
+        // so the split between the requests can be 101 and 99 rather than 100 each.
+        Assert.Equal(s.Steps[0].Failures, s.RequestErrors.Where(e => e.StepIndex == 0).Sum(e => e.Count));
+        Assert.Equal(s.Steps[1].Failures, s.RequestErrors.Where(e => e.StepIndex == 1).Sum(e => e.Count));
     }
 
     [Fact]
