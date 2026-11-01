@@ -17,6 +17,13 @@ public enum RequestProtocol
     /// request is timed from sending the message, after connecting if need be, until the reply has been received.
     /// </summary>
     WebSocket,
+
+    /// <summary>
+    /// A gRPC call over HTTP/2: the request message is written as JSON and encoded with the plan's <c>.proto</c> files,
+    /// and the response is decoded back to JSON for checks and extractions. A call succeeds when its <c>grpc-status</c>
+    /// is one of the expected codes, OK by default.
+    /// </summary>
+    Grpc,
 }
 
 /// <summary>The parts of a GraphQL request besides the query, which is the request's body.</summary>
@@ -40,4 +47,11 @@ public sealed class WebSocketOptions
 
     /// <summary>Close the connection after this request, so the next one opens a new one. Off, it stays open for the virtual user.</summary>
     public bool CloseAfter { get; set; }
+}
+
+/// <summary>The parts of a gRPC call besides its message, which is the request's body as JSON.</summary>
+public sealed class GrpcOptions
+{
+    /// <summary>The method to call, as <c>package.Service/Method</c> from the plan's proto files.</summary>
+    public string Method { get; set; } = string.Empty;
 }

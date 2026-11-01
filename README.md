@@ -2,7 +2,7 @@
 
 ![falcon-load](docs/logo/falcon-load-logo.png)
 
-An API load tester with a web UI. Configure the HTTP, GraphQL or WebSocket requests you want to hammer, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update live.
+An API load tester with a web UI. Configure the HTTP, GraphQL, WebSocket or gRPC requests you want to hammer, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update live.
 
 Built with .NET 10: an ASP.NET Core host with an interactive Blazor Server UI, and a standalone load engine library.
 
@@ -31,6 +31,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **Multi-step scenarios**: add several requests; each virtual user runs them in order and loops.
 - **GraphQL**: switch a request to GraphQL and write the query, its variables and the operation name instead of a body. A response that reports errors counts as a failed request, even with status 200. See [Protocols](#protocols).
 - **WebSocket**: send a message on a connection each virtual user keeps open, and time it until the server's reply arrives. Checks and extractions read the reply, so a subscribe message can feed the messages after it.
+- **gRPC**: add the service's `.proto` files, pick a method and write the request message as JSON. Responses are decoded back to JSON for checks and extractions, streaming calls included, and the `grpc-status` decides success. See [Protocols](#protocols).
 - **Dynamic values** in URLs, headers and bodies: `{{$guid}}`, `{{$randomInt}}`, `{{$randomInt:1:100}}`, `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$vu}}`, `{{$iteration}}`.
 - **Parameter lists**: name a list of values, such as `userIds` = 17, 42, 99, and write `{{userIds}}` in a URL, header value or body. Each iteration of a virtual user takes one value from every list, so all requests in that iteration use the same value. A list hands out its values in order, shared by all virtual users and starting over at the end, or picks one at random. "Send once" uses the first value. Placeholders that match no list are sent as written.
 - **Data files**: upload a CSV file or a JSON array of objects, such as a list of test users, and each column becomes a variable (`{{email}}`, `{{password}}`). Every iteration of a virtual user takes one whole row, so an email and its password always belong together. See [Data files](#data-files).
@@ -166,7 +167,7 @@ Both reports use the same verdict as the CLI's exit code: a test with thresholds
 | `DELETE` | `/api/plans/{id}/baseline` | Clear the baseline |
 | `GET` | `/api/runs/{id}/compare` | Compare a run with the test's baseline, or with `?baseline={runId}`; `hasRegression` is true when anything regressed |
 | `POST` | `/api/results/combine` | Combine an array of exported results from several machines |
-| `POST` | `/api/probe` | Send a single request and return the response, with what its extraction rules found. Takes `?environment=Name`, and `?planId=` to send it with that saved test's OAuth2 token (and its environment, unless one is given) |
+| `POST` | `/api/probe` | Send a single request and return the response, with what its extraction rules found. Takes `?environment=Name`, and `?planId=` to send it with that saved test's OAuth2 token and proto files (and its environment, unless one is given); a gRPC request needs `planId` for its proto files |
 | `GET` | `/api/agents` | List registered agents with their last check (tokens are never returned) |
 | `POST` | `/api/agents` | Register or update an agent (`name`, `url`, `token`, `enabled`, `weight`); an update without a token keeps the saved one |
 | `DELETE` | `/api/agents/{id}` | Remove an agent |
@@ -234,7 +235,7 @@ curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' 
 
 ## Protocols
 
-Every request has a protocol, chosen next to the URL. Plans saved before protocols existed are plain HTTP. A test can mix protocols, so a scenario can log in over HTTP and then talk over a WebSocket, and checks, extractions, thresholds, the command line and agents work the same for all of them.
+Every request has a protocol, chosen next to the URL. Plans saved before protocols existed are plain HTTP. A test can mix protocols, so a scenario can log in over HTTP and then talk over a WebSocket or gRPC, and checks, extractions, thresholds, the command line and agents work the same for all of them.
 
 - **HTTP** is the default: method, URL, headers and body.
 - **GraphQL** sends an operation to the endpoint URL as an HTTP POST with the JSON body `{ "query": …, "variables": …, "operationName": … }`. The Query tab holds the query, its variables as a JSON object (checked when the test is saved) and the optional operation name; dynamic values and `{{variables}}` work in all three, in a string or as a bare number such as `"first": {{$randomInt:1:50}}`. GraphQL servers answer errors with status 200, so a response whose `errors` array has an entry counts as a failed request, named after the first error's message (`GraphQL error: Not authorised`), as does a response that isn't a JSON object. Checks and extractions read the response as usual: `$.data.products[0].id`. In the JSON, a request gets `"protocol": "GraphQL"`, the query in `body` and `"graphQL": { "variables": "{ … }", "operationName": "…" }`; the `method` is ignored.
@@ -266,6 +267,23 @@ curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' 
   "profile": { "concurrency": 100, "stopCondition": "Duration", "durationSeconds": 60, "rampUpSeconds": 10 }
 }'
 ```
+
+- **gRPC** calls a method of a gRPC service over HTTP/2. falcon-load reads the service's `.proto` files, which you add to the test under **Proto files** (pasted or uploaded, and saved with the test); name each file as other files import it, such as `shop/v1/shop.proto`, and the usual `google/protobuf/*.proto` imports are built in. The URL is the server's address, such as `https://localhost:5001`; `http://` calls the server over HTTP/2 without TLS, as a local development server usually expects. Pick the method as `package.Service/Method`, and write the request message as JSON in protobuf's JSON form: fields by their `.proto` name or in camelCase, enums by name, 64-bit numbers as numbers or strings, bytes as base64, timestamps as `"2026-10-31T12:00:00Z"`, durations as `"1.5s"` and wrapper types such as `StringValue` as bare values. Dynamic values and `{{variables}}` work in it, and "Fill in the fields" writes a message with every field of the method's input. The message is encoded for every call, so a field name the method doesn't have or a value of the wrong type is an error, caught when the test is saved where it can be. The headers are sent as gRPC metadata, along with the test's OAuth2 token when it has one. The response is decoded to JSON in the same form, so checks and extractions read `$.name`; a server-streaming method is read to the end and checked as a JSON array (`$[0].name`), and a client-streaming method takes a JSON array of messages. Success is decided by the `grpc-status`, not the HTTP status: `OK` by default, or the names or numbers you list under **Expected gRPC status** (`OK,NOT_FOUND`), and any other status counts as an error named with its message (`gRPC NOT_FOUND: No product 0`). The status table counts gRPC status names, and header checks and extractions see the trailers as well as the headers. In the JSON, the test gets `"protoFiles": [{ "name": "…", "content": "…" }]` and a request gets `"protocol": "Grpc"`, the message in `body` and `"grpc": { "method": "package.Service/Method" }`.
+
+```bash
+curl -X POST http://localhost:5299/api/runs -H 'content-type: application/json' -d '{
+  "name": "Catalog over gRPC",
+  "protoFiles": [{ "name": "shop.proto", "content": "syntax = \"proto3\"; package shop.v1; service Catalog { rpc GetProduct (GetProductRequest) returns (Product); } message GetProductRequest { int64 id = 1; } message Product { int64 id = 1; string name = 2; }" }],
+  "requests": [{
+    "protocol": "Grpc", "url": "https://localhost:5001",
+    "grpc": { "method": "shop.v1.Catalog/GetProduct" }, "body": "{ \"id\": {{$randomInt:1:500}} }",
+    "assertions": [{ "source": "JsonPath", "target": "$.name", "operator": "Exists" }]
+  }],
+  "profile": { "concurrency": 50, "stopCondition": "Duration", "durationSeconds": 30 }
+}'
+```
+
+gRPC calls share the test's HTTP/2 connections, with more connections opened when a server's limit on concurrent streams is reached. Messages are encoded and decoded with the proto files rather than generated code; `google.protobuf.Any` and `Struct` are read and written as their plain message fields.
 
 ## Staged load
 

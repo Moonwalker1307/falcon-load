@@ -140,7 +140,8 @@ internal sealed class ResponseChecker
     /// <param name="response">Null for a protocol without response headers, such as a WebSocket message.</param>
     private static string? HeaderValue(HttpResponseMessage? response, string name)
     {
-        if (response is not null && (response.Headers.TryGetValues(name, out var values) || response.Content.Headers.TryGetValues(name, out values)))
+        // Trailers count too, since a gRPC call reports grpc-status and grpc-message there.
+        if (response is not null && (response.Headers.TryGetValues(name, out var values) || response.Content.Headers.TryGetValues(name, out values) || response.TrailingHeaders.TryGetValues(name, out values)))
         {
             return values is string[] { Length: 1 } single ? single[0] : string.Join(", ", values);
         }

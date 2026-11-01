@@ -267,6 +267,7 @@ td.actions .btn-group { justify-content: flex-end; }
 .method-delete { color: var(--bad); }
 .method-graphql { color: var(--machine-4); }
 .method-ws { color: var(--machine-1); }
+.method-grpc { color: var(--machine-2); }
 .status-2xx, .status-3xx { color: var(--ok); }
 .status-4xx, .status-5xx, .status-err { color: var(--bad); }
 

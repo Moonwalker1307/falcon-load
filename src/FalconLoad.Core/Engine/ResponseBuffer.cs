@@ -13,6 +13,9 @@ internal sealed class ResponseBuffer
 
     public int Length { get; private set; }
 
+    /// <summary>Where a gRPC response is decoded to JSON for its checks, reused like the buffer itself.</summary>
+    public System.Buffers.ArrayBufferWriter<byte> Decoded { get; } = new();
+
     /// <summary>
     /// Set when the body outgrew the limit given to <see cref="Reset"/>. Only its start was kept: enough for extraction,
     /// which only reads the start, but not for checks, which would judge a body they haven't seen.

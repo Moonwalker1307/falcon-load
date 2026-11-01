@@ -287,7 +287,7 @@ public static class ApiEndpoints
             }
 
             var profile = new LoadProfile { IgnoreTlsErrors = ignoreTlsErrors ?? plan?.Profile.IgnoreTlsErrors ?? false };
-            return Results.Ok(await RequestProbe.SendAsync(request, profile, cancellationToken: ct, environment: resolved, auth: plan?.Auth));
+            return Results.Ok(await RequestProbe.SendAsync(request, profile, cancellationToken: ct, environment: resolved, auth: plan?.Auth, protoFiles: plan?.ProtoFiles));
         });
 
         MapAgents(api);

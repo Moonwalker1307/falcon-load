@@ -100,7 +100,8 @@ public static class RequestProbe
         TestEnvironment? environment = null,
         IReadOnlyList<DataFile>? dataFiles = null,
         AuthSettings? auth = null,
-        IWebSocketConnector? webSockets = null)
+        IWebSocketConnector? webSockets = null,
+        IReadOnlyList<Grpc.ProtoFile>? protoFiles = null)
     {
         var set = new ParameterSet(parameters ?? [], dataFiles);
         var secrets = environment?.CreateMasker() ?? SecretMasker.None;
@@ -114,7 +115,21 @@ public static class RequestProbe
         }
 
         var problems = definition.Validate(set, variables?.Keys.ToList(), values, forRun: true).ToList();
-        var prepared = PreparedRequest.From(definition, values, auth is not null);
+        Grpc.ProtoSchema? schema = null;
+        if (definition.Protocol == RequestProtocol.Grpc)
+        {
+            // A gRPC request is checked against the test's proto files like it is when the test is saved.
+            problems.AddRange(new LoadTestPlan { Requests = [definition], ProtoFiles = [.. protoFiles ?? []] }.ValidateGrpc()
+                .Select(p => p.StartsWith("Request 1 (", StringComparison.Ordinal) ? p[(p.IndexOf("): ", StringComparison.Ordinal) + 3)..] : p));
+            if (problems.Count > 0)
+            {
+                return new ProbeResult(null, null, TimeSpan.Zero, [], string.Empty, 0, false, string.Join(" ", problems));
+            }
+
+            Grpc.ProtoSchema.TryParse(protoFiles!, out schema, out _);
+        }
+
+        var prepared = PreparedRequest.From(definition, values, auth is not null, schema);
         if (prepared.UsesAuth)
         {
             problems.AddRange(auth!.Validate(environment?.ToValues(), forRun: true));
@@ -153,9 +168,26 @@ public static class RequestProbe
             var bytes = await response.Content.ReadAsByteArrayAsync(timeout.Token).ConfigureAwait(false);
             var latency = Stopwatch.GetElapsedTime(start);
 
-            var headers = response.Headers.Concat(response.Content.Headers)
+            var headers = response.Headers.Concat(response.Content.Headers).Concat(response.TrailingHeaders)
                 .Select(h => new KeyValuePair<string, string>(h.Key, masker(string.Join(", ", h.Value))!))
                 .ToList();
+
+            // A gRPC response is shown, checked and searched as JSON, like it is during a run.
+            string? decodeError = null;
+            var raw = bytes;
+            if (definition.Protocol == RequestProtocol.Grpc && response.StatusCode == System.Net.HttpStatusCode.OK)
+            {
+                try
+                {
+                    bytes = prepared.ReadableBody(bytes, new System.Buffers.ArrayBufferWriter<byte>()).ToArray();
+                }
+                catch (Grpc.ProtobufException ex)
+                {
+                    decodeError = $"gRPC: couldn't read the response: {ex.Message}";
+                    bytes = [];
+                }
+            }
+
             var preview = masker(Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, MaxPreviewBytes)))!;
             if (bytes.Length > MaxPreviewBytes)
             {
@@ -163,8 +195,9 @@ public static class RequestProbe
             }
 
             var code = (int)response.StatusCode;
-            var statusMatches = prepared.Matcher.IsMatch(code);
-            var protocolError = statusMatches ? prepared.ProtocolError(bytes, bytes.Length > Assertion.MaxBodyBytes) : null;
+            var statusMatches = prepared.HttpStatusMatches(code);
+            var statusLabel = prepared.StatusLabel(response);
+            var protocolError = statusMatches ? prepared.ProtocolError(response, raw, raw.Length > Assertion.MaxBodyBytes) ?? decodeError : null;
             var checks = prepared.Checker.Explain(response, bytes);
             List<ExtractedValue>? extractions = null;
             if (prepared.Extractor is { } extractor)
@@ -173,10 +206,12 @@ public static class RequestProbe
                 extractor.Apply(response, bytes.AsSpan(0, Math.Min(bytes.Length, ResponseExtractor.MaxBodyBytes)), variables, extractions);
             }
 
-            return new ProbeResult(code, masker(response.ReasonPhrase), latency, headers, preview, bytes.Length, statusMatches && protocolError is null && checks.All(c => c.Passed), masker(protocolError), extractions)
+            return new ProbeResult(statusLabel is null ? code : null, statusLabel is null ? masker(response.ReasonPhrase) : null, latency, headers, preview, raw.Length,
+                statusMatches && protocolError is null && checks.All(c => c.Passed), masker(protocolError), extractions)
             {
                 Checks = [.. checks.Select(c => c with { Actual = masker(c.Actual) })],
                 StatusMatches = statusMatches,
+                StatusLabel = statusLabel,
             };
         }
         catch (OAuth2TokenException ex)
@@ -194,6 +229,10 @@ public static class RequestProbe
         catch (WebSocketException ex)
         {
             return Failed(LoadTestRunner.DescribeWebSocketError(ex));
+        }
+        catch (Grpc.ProtobufException ex)
+        {
+            return Failed($"gRPC: couldn't encode the message: {ex.Message}");
         }
         catch (Exception ex) when (ex is IOException or FormatException or UriFormatException or InvalidOperationException)
         {

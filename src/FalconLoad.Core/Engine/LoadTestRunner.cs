@@ -74,7 +74,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
         _slotIterations = new long[_plan.Profile.PeakVirtualUsers];
         var variables = _plan.EnvironmentValues(environment);
         var auth = _plan.Auth is { IsEnabled: true };
-        _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables, auth)).ToArray();
+        // The proto files are read once for the run; validation has already made sure they parse.
+        var schema = _plan.Requests.Any(r => r.Protocol == RequestProtocol.Grpc) && Grpc.ProtoSchema.TryParse(_plan.ProtoFiles, out var parsed, out _) ? parsed : null;
+        _requests = _plan.Requests.Select(r => PreparedRequest.From(r, variables, auth, schema)).ToArray();
 
         // The parameter set holds the rows; the plan that is reported with the results doesn't need them as well.
         _plan.DropDataRows();
@@ -467,6 +469,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         var startedAt = _clock.Elapsed;
         var start = Stopwatch.GetTimestamp();
         long bytesSent = 0;
+        var decoded = kept?.Decoded;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop);
         timeout.CancelAfter(TimeSpan.FromSeconds(_plan.Profile.TimeoutSeconds));
@@ -495,17 +498,33 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 _tokens!.Reject(token);
             }
 
-            var statusMatches = prepared.Matcher.IsMatch(code);
+            var statusMatches = prepared.HttpStatusMatches(code);
+            var statusLabel = prepared.StatusLabel(response);
             var keptBody = keep?.Memory ?? ReadOnlyMemory<byte>.Empty;
+            string? error = null;
+            var protocolError = statusMatches ? prepared.ProtocolError(response, keptBody.Span, keep?.TooLarge ?? false) : null;
+            if (keep is not null && prepared.Protocol == RequestProtocol.Grpc && !keep.TooLarge)
+            {
+                // Checks and extractions read a gRPC response as JSON, so it is decoded here, after the clock stopped.
+                try
+                {
+                    keptBody = prepared.ReadableBody(keptBody, decoded ??= new System.Buffers.ArrayBufferWriter<byte>());
+                }
+                catch (Grpc.ProtobufException ex)
+                {
+                    keptBody = ReadOnlyMemory<byte>.Empty;
+                    protocolError ??= $"gRPC: couldn't read the response: {ex.Message}";
+                }
+            }
+
             var failedChecks = checker.Count == 0 ? 0 : checker.Evaluate(response, keptBody, keep?.TooLarge ?? false);
 
             // The protocol's own verdict, such as a GraphQL error, comes before the checks, like an unexpected status does.
-            string? error = null;
             if (!statusMatches)
             {
                 error = $"Unexpected status {code} {response.StatusCode}";
             }
-            else if (prepared.ProtocolError(keptBody.Span, keep?.TooLarge ?? false) is { } protocolError)
+            else if (protocolError is not null)
             {
                 error = protocolError;
             }
@@ -519,7 +538,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
             // A response that matches the status codes but lacks a value later requests need counts as an error, since
             // those requests would otherwise fail in less obvious ways. Responses with another status aren't searched.
             // Extraction only reads the start of a body, up to its own limit.
-            if (statusMatches && extractor is not null)
+            if (statusMatches && (protocolError is null || prepared.Protocol != RequestProtocol.Grpc) && extractor is not null)
             {
                 var extractError = extractor.Apply(response, keptBody.Span[..Math.Min(keptBody.Length, ResponseExtractor.MaxBodyBytes)], variables!);
                 error ??= extractError;
@@ -529,12 +548,13 @@ public sealed class LoadTestRunner : IAsyncDisposable
                 step,
                 startedAt,
                 latency,
-                code,
+                statusLabel is null ? code : null,
                 error is null,
                 Mask(error),
                 bytesSent,
                 received,
-                failedChecks);
+                failedChecks,
+                statusLabel);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -548,6 +568,11 @@ public sealed class LoadTestRunner : IAsyncDisposable
         catch (HttpRequestException ex)
         {
             return Failure(DescribeTransportError(ex));
+        }
+        catch (Grpc.ProtobufException ex)
+        {
+            // A message whose placeholders filled in values that don't fit the request type, such as text in a number field.
+            return Failure($"gRPC: couldn't encode the message: {ex.Message}");
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or UriFormatException or FormatException)
         {

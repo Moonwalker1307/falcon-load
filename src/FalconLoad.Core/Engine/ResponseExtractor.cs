@@ -91,7 +91,7 @@ internal sealed class ResponseExtractor
                 switch (rule.Source)
                 {
                     case ExtractionSource.Header:
-                        if (response is not null && (response.Headers.TryGetValues(rule.Expression, out var values) || response.Content.Headers.TryGetValues(rule.Expression, out values)))
+                        if (response is not null && (response.Headers.TryGetValues(rule.Expression, out var values) || response.Content.Headers.TryGetValues(rule.Expression, out values) || response.TrailingHeaders.TryGetValues(rule.Expression, out values)))
                         {
                             value = string.Join(", ", values);
                         }

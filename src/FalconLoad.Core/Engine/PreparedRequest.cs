@@ -1,5 +1,8 @@
+using System.Buffers;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using FalconLoad.Core.Grpc;
 using FalconLoad.Core.Model;
 
 namespace FalconLoad.Core.Engine;
@@ -23,6 +26,8 @@ internal sealed class PreparedRequest
     private (string Name, string Value, bool HasVariables)[] _headers = [];
     private string? _graphQLVariables;
     private string? _operationName;
+    private MethodDescriptor? _grpcMethod;
+    private GrpcStatusMatcher _grpcMatcher = GrpcStatusMatcher.Default;
 
     public RequestProtocol Protocol { get; private set; }
 
@@ -53,19 +58,29 @@ internal sealed class PreparedRequest
     /// once, and text that only used them is then as cheap to send as text with no variables at all.
     /// </param>
     /// <param name="auth">Whether the plan sends an OAuth2 token with its requests.</param>
-    public static PreparedRequest From(RequestDefinition definition, IReadOnlyDictionary<string, string>? variables = null, bool auth = false)
+    /// <param name="schema">The plan's proto files, read once for the run; needed by gRPC requests.</param>
+    public static PreparedRequest From(RequestDefinition definition, IReadOnlyDictionary<string, string>? variables = null, bool auth = false, ProtoSchema? schema = null)
     {
         StatusCodeMatcher.TryParse(definition.ExpectedStatusCodes, out var matcher);
         var graphQL = definition.Protocol == RequestProtocol.GraphQL;
-        var url = TemplateRenderer.ResolveVariables(definition.Url, variables);
-        var body = string.IsNullOrEmpty(definition.Body) ? null : TemplateRenderer.ResolveVariables(definition.Body, variables);
+        var grpc = definition.Protocol == RequestProtocol.Grpc;
+        var grpcMethod = grpc
+            ? schema?.FindMethod(definition.Grpc?.Method) ?? throw new ArgumentException($"The proto files have no method '{definition.Grpc?.Method}'.")
+            : null;
+        GrpcStatusMatcher.TryParse(grpc ? definition.ExpectedStatusCodes : null, out var grpcMatcher);
+
+        // A gRPC call goes to the method's path on the server's address, and always has a message, even an empty one.
+        var url = TemplateRenderer.ResolveVariables(grpc ? definition.Url.Trim().TrimEnd('/') + "/" + grpcMethod!.Path : definition.Url, variables);
+        var body = string.IsNullOrEmpty(definition.Body) ? grpc ? "{}" : null : TemplateRenderer.ResolveVariables(definition.Body, variables);
         var graphQLVariables = graphQL && !string.IsNullOrWhiteSpace(definition.GraphQL?.Variables)
             ? TemplateRenderer.ResolveVariables(definition.GraphQL.Variables, variables)
             : null;
         var prepared = new PreparedRequest
         {
             Protocol = definition.Protocol,
-            _method = graphQL ? HttpMethod.Post : HttpMethod.Parse(definition.Method.ToUpperInvariant()),
+            _method = graphQL || grpc ? HttpMethod.Post : HttpMethod.Parse(definition.Method.ToUpperInvariant()),
+            _grpcMethod = grpcMethod,
+            _grpcMatcher = grpcMatcher,
             _url = url.Trim(),
             _urlHasVariables = TemplateRenderer.HasVariables(url),
             _body = body,
@@ -73,6 +88,7 @@ internal sealed class PreparedRequest
             _graphQLVariables = graphQLVariables,
             _operationName = graphQL ? definition.GraphQL?.OperationName : null,
             _contentType = graphQL ? GraphQLRequest.ContentType
+                : grpc ? GrpcMessages.ContentType
                 : string.IsNullOrWhiteSpace(definition.ContentType) ? "text/plain" : definition.ContentType.Trim(),
             _headers = definition.Headers
                 .Where(h => h.Enabled && !string.IsNullOrWhiteSpace(h.Name))
@@ -106,22 +122,71 @@ internal sealed class PreparedRequest
     }
 
     /// <summary>The bytes to send for a body whose placeholders have been filled in.</summary>
-    private byte[] EncodeBody(string body, string? graphQLVariables) =>
-        Protocol == RequestProtocol.GraphQL ? GraphQLRequest.BuildBody(body, graphQLVariables, _operationName) : Encoding.UTF8.GetBytes(body);
+    private byte[] EncodeBody(string body, string? graphQLVariables) => Protocol switch
+    {
+        RequestProtocol.GraphQL => GraphQLRequest.BuildBody(body, graphQLVariables, _operationName),
+        RequestProtocol.Grpc => GrpcMessages.EncodeRequest(_grpcMethod!, body),
+        _ => Encoding.UTF8.GetBytes(body),
+    };
 
     /// <summary>
-    /// The protocol's own verdict on a response whose status matched: for GraphQL, the first message in its
-    /// <c>errors</c> array. Null when the protocol finds nothing wrong, or needs nothing beyond the status.
+    /// Whether the HTTP status is a success. A gRPC call always answers 200 and reports its outcome in
+    /// <c>grpc-status</c>, so its expected codes are gRPC codes, judged by <see cref="ProtocolError"/>.
     /// </summary>
-    /// <param name="bodyTooLarge">True when only the start of the body was kept, so it can't be judged.</param>
-    public string? ProtocolError(ReadOnlySpan<byte> body, bool bodyTooLarge)
+    public bool HttpStatusMatches(int code) => Protocol == RequestProtocol.Grpc ? code == 200 : Matcher.IsMatch(code);
+
+    /// <summary>What a gRPC call's status is recorded as, such as <c>OK</c> or <c>NOT_FOUND</c>. Null for other protocols.</summary>
+    public string? StatusLabel(HttpResponseMessage response)
     {
-        if (Protocol != RequestProtocol.GraphQL)
+        if (Protocol != RequestProtocol.Grpc || response.StatusCode != HttpStatusCode.OK)
         {
             return null;
         }
 
-        return bodyTooLarge ? TooLargeToCheck : GraphQLRequest.FindError(body);
+        return GrpcMessages.ReadStatus(response) is { } status ? GrpcStatusMatcher.NameOf(status.Status) : "No grpc-status";
+    }
+
+    /// <summary>
+    /// The protocol's own verdict on a response whose HTTP status matched: for GraphQL, the first message in its
+    /// <c>errors</c> array; for gRPC, a <c>grpc-status</c> that isn't expected. Null when the protocol finds nothing
+    /// wrong, or needs nothing beyond the status.
+    /// </summary>
+    /// <param name="bodyTooLarge">True when only the start of the body was kept, so it can't be judged.</param>
+    public string? ProtocolError(HttpResponseMessage response, ReadOnlySpan<byte> body, bool bodyTooLarge)
+    {
+        switch (Protocol)
+        {
+            case RequestProtocol.GraphQL:
+                return bodyTooLarge ? TooLargeToCheck : GraphQLRequest.FindError(body);
+            case RequestProtocol.Grpc:
+                if (GrpcMessages.ReadStatus(response) is not { } status)
+                {
+                    return "gRPC: the response has no grpc-status";
+                }
+
+                return _grpcMatcher.IsMatch(status.Status)
+                    ? null
+                    : status.Message is null ? $"gRPC {GrpcStatusMatcher.NameOf(status.Status)}" : $"gRPC {GrpcStatusMatcher.NameOf(status.Status)}: {status.Message}";
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// The body as checks and extractions see it: a gRPC response decoded to JSON into <paramref name="scratch"/>,
+    /// anything else as it came. Only called when something reads the body.
+    /// </summary>
+    /// <exception cref="ProtobufException">The gRPC response doesn't fit the method's response type.</exception>
+    public ReadOnlyMemory<byte> ReadableBody(ReadOnlyMemory<byte> raw, ArrayBufferWriter<byte> scratch)
+    {
+        if (Protocol != RequestProtocol.Grpc)
+        {
+            return raw;
+        }
+
+        scratch.ResetWrittenCount();
+        GrpcMessages.DecodeResponse(_grpcMethod!, raw.Span, scratch);
+        return scratch.WrittenMemory;
     }
 
     internal static readonly string TooLargeToCheck =
@@ -170,6 +235,13 @@ internal sealed class PreparedRequest
         var uri = _staticUri ?? new Uri(TemplateRenderer.Render(_url, context), UriKind.Absolute);
         var request = new HttpRequestMessage(_method, uri);
         bytesSent = 0;
+        if (Protocol == RequestProtocol.Grpc)
+        {
+            // gRPC needs HTTP/2. Asking for exactly 2.0 also lets a plain http:// address use HTTP/2 without TLS (h2c).
+            request.Version = HttpVersion.Version20;
+            request.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
+            request.Headers.TryAddWithoutValidation("TE", "trailers");
+        }
 
         if (_body is not null)
         {
