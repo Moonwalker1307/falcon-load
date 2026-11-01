@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.WebSockets;
 using FalconLoad.Core.Metrics;
 using FalconLoad.Core.Model;
 using FalconLoad.Core.Telemetry;
@@ -25,6 +26,8 @@ public sealed class LoadTestRunner : IAsyncDisposable
     private readonly OAuth2TokenSource? _tokens;
     private readonly HttpMessageInvoker _invoker;
     private readonly bool _ownsInvoker;
+    private readonly IWebSocketConnector _webSockets;
+    private readonly bool _hasWebSockets;
     private readonly MetricsCollector _metrics;
     private readonly Stopwatch _clock = new();
 
@@ -47,13 +50,14 @@ public sealed class LoadTestRunner : IAsyncDisposable
     /// The environment whose variables fill the <c>{{name}}</c> placeholders that no parameter list or extracted variable supplies. Its
     /// secret values are hidden from error messages. The run is recorded against its name, not its values.
     /// </param>
-    public LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker = null, TestEnvironment? environment = null)
-        : this(plan, invoker, environment, null)
+    /// <param name="webSockets">Opens the WebSocket connections of WebSocket requests. By default they go through <paramref name="invoker"/>.</param>
+    public LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker = null, TestEnvironment? environment = null, IWebSocketConnector? webSockets = null)
+        : this(plan, invoker, environment, null, webSockets)
     {
     }
 
     /// <param name="time">The clock that decides when an OAuth2 token is replaced; tests pass one they can move on.</param>
-    internal LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker, TestEnvironment? environment, TimeProvider? time)
+    internal LoadTestRunner(LoadTestPlan plan, HttpMessageInvoker? invoker, TestEnvironment? environment, TimeProvider? time, IWebSocketConnector? webSockets = null)
     {
         var problems = plan.ValidateForRun(environment);
         if (problems.Count > 0)
@@ -77,6 +81,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
         _extracts = _requests.Any(r => r.Extractor is not null);
         _keepsBodies = _requests.Any(r => r.Extractor is { NeedsBody: true } || r.Checker.NeedsBody || r.ProtocolNeedsBody);
         _hasOnceRequests = _requests.Any(r => r.OncePerVirtualUser);
+        _hasWebSockets = _requests.Any(r => r.Protocol == RequestProtocol.WebSocket);
         _metrics = new MetricsCollector(
             _plan.Requests.Select(r => r.DisplayName).ToList(),
             _requests.Any(r => r.Checker.Count > 0) ? _requests.Select(r => r.Checker.Names).ToList() : null);
@@ -93,6 +98,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
         // Token requests go through the same handler, so they honour the profile's TLS and redirect options.
         _tokens = OAuth2TokenSource.For(_plan, environment, _invoker, _masker, time);
+        _webSockets = webSockets ?? new ClientWebSocketConnector(_invoker);
     }
 
     public LoadTestPlan Plan => _plan;
@@ -295,6 +301,8 @@ public sealed class LoadTestRunner : IAsyncDisposable
         var variables = _extracts ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) : null;
         var kept = _keepsBodies ? new ResponseBuffer() : null;
         var done = _hasOnceRequests ? new bool[_requests.Length] : null;
+        // WebSocket connections belong to the virtual user and stay open across its iterations until it stops.
+        var sockets = _hasWebSockets ? new WebSocketConnections(_webSockets) : null;
         try
         {
             while (index < Volatile.Read(ref _desiredUsers))
@@ -334,7 +342,9 @@ public sealed class LoadTestRunner : IAsyncDisposable
                         picked = true;
                     }
 
-                    var result = await SendAsync(step, context, buffer, variables, kept, stop).ConfigureAwait(false);
+                    var result = _requests[step].Protocol == RequestProtocol.WebSocket
+                        ? await SendWebSocketAsync(step, context, buffer, variables, kept, sockets!, stop).ConfigureAwait(false)
+                        : await SendAsync(step, context, buffer, variables, kept, stop).ConfigureAwait(false);
                     if (result is { } r)
                     {
                         _metrics.Record(r);
@@ -350,6 +360,10 @@ public sealed class LoadTestRunner : IAsyncDisposable
         {
             _slotIterations[index] = iteration;
             Interlocked.Decrement(ref _activeVirtualUsers);
+            if (sockets is not null)
+            {
+                await sockets.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -546,6 +560,166 @@ public sealed class LoadTestRunner : IAsyncDisposable
 
     /// <summary>Hides secrets, and the OAuth2 tokens of the run, in text that people will see.</summary>
     private string? Mask(string? text) => text is null ? null : _tokens?.Mask(text) ?? _masker.Apply(text);
+
+    /// <summary>
+    /// Sends one WebSocket message on the virtual user's connection to its address, connecting first when there is none,
+    /// and waits for the server's next message when the request asks for one. The request is timed from the start,
+    /// so the first message on a connection includes the handshake, like the first HTTP request on a connection does.
+    /// Returns null when the run was stopped while the request was in flight.
+    /// </summary>
+    private async Task<RequestResult?> SendWebSocketAsync(
+        int step,
+        TemplateContext context,
+        byte[] buffer,
+        Dictionary<string, string>? variables,
+        ResponseBuffer? kept,
+        WebSocketConnections sockets,
+        CancellationToken stop)
+    {
+        var prepared = _requests[step];
+        var extractor = prepared.Extractor;
+        var checker = prepared.Checker;
+        var keep = extractor is { NeedsBody: true } || checker.NeedsBody ? kept : null;
+        keep?.Reset(checker.NeedsBody ? Assertion.MaxBodyBytes : ResponseExtractor.MaxBodyBytes);
+        var startedAt = _clock.Elapsed;
+        var start = Stopwatch.GetTimestamp();
+        long bytesSent = 0;
+        Uri? uri = null;
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop);
+        timeout.CancelAfter(TimeSpan.FromSeconds(_plan.Profile.TimeoutSeconds));
+
+        // A connection is authorised once, at its handshake, with the token current at that moment.
+        OAuth2TokenSource.Token? token = null;
+        if (_tokens is not null && prepared.UsesAuth)
+        {
+            try
+            {
+                token = await _tokens.GetAsync(stop).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+        }
+
+        try
+        {
+            uri = prepared.ResolveUri(context);
+            var socket = await sockets.GetAsync(uri, prepared.HandshakeHeaders(context, token?.Header), timeout.Token).ConfigureAwait(false);
+            var message = prepared.Message(context);
+            if (message.Length > 0)
+            {
+                await socket.SendAsync(message, WebSocketMessageType.Text, endOfMessage: true, timeout.Token).ConfigureAwait(false);
+                bytesSent = message.Length;
+            }
+
+            long received = 0;
+            string? error = null;
+            if (prepared.WaitForReply)
+            {
+                // A message may arrive in several frames; all of them are read before the clock stops.
+                ValueWebSocketReceiveResult frame;
+                do
+                {
+                    frame = await socket.ReceiveAsync(buffer.AsMemory(), timeout.Token).ConfigureAwait(false);
+                    if (frame.MessageType == WebSocketMessageType.Close)
+                    {
+                        error = $"Server closed the connection: {socket.CloseStatus} {socket.CloseStatusDescription}".TrimEnd();
+                        break;
+                    }
+
+                    received += frame.Count;
+                    keep?.Append(buffer.AsSpan(0, frame.Count));
+                }
+                while (!frame.EndOfMessage);
+            }
+
+            var latency = Stopwatch.GetElapsedTime(start);
+            if (error is not null)
+            {
+                sockets.Drop(uri);
+                return new RequestResult(step, startedAt, latency, null, false, Mask(error), bytesSent, received);
+            }
+
+            ulong failedChecks = 0;
+            if (prepared.WaitForReply)
+            {
+                var keptBody = keep?.Memory ?? ReadOnlyMemory<byte>.Empty;
+                failedChecks = checker.Count == 0 ? 0 : checker.Evaluate(null, keptBody, keep?.TooLarge ?? false);
+                if (failedChecks != 0)
+                {
+                    error = checker.NeedsBody && keep!.TooLarge
+                        ? PreparedRequest.TooLargeToCheck
+                        : checker.FailureMessages[System.Numerics.BitOperations.TrailingZeroCount(failedChecks)];
+                }
+
+                if (extractor is not null)
+                {
+                    error ??= extractor.Apply(null, keptBody.Span[..Math.Min(keptBody.Length, ResponseExtractor.MaxBodyBytes)], variables!);
+                }
+            }
+
+            if (prepared.CloseAfter)
+            {
+                await sockets.CloseAsync(uri, stop).ConfigureAwait(false);
+            }
+
+            return new RequestResult(
+                step,
+                startedAt,
+                latency,
+                null,
+                error is null,
+                Mask(error),
+                bytesSent,
+                received,
+                failedChecks,
+                prepared.WaitForReply ? RequestResult.ReplyStatus : RequestResult.SentStatus);
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (OperationCanceledException)
+        {
+            DropSocket();
+            return Failure($"Timeout after {_plan.Profile.TimeoutSeconds}s");
+        }
+        catch (WebSocketException ex)
+        {
+            DropSocket();
+            return Failure(DescribeWebSocketError(ex));
+        }
+        catch (HttpRequestException ex)
+        {
+            DropSocket();
+            return Failure(DescribeTransportError(ex));
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or UriFormatException or FormatException or ObjectDisposedException)
+        {
+            DropSocket();
+            return Failure($"{ex.GetType().Name}: {ex.Message}");
+        }
+
+        // A failed connection is dropped, so the next request opens a new one instead of reusing a broken socket.
+        void DropSocket()
+        {
+            if (uri is not null)
+            {
+                sockets.Drop(uri);
+            }
+        }
+
+        RequestResult Failure(string error) =>
+            new(step, startedAt, Stopwatch.GetElapsedTime(start), null, false, Mask(error), bytesSent, 0);
+    }
+
+    internal static string DescribeWebSocketError(WebSocketException ex)
+    {
+        var inner = ex.InnerException is HttpRequestException http ? DescribeTransportError(http) : ex.InnerException?.Message;
+        return inner is null ? $"WebSocket: {ex.Message}" : $"WebSocket: {ex.Message} ({inner})";
+    }
 
     private static string DescribeTransportError(HttpRequestException ex)
     {

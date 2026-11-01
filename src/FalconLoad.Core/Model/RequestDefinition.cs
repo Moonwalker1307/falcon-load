@@ -1,6 +1,6 @@
 namespace FalconLoad.Core.Model;
 
-/// <summary>A single request to send as part of a load test: an HTTP request, or a GraphQL operation over HTTP.</summary>
+/// <summary>A single request to send as part of a load test: an HTTP request, a GraphQL operation over HTTP, or a WebSocket message.</summary>
 public sealed class RequestDefinition
 {
     public static readonly string[] SupportedMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
@@ -18,11 +18,17 @@ public sealed class RequestDefinition
 
     public List<HeaderEntry> Headers { get; set; } = [];
 
-    /// <summary>Optional request body, or the query of a GraphQL request. May contain template variables.</summary>
+    /// <summary>
+    /// Optional request body, the query of a GraphQL request, or the message of a WebSocket request (empty to only wait
+    /// for a message). May contain template variables.
+    /// </summary>
     public string? Body { get; set; }
 
     /// <summary>The variables and operation name of a GraphQL request. Null for other protocols.</summary>
     public GraphQLOptions? GraphQL { get; set; }
+
+    /// <summary>How a WebSocket request waits and closes. Null for other protocols.</summary>
+    public WebSocketOptions? WebSocket { get; set; }
 
     public string ContentType { get; set; } = "application/json";
 
@@ -55,6 +61,7 @@ public sealed class RequestDefinition
     public string Label => Protocol switch
     {
         RequestProtocol.GraphQL => "GraphQL",
+        RequestProtocol.WebSocket => "WS",
         _ => Method,
     };
 
@@ -97,17 +104,38 @@ public sealed class RequestDefinition
             }
         }
 
+        if (Protocol == RequestProtocol.WebSocket)
+        {
+            // A WebSocket message has no status and no headers; only its text can be checked or extracted from.
+            if (Assertions.Any(a => a.Enabled && a.Source == AssertionSource.Header))
+            {
+                yield return "A WebSocket reply has no headers to check; check its body or a JSON path instead.";
+            }
+
+            if (Extractions.Any(e => e.Source == ExtractionSource.Header))
+            {
+                yield return "A WebSocket reply has no headers to extract from; use a JSON path or a regular expression.";
+            }
+
+            if (string.IsNullOrEmpty(Body) && WebSocket is { WaitForReply: false })
+            {
+                yield return "A WebSocket request needs a message to send, or has to wait for one.";
+            }
+        }
+
         // Validate the URL with template variables replaced by harmless placeholders.
+        var webSocket = Protocol == RequestProtocol.WebSocket;
         var probe = TemplateRenderer.RenderForValidation(Url, parameters, variables, environment, assumeUnresolvedDefined: !forRun);
-        if (!Uri.TryCreate(probe, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        var schemes = webSocket ? "ws:// or wss://" : "http:// or https://";
+        if (!Uri.TryCreate(probe, UriKind.Absolute, out var uri) || !IsAllowedScheme(uri.Scheme, webSocket))
         {
             var missing = TemplateRenderer.UnresolvedNames(Url, environment, parameters, variables);
             yield return missing.Count == 0
-                ? "URL must be an absolute http:// or https:// address."
-                : $"URL must be an absolute http:// or https:// address. No value for {string.Join(", ", missing.Select(m => "{{" + m + "}}"))}: choose an environment that defines it.";
+                ? $"URL must be an absolute {schemes} address."
+                : $"URL must be an absolute {schemes} address. No value for {string.Join(", ", missing.Select(m => "{{" + m + "}}"))}: choose an environment that defines it.";
         }
 
-        if (!StatusCodeMatcher.TryParse(ExpectedStatusCodes, out _))
+        if (!webSocket && !StatusCodeMatcher.TryParse(ExpectedStatusCodes, out _))
         {
             yield return "Expected status codes must look like \"200,201\" or \"200-299\".";
         }
@@ -135,6 +163,9 @@ public sealed class RequestDefinition
             yield return problem;
         }
     }
+    // A WebSocket address is usually written ws:// or wss://, but the http:// form of the same address works too.
+    private static bool IsAllowedScheme(string scheme, bool webSocket) =>
+        scheme == Uri.UriSchemeHttp || scheme == Uri.UriSchemeHttps || (webSocket && (scheme == Uri.UriSchemeWs || scheme == Uri.UriSchemeWss));
 }
 
 public sealed class HeaderEntry

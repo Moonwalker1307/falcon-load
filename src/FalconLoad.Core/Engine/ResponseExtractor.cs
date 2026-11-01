@@ -76,7 +76,7 @@ internal sealed class ResponseExtractor
     /// leaves the variable as it was. Returns the first failure, used as the request's error, or null.
     /// </summary>
     /// <param name="results">When given, receives the outcome of every rule, for "Send once".</param>
-    public string? Apply(HttpResponseMessage response, ReadOnlySpan<byte> body, IDictionary<string, string> variables, List<ExtractedValue>? results = null)
+    public string? Apply(HttpResponseMessage? response, ReadOnlySpan<byte> body, IDictionary<string, string> variables, List<ExtractedValue>? results = null)
     {
         string? firstError = null;
         JsonDocument? document = null;
@@ -91,7 +91,7 @@ internal sealed class ResponseExtractor
                 switch (rule.Source)
                 {
                     case ExtractionSource.Header:
-                        if (response.Headers.TryGetValues(rule.Expression, out var values) || response.Content.Headers.TryGetValues(rule.Expression, out values))
+                        if (response is not null && (response.Headers.TryGetValues(rule.Expression, out var values) || response.Content.Headers.TryGetValues(rule.Expression, out values)))
                         {
                             value = string.Join(", ", values);
                         }

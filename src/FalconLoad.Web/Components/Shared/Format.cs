@@ -66,7 +66,9 @@ public static class Format
     public static string MethodClass(string method) => "method method-" + method.ToLowerInvariant();
 
     public static string StatusClass(string code) =>
-        code.Length == 3 && char.IsDigit(code[0]) ? $"status-{code[0]}xx" : "status-err";
+        code.Length == 3 && char.IsDigit(code[0]) ? $"status-{code[0]}xx"
+        : code is RequestResult.ReplyStatus or RequestResult.SentStatus ? "status-2xx"
+        : "status-err";
 
     public static string StopSummary(FalconLoad.Core.Model.LoadProfile p) =>
         p.IsStaged ? Seconds(p.TotalStageSeconds)

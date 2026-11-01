@@ -26,6 +26,12 @@ internal sealed class PreparedRequest
 
     public RequestProtocol Protocol { get; private set; }
 
+    /// <summary>For a WebSocket request, whether to wait for the server's next message after sending.</summary>
+    public bool WaitForReply { get; private set; } = true;
+
+    /// <summary>For a WebSocket request, whether to close the connection once the request is done.</summary>
+    public bool CloseAfter { get; private set; }
+
     /// <summary>Whether the protocol itself has to read the body to judge the response, as GraphQL does for its errors.</summary>
     public bool ProtocolNeedsBody => Protocol == RequestProtocol.GraphQL;
 
@@ -80,6 +86,8 @@ internal sealed class PreparedRequest
             Checker = ResponseChecker.From(definition.Assertions),
             Extractor = ResponseExtractor.From(definition),
             OncePerVirtualUser = definition.OncePerVirtualUser,
+            WaitForReply = definition.WebSocket?.WaitForReply ?? true,
+            CloseAfter = definition.WebSocket?.CloseAfter ?? false,
         };
 
         prepared.UsesAuth = auth && !prepared._headers.Any(h => string.Equals(h.Name, "Authorization", StringComparison.OrdinalIgnoreCase));
@@ -118,6 +126,43 @@ internal sealed class PreparedRequest
 
     internal static readonly string TooLargeToCheck =
         $"Response body over {Assertion.MaxBodyBytes / (1024 * 1024)} MB is too large to check";
+
+    /// <summary>The address a WebSocket request connects to, with its placeholders filled in.</summary>
+    public Uri ResolveUri(TemplateContext context) => _staticUri ?? new Uri(TemplateRenderer.Render(_url, context), UriKind.Absolute);
+
+    /// <summary>The message a WebSocket request sends, or empty when it only waits for one.</summary>
+    public ReadOnlyMemory<byte> Message(TemplateContext context) =>
+        _body is null ? ReadOnlyMemory<byte>.Empty : _staticBody ?? Encoding.UTF8.GetBytes(TemplateRenderer.Render(_body, context));
+
+    /// <summary>The headers a WebSocket handshake sends. Static headers are shared, so a request without placeholders allocates nothing here.</summary>
+    /// <param name="authorization">The run's OAuth2 <c>Authorization</c> value, sent when <see cref="UsesAuth"/>.</param>
+    public IReadOnlyList<KeyValuePair<string, string>> HandshakeHeaders(TemplateContext context, string? authorization = null)
+    {
+        if (UsesAuth && authorization is not null)
+        {
+            return [.. HandshakeHeaders(context), new KeyValuePair<string, string>("Authorization", authorization)];
+        }
+
+        if (_headers.Length == 0)
+        {
+            return [];
+        }
+
+        if (_staticHeaders is not null)
+        {
+            return _staticHeaders;
+        }
+
+        var headers = _headers.Select(h => new KeyValuePair<string, string>(h.Name, h.HasVariables ? TemplateRenderer.Render(h.Value, context) : h.Value)).ToArray();
+        if (_headers.All(h => !h.HasVariables))
+        {
+            _staticHeaders = headers;
+        }
+
+        return headers;
+    }
+
+    private KeyValuePair<string, string>[]? _staticHeaders;
 
     /// <param name="authorization">The <c>Authorization</c> header value to send when <see cref="UsesAuth"/>, such as <c>Bearer …</c>.</param>
     public HttpRequestMessage Build(TemplateContext context, out long bytesSent, string? authorization = null)

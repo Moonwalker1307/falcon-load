@@ -176,8 +176,8 @@ textarea { font-family: var(--mono); font-size: .88rem; min-height: 140px; resiz
 .name-input:hover { border-color: var(--border) !important; }
 .name-input:focus { border-color: var(--accent) !important; background: var(--bg) !important; }
 
-.url-row { display: grid; grid-template-columns: 116px 116px minmax(0, 1fr) auto; gap: var(--space-2); align-items: start; }
-.url-row.no-method { grid-template-columns: 116px minmax(0, 1fr) auto; }
+.url-row { display: grid; grid-template-columns: 136px 116px minmax(0, 1fr) auto; gap: var(--space-2); align-items: start; }
+.url-row.no-method { grid-template-columns: 136px minmax(0, 1fr) auto; }
 .url-row select { font-weight: 700; font-family: var(--mono); }
 .url-row select.protocol { font-family: inherit; color: var(--muted); }
 .graphql-row { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: var(--space-3); margin-top: var(--space-3); align-items: start; }
@@ -266,6 +266,7 @@ td.actions .btn-group { justify-content: flex-end; }
 .method-get { color: var(--ok); }
 .method-delete { color: var(--bad); }
 .method-graphql { color: var(--machine-4); }
+.method-ws { color: var(--machine-1); }
 .status-2xx, .status-3xx { color: var(--ok); }
 .status-4xx, .status-5xx, .status-err { color: var(--bad); }
 
