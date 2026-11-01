@@ -106,7 +106,7 @@ public sealed class LatencyHistogram
     {
         var histogram = new LatencyHistogram();
         var counts = data.Counts ?? [];
-        if (data.Offset < 0 || data.Offset + counts.Length > BucketCount)
+        if (data.Offset < 0 || (long)data.Offset + counts.Length > BucketCount)
         {
             throw new FormatException($"The histogram buckets {data.Offset}..{data.Offset + counts.Length} are outside 0..{BucketCount}.");
         }
@@ -120,6 +120,10 @@ public sealed class LatencyHistogram
             }
 
             total += count;
+            if (total < 0)
+            {
+                throw new FormatException("The histogram buckets add up to more than a histogram can count.");
+            }
         }
 
         if (total != data.Count)
@@ -130,6 +134,12 @@ public sealed class LatencyHistogram
         if (total == 0)
         {
             return histogram;
+        }
+
+        // Percentiles are clamped between the minimum and the maximum, so those have to be real latencies in order.
+        if (!(data.MinMs >= 0 && data.MinMs <= data.MaxMs && double.IsFinite(data.MaxMs) && double.IsFinite(data.SumMs)))
+        {
+            throw new FormatException($"The histogram's latencies don't fit together: minimum {data.MinMs} ms, maximum {data.MaxMs} ms, sum {data.SumMs} ms.");
         }
 
         counts.CopyTo(histogram._buckets, data.Offset);

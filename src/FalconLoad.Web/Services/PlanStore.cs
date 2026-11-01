@@ -7,11 +7,11 @@ namespace FalconLoad.Web.Services;
 /// <summary>Persists saved load test plans to a JSON file.</summary>
 public sealed class PlanStore
 {
-    public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    public static readonly JsonSerializerOptions JsonOptions = JsonInput.Apply(new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter() },
-    };
+    });
 
     private readonly string _path;
     private readonly Lock _gate = new();

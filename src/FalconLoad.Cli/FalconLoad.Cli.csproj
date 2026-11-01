@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="FalconLoad.Cli.Tests" />
+    <InternalsVisibleTo Include="FalconLoad.Fuzz" />
   </ItemGroup>
 
   <PropertyGroup>

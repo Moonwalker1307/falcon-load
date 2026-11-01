@@ -30,6 +30,13 @@ internal static partial class ImportHelpers
         return result.Append(Uri.EscapeDataString(text[last..])).ToString();
     }
 
+    /// <summary>
+    /// Whether a flag such as Postman's <c>disabled</c> or OpenAPI's <c>required</c> is set. Hand-written files also
+    /// use <c>"true"</c>, and anything that isn't a boolean or that text counts as not set.
+    /// </summary>
+    public static bool IsTrue(System.Text.Json.Nodes.JsonNode? node) => node is System.Text.Json.Nodes.JsonValue value
+        && (value.TryGetValue<bool>(out var flag) ? flag : value.TryGetValue<string>(out var text) && bool.TryParse(text, out flag) && flag);
+
     public static string FormBody(IEnumerable<(string Name, string Value)> fields) =>
         string.Join('&', fields.Select(f => $"{Encode(f.Name)}={Encode(f.Value)}"));
 

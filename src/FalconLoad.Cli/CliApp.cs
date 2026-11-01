@@ -97,6 +97,7 @@ internal static class CliApp
         var publishing = publisher?.RunAsync(stopPublishing.Token) ?? Task.CompletedTask;
 
         var exitCode = Passed;
+        var written = true;
         for (var i = 0; i < plans.Count; i++)
         {
             if (cancellationToken.IsCancellationRequested)
@@ -152,12 +153,12 @@ internal static class CliApp
 
             if (outputs is not null)
             {
-                await WriteAsync(outputs[i], JsonSerializer.Serialize(export, PlanFile.JsonOptions), console, "Results");
+                written &= await WriteAsync(outputs[i], JsonSerializer.Serialize(export, PlanFile.JsonOptions), console, "Results");
             }
 
             if (htmlOutputs is not null)
             {
-                await WriteAsync(htmlOutputs[i], HtmlReport.Render(export, verdict), console, "Report");
+                written &= await WriteAsync(htmlOutputs[i], HtmlReport.Render(export, verdict), console, "Report");
             }
 
             junit.Add((export, verdict));
@@ -175,7 +176,7 @@ internal static class CliApp
         // Written after the loop so one file covers every test, also when an interrupt skipped the last ones.
         if (options.Junit is { } junitPath && junit.Count > 0)
         {
-            await WriteAsync(junitPath, JUnitReport.Render(junit), console, "JUnit report");
+            written &= await WriteAsync(junitPath, JUnitReport.Render(junit), console, "JUnit report");
         }
 
         await stopPublishing.CancelAsync();
@@ -187,7 +188,8 @@ internal static class CliApp
             return Interrupted;
         }
 
-        return exitCode;
+        // A CI job that asked for a report has to notice when there is none, even if every test passed.
+        return written || exitCode != Passed ? exitCode : TestFailed;
     }
 
     private static async Task<IReadOnlyList<(LoadTestPlan Plan, TestEnvironment? Environment)>?> LoadPlansAsync(CliOptions options, CliConsole console)
@@ -200,7 +202,7 @@ internal static class CliApp
             {
                 environmentJson = await File.ReadAllTextAsync(environmentFile);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
             {
                 await console.Error.WriteLineAsync($"falcon-load: Can't read '{environmentFile}': {ex.Message}");
                 return null;
@@ -221,7 +223,7 @@ internal static class CliApp
         {
             json = options.File == "-" ? await console.In.ReadToEndAsync() : await File.ReadAllTextAsync(options.File);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
             await console.Error.WriteLineAsync($"falcon-load: Can't read '{options.File}': {ex.Message}");
             return null;
@@ -310,7 +312,7 @@ internal static class CliApp
             {
                 content = await File.ReadAllTextAsync(path);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
             {
                 await console.Error.WriteLineAsync($"falcon-load: Can't read '{path}': {ex.Message}");
                 return false;
@@ -435,11 +437,22 @@ internal static class CliApp
         }
     }
 
-    private static async Task WriteAsync(string path, string content, CliConsole console, string what)
+    /// <summary>Writes an output file; returns false, having said why, when it can't be written.</summary>
+    private static async Task<bool> WriteAsync(string path, string content, CliConsole console, string what)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        await File.WriteAllTextAsync(path, content, CancellationToken.None);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+            await File.WriteAllTextAsync(path, content, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            await console.Error.WriteLineAsync($"falcon-load: {what} couldn't be written to '{path}': {ex.Message}");
+            return false;
+        }
+
         await console.Error.WriteLineAsync($"{what} written to {path}");
+        return true;
     }
 
     /// <summary>One file per test: the given path for a single test, otherwise files named after the tests in that directory.</summary>

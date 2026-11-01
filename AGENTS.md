@@ -36,7 +36,10 @@ engine works. It is the only user-facing documentation, so it has to stay true.
   `InvokeAsync`, and every component that subscribes unsubscribes in `Dispose`.
 - **Plans are user data.** `App_Data/plans.json` (or the `FalconLoad:DataDirectory` setting) holds saved tests,
   including their headers and tokens. A model change must still load files written by the previous version, and
-  validation messages come from `Validate()` on the model, shared by the UI and the API.
+  validation messages come from `Validate()` on the model, shared by the UI and the API. Every JSON the app reads goes
+  through options made with `JsonInput.Apply`, so a `null` the model has no room for is read as left out rather than
+  reaching code that doesn't expect it; catch invalid JSON with `JsonErrors.IsInvalidJson`, which also covers the
+  `InvalidOperationException` that System.Text.Json throws for a `\u` escape that isn't valid UTF-16.
 - **Secrets stay secret.** `environments.json` holds environments with their secret values. A secret leaves
   `EnvironmentStore` only through `TestEnvironment.Redacted()` (UI, API and exports) or to the engine, and the engine
   hides secret values in error text with `SecretMasker`. A new place that shows, logs or exports data from a run or an
@@ -79,6 +82,9 @@ engine works. It is the only user-facing documentation, so it has to stay true.
   interrupted.
 - `tests/FalconLoad.Core.Tests/`: xUnit tests of the runner and metrics. `FakeHandler` stands in for the network.
 - `tests/FalconLoad.Cli.Tests/`: xUnit tests of the CLI, sharing `FakeHandler` with the engine tests.
+- `tests/FalconLoad.Fuzz/`: a dependency-free fuzzer for every input parser, run with `dotnet run --project
+  tests/FalconLoad.Fuzz -c Release`. A change to a parser should survive a round of it; each bug it finds gets a test in
+  `FuzzRegressionTests`. See its README.
 - `Dockerfile` (web app) and `Dockerfile.cli`: multi-stage images built from the repository root. A new project the
   web app or the CLI references must also be copied in its Dockerfile.
 - `.github/workflows/ci.yml`: restore, build and test in Release on Ubuntu for every push to `main` and every PR, and

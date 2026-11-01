@@ -36,7 +36,25 @@ public sealed partial class ImportSource
     /// <summary>The parsed spec, so a caller can list <see cref="OpenApiSpec.Operations"/> before choosing; null for other kinds.</summary>
     public OpenApiSpec? OpenApi { get; }
 
-    public static ImportSource Parse(string text, ImportKind? kind = null)
+    public static ImportSource Parse(string text, ImportKind? kind = null) => Guard(() => ParseCore(text, kind));
+
+    /// <summary>
+    /// A JSON document is read lazily, so a bad <c>\u</c> escape or a value of an unexpected kind only shows when the
+    /// importer reaches it; that is reported like any other text that can't be read.
+    /// </summary>
+    private static T Guard<T>(Func<T> read)
+    {
+        try
+        {
+            return read();
+        }
+        catch (InvalidOperationException ex) when (Model.JsonErrors.IsInvalidJson(ex))
+        {
+            throw new ImportException($"The text isn't valid JSON: {ex.Message}");
+        }
+    }
+
+    private static ImportSource ParseCore(string text, ImportKind? kind)
     {
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -65,12 +83,12 @@ public sealed partial class ImportSource
 
     /// <param name="operations">OpenAPI only: the keys of the operations to import; null imports all of them.</param>
     /// <param name="baseUrl">OpenAPI only: the address to send requests to, instead of the spec's server.</param>
-    public ImportResult Build(IEnumerable<string>? operations = null, string? baseUrl = null) => Kind switch
+    public ImportResult Build(IEnumerable<string>? operations = null, string? baseUrl = null) => Guard(() => Kind switch
     {
         ImportKind.Curl => CurlImporter.Read(_text),
         ImportKind.Postman => PostmanImporter.Read(_document!),
         _ => OpenApi!.Build(operations, baseUrl),
-    };
+    });
 
     private static JsonNode? ParseDocument(string text)
     {
@@ -78,10 +96,17 @@ public sealed partial class ImportSource
         try
         {
             return trimmed.StartsWith('{') || trimmed.StartsWith('[')
-                ? JsonNode.Parse(trimmed, documentOptions: new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true })
+                ? JsonNode.Parse(trimmed, documentOptions: new JsonDocumentOptions
+                {
+                    CommentHandling = JsonCommentHandling.Skip,
+                    AllowTrailingCommas = true,
+
+                    // A JsonNode only notices a repeated key when the object is read, deep in an importer.
+                    AllowDuplicateProperties = false,
+                })
                 : SimpleYaml.Parse(text);
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (Model.JsonErrors.IsInvalidJson(ex))
         {
             throw new ImportException($"The text isn't valid JSON: {ex.Message}");
         }

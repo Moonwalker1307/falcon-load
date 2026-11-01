@@ -15,6 +15,7 @@ public static class GraphQLRequest
     /// Builds the request body. <paramref name="variables"/> is written as it is, so it has to be a JSON object already;
     /// <see cref="IsJsonObject"/> checks that when the plan is validated.
     /// </summary>
+    /// <exception cref="FormatException">The variables aren't valid JSON.</exception>
     public static byte[] BuildBody(string query, string? variables, string? operationName)
     {
         var buffer = new MemoryStream(query.Length + (variables?.Length ?? 0) + 64);
@@ -25,7 +26,17 @@ public static class GraphQLRequest
             if (!string.IsNullOrWhiteSpace(variables))
             {
                 writer.WritePropertyName("variables"u8);
-                writer.WriteRawValue(variables, skipInputValidation: false);
+                try
+                {
+                    writer.WriteRawValue(variables, skipInputValidation: false);
+                }
+                catch (JsonException ex)
+                {
+                    // Validation checks the variables with stand-ins for their placeholders, but the values filled in
+                    // during a run can still break the JSON, such as a word in place of a number. That fails the
+                    // request, not the run: the runner and "Send once" report a FormatException as the request's error.
+                    throw new FormatException($"The GraphQL variables aren't valid JSON once their placeholders are filled in: {ex.Message}", ex);
+                }
             }
 
             if (!string.IsNullOrWhiteSpace(operationName))
@@ -103,7 +114,7 @@ public static class GraphQLRequest
 
             return null;
         }
-        catch (JsonException)
+        catch (Exception ex) when (Model.JsonErrors.IsInvalidJson(ex))
         {
             return "GraphQL error: the response isn't valid JSON";
         }

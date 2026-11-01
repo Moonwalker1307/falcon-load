@@ -30,7 +30,7 @@ public static partial class PostmanImporter
 
         foreach (var variable in (collection["variable"] as JsonArray ?? []).OfType<JsonObject>())
         {
-            if (Text(variable["key"]) is { Length: > 0 } key && variable["disabled"]?.GetValue<bool>() != true)
+            if (Text(variable["key"]) is { Length: > 0 } key && !ImportHelpers.IsTrue(variable["disabled"]))
             {
                 var parameter = ImportHelpers.ToParameterName(key);
                 context.Defined[key.Trim()] = parameter;
@@ -121,7 +121,7 @@ public static partial class PostmanImporter
         var hasContentType = false;
         foreach (var header in (source["header"] as JsonArray ?? []).OfType<JsonObject>())
         {
-            var enabled = header["disabled"]?.GetValue<bool>() != true;
+            var enabled = !ImportHelpers.IsTrue(header["disabled"]);
             hasContentType |= enabled && Text(header["key"]).Trim().Equals("Content-Type", StringComparison.OrdinalIgnoreCase);
             ImportHelpers.AddHeader(request, Rewrite(Text(header["key"]), context), Rewrite(Text(header["value"]), context), enabled);
         }
@@ -156,12 +156,12 @@ public static partial class PostmanImporter
             raw = (protocol.Length > 0 ? protocol + "://" : string.Empty) + host + (port.Length > 0 ? ":" + port : string.Empty) + (path.Length > 0 ? "/" + path : string.Empty);
         }
 
-        if (obj["query"] is JsonArray query && query.OfType<JsonObject>().Any(q => q["disabled"]?.GetValue<bool>() == true))
+        if (obj["query"] is JsonArray query && query.OfType<JsonObject>().Any(q => ImportHelpers.IsTrue(q["disabled"])))
         {
             var cut = raw.IndexOf('?');
             var fragment = raw.IndexOf('#');
             raw = cut >= 0 ? raw[..cut] : fragment >= 0 ? raw[..fragment] : raw;
-            var pairs = query.OfType<JsonObject>().Where(q => q["disabled"]?.GetValue<bool>() != true)
+            var pairs = query.OfType<JsonObject>().Where(q => !ImportHelpers.IsTrue(q["disabled"]))
                 .Select(q => Text(q["value"]) is { Length: > 0 } value ? $"{Text(q["key"])}={value}" : Text(q["key"]));
             raw = ImportHelpers.AppendQuery(raw, string.Join('&', pairs));
         }
@@ -181,7 +181,7 @@ public static partial class PostmanImporter
 
     private static void ReadBody(JsonObject? body, RequestDefinition request, bool hasContentType, Context context)
     {
-        if (body is null || body["disabled"]?.GetValue<bool>() == true)
+        if (body is null || ImportHelpers.IsTrue(body["disabled"]))
         {
             return;
         }
@@ -209,7 +209,7 @@ public static partial class PostmanImporter
                 break;
             case "formdata":
             {
-                var fields = (body["formdata"] as JsonArray ?? []).OfType<JsonObject>().Where(f => f["disabled"]?.GetValue<bool>() != true).ToList();
+                var fields = (body["formdata"] as JsonArray ?? []).OfType<JsonObject>().Where(f => !ImportHelpers.IsTrue(f["disabled"])).ToList();
                 foreach (var file in fields.Where(f => Text(f["type"]) == "file"))
                 {
                     context.Result.Warnings.Add($"The form field '{Text(file["key"])}' uploads a file, which falcon-load can't do, so it was left out.");
@@ -245,7 +245,7 @@ public static partial class PostmanImporter
 
     private static IEnumerable<(string Name, string Value)> EnabledFields(JsonNode? array) =>
         (array as JsonArray ?? []).OfType<JsonObject>()
-            .Where(f => f["disabled"]?.GetValue<bool>() != true)
+            .Where(f => !ImportHelpers.IsTrue(f["disabled"]))
             .Select(f => (Text(f["key"]), Text(f["value"])));
 
     private static void ApplyAuth(JsonNode? auth, RequestDefinition request, Context context)

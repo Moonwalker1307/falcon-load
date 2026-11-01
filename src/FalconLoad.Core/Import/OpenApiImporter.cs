@@ -41,7 +41,7 @@ public sealed partial class OpenApiSpec
                     var key = $"{method.ToUpperInvariant()} {path}";
                     var tags = (operation["tags"] as JsonArray ?? []).Select(Text).Where(t => t.Length > 0).ToList();
                     var summary = Text(operation["summary"]) is { Length: > 0 } s ? s : Text(operation["operationId"]);
-                    _operations.Add((new OpenApiOperation(key, method.ToUpperInvariant(), path, summary, tags, operation["deprecated"]?.GetValue<bool>() == true), operation, pathItem));
+                    _operations.Add((new OpenApiOperation(key, method.ToUpperInvariant(), path, summary, tags, ImportHelpers.IsTrue(operation["deprecated"])), operation, pathItem));
                 }
             }
         }
@@ -122,7 +122,7 @@ public sealed partial class OpenApiSpec
         {
             var location = Text(parameter["in"]);
             var name = Text(parameter["name"]);
-            var required = parameter["required"]?.GetValue<bool>() == true;
+            var required = ImportHelpers.IsTrue(parameter["required"]);
             var value = Scalar(ParameterValue(parameter));
             switch (location)
             {
@@ -389,7 +389,7 @@ public sealed partial class OpenApiSpec
                 var obj = new JsonObject();
                 foreach (var (name, property) in schema["properties"] as JsonObject ?? [])
                 {
-                    if (Resolve(property) is JsonObject p && p["readOnly"]?.GetValue<bool>() == true)
+                    if (Resolve(property) is JsonObject p && ImportHelpers.IsTrue(p["readOnly"]))
                     {
                         continue;
                     }

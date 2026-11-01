@@ -60,7 +60,7 @@ public sealed class EnvironmentFile
                 return EnvironmentImport.Failed("This doesn't look like a falcon-load environments file.");
             }
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (JsonErrors.IsInvalidJson(ex))
         {
             return EnvironmentImport.Failed($"The file isn't valid JSON for a falcon-load environment: {ex.Message}");
         }

@@ -179,7 +179,7 @@ public class StagedLoadTests
     [Fact]
     public async Task VirtualUserStages_FollowTheTargetUpAndDown()
     {
-        // Four stages of 1.5 s: one user, four users, a pause, two users. Requests take long enough to overlap.
+        // Four stages of 2 s: one user, four users, a pause, two users. Requests take long enough to overlap.
         var clock = Stopwatch.StartNew();
         var inFlight = 0;
         var arrivals = new List<(double At, int InFlight)>();
@@ -210,7 +210,11 @@ public class StagedLoadTests
 
         Assert.Equal(RunState.Completed, result.State);
         Assert.InRange(result.Elapsed.TotalSeconds, 7.5, 12);
-        // The windows stay clear of the stage edges so a slow machine doesn't blur them.
+
+        // Times count from the first request, which the first stage sends as soon as the stages start, so a runner that
+        // is slow to get going doesn't shift every window. The windows stay clear of the stage edges for the same reason.
+        var started = arrivals.Min(a => a.At);
+        arrivals = [.. arrivals.Select(a => (a.At - started, a.InFlight))];
         var first = arrivals.Where(a => a.At is > 0.3 and < 1.7).ToList();
         var second = arrivals.Where(a => a.At is > 2.3 and < 3.7).ToList();
         var pause = arrivals.Where(a => a.At is > 4.3 and < 5.7).ToList();
