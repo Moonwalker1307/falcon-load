@@ -163,7 +163,14 @@ public sealed class ProtoSchema
         var pendingMethods = new List<(MethodDescriptor Method, string Scope, string File)>();
         var parsed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var queue = new Queue<ProtoFile>(files.Where(f => !string.IsNullOrWhiteSpace(f.Content)));
-        var byName = files.ToDictionary(f => f.Name.Trim(), f => f, StringComparer.OrdinalIgnoreCase);
+        var byName = new Dictionary<string, ProtoFile>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in files)
+        {
+            if (!byName.TryAdd(file.Name.Trim(), file))
+            {
+                problems.Add($"Two proto files are named '{file.Name.Trim()}'. Give each its own name, so an import finds the right one.");
+            }
+        }
 
         while (queue.Count > 0)
         {
@@ -461,7 +468,7 @@ public sealed class ProtoSchema
 
             var name = Next();
             Expect("=");
-            var number = ParseInt(Next());
+            var number = FieldNumber(message, name, Next());
             var (jsonName, packed) = ParseFieldOptions();
             Expect(";");
 
@@ -493,7 +500,7 @@ public sealed class ProtoSchema
             Expect(">");
             var name = Next();
             Expect("=");
-            var number = ParseInt(Next());
+            var number = FieldNumber(message, name, Next());
             var (jsonName, _) = ParseFieldOptions();
             Expect(";");
 
@@ -732,6 +739,33 @@ public sealed class ProtoSchema
                 throw new ProtoParseException($"expected '{token}' but found '{actual}'.");
             }
         }
+
+        /// <summary>
+        /// A field's number, which protobuf allows from 1 to 2^29 - 1 and only once in a message; anything else would
+        /// make messages that a server, or falcon-load reading the answer, can't decode.
+        /// </summary>
+        private static int FieldNumber(MessageDescriptor message, string name, string token)
+        {
+            var number = ParseInt(token);
+            if (number is < 1 or > MaxFieldNumber)
+            {
+                throw new ProtoParseException($"field '{name}' has the number {number}, but field numbers go from 1 to {MaxFieldNumber}.");
+            }
+
+            if (message.Find(number) is { } other)
+            {
+                throw new ProtoParseException($"fields '{other.Name}' and '{name}' of {message.FullName} both have the number {number}.");
+            }
+
+            if (message.Find(name) is { Name: var existing } && existing == name)
+            {
+                throw new ProtoParseException($"{message.FullName} has two fields named '{name}'.");
+            }
+
+            return number;
+        }
+
+        private const int MaxFieldNumber = (1 << 29) - 1;
 
         private static int ParseInt(string token)
         {

@@ -684,4 +684,46 @@ public sealed class CliAppTests : IDisposable
         Assert.Equal(["api-key", "empty", "Authorization"], headers.Select(h => h.Name));
         Assert.Equal(["a,b=c", "", "Bearer x=y"], headers.Select(h => h.Value));
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task EmptyTestFile_IsInvalidInput(string file)
+    {
+        var code = await Run(FakeHandler.Returning(HttpStatusCode.OK), "run", file);
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Contains("Missing the test file to run.", _error.ToString());
+    }
+
+    [Theory]
+    [InlineData("--out")]
+    [InlineData("--html")]
+    [InlineData("--junit")]
+    public async Task OutputPathThatCantBeAFile_IsInvalidInputBeforeAnyLoad(string option)
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+
+        var code = await Run(handler, "run", WriteFile(Plan()), option, "a\0b.json");
+
+        Assert.Equal(CliApp.InvalidInput, code);
+        Assert.Contains($"{option} 'a\0b.json' isn't a path a file can be written to", _error.ToString());
+        Assert.Empty(handler.Received);
+    }
+
+    [Fact]
+    public async Task OutputThatCantBeWritten_FailsAPassingTest()
+    {
+        // A file stands where the output's folder should be, so the export can't be written.
+        var blocker = Path.Combine(_directory, "blocker");
+        File.WriteAllText(blocker, "");
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+
+        var code = await Run(handler, "run", WriteFile(Plan()), "--out", Path.Combine(blocker, "results.json"));
+
+        Assert.Equal(CliApp.TestFailed, code);
+        Assert.Equal(20, handler.Received.Count);
+        Assert.Contains("couldn't be written to", _error.ToString());
+        Assert.Contains("Result        PASS", _out.ToString());
+    }
 }

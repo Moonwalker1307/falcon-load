@@ -9,6 +9,18 @@ namespace FalconLoad.Core.Grpc;
 /// </summary>
 public static class ProtoSample
 {
+    // A sample is a starting point to edit, so it stops filling in nested messages past a few levels, and after enough
+    // of them in all: a type with several message fields, each with several more, would otherwise grow exponentially.
+    private const int MaxDepth = 8;
+    private const int MaxMessages = 200;
+
+    private sealed class Budget
+    {
+        public int Messages;
+
+        public int Depth;
+    }
+
     /// <summary>A sample message for <paramref name="method"/>'s request, or an array of one for a client-streaming method.</summary>
     public static string For(MethodDescriptor method)
     {
@@ -18,12 +30,12 @@ public static class ProtoSample
             if (method.ClientStreaming)
             {
                 writer.WriteStartArray();
-                Write(writer, method.Input, [method.Input.FullName]);
+                Write(writer, method.Input, [method.Input.FullName], new Budget());
                 writer.WriteEndArray();
             }
             else
             {
-                Write(writer, method.Input, [method.Input.FullName]);
+                Write(writer, method.Input, [method.Input.FullName], new Budget());
             }
         }
 
@@ -31,9 +43,16 @@ public static class ProtoSample
     }
 
     // A type that contains itself, such as a tree node, is written once and left empty where it would repeat.
-    private static void Write(Utf8JsonWriter writer, MessageDescriptor message, HashSet<string> seen)
+    private static void Write(Utf8JsonWriter writer, MessageDescriptor message, HashSet<string> seen, Budget budget)
     {
         writer.WriteStartObject();
+        if (budget.Depth >= MaxDepth || ++budget.Messages > MaxMessages)
+        {
+            writer.WriteEndObject();
+            return;
+        }
+
+        budget.Depth++;
         foreach (var field in message.Fields)
         {
             if (field.Type == FieldType.Message && !field.IsMap && seen.Contains(field.Message!.FullName))
@@ -46,25 +65,36 @@ public static class ProtoSample
             {
                 writer.WriteStartObject();
                 writer.WritePropertyName(field.Message!.Find(1)!.Type == FieldType.String ? "key" : "0");
-                WriteValue(writer, field.Message.Find(2)!, seen);
+                if (field.Message.Find(2)! is { Type: FieldType.Message } value && seen.Contains(value.Message!.FullName))
+                {
+                    // A map of the type being written, such as Struct's map of Values, gets an empty entry.
+                    writer.WriteStartObject();
+                    writer.WriteEndObject();
+                }
+                else
+                {
+                    WriteValue(writer, field.Message.Find(2)!, seen, budget);
+                }
+
                 writer.WriteEndObject();
             }
             else if (field.Repeated)
             {
                 writer.WriteStartArray();
-                WriteValue(writer, field, seen);
+                WriteValue(writer, field, seen, budget);
                 writer.WriteEndArray();
             }
             else
             {
-                WriteValue(writer, field, seen);
+                WriteValue(writer, field, seen, budget);
             }
         }
 
+        budget.Depth--;
         writer.WriteEndObject();
     }
 
-    private static void WriteValue(Utf8JsonWriter writer, FieldDescriptor field, HashSet<string> seen)
+    private static void WriteValue(Utf8JsonWriter writer, FieldDescriptor field, HashSet<string> seen, Budget budget)
     {
         switch (field.Type)
         {
@@ -74,13 +104,15 @@ public static class ProtoSample
             case FieldType.Message when field.Message!.FullName == "google.protobuf.Duration":
                 writer.WriteStringValue("1s");
                 break;
+            // ListValue also ends in "Value" and has one field, but that is a list of values, not a value to unwrap.
             case FieldType.Message when field.Message!.FullName.StartsWith("google.protobuf.", StringComparison.Ordinal)
-                && field.Message.FullName.EndsWith("Value", StringComparison.Ordinal) && field.Message.Fields.Count == 1:
+                && field.Message.FullName.EndsWith("Value", StringComparison.Ordinal)
+                && field.Message.Fields is [{ Name: "value", Repeated: false }]:
                 // A wrapper such as StringValue is written as the bare value it holds.
-                WriteValue(writer, field.Message.Fields[0], seen);
+                WriteValue(writer, field.Message.Fields[0], seen, budget);
                 break;
             case FieldType.Message:
-                Write(writer, field.Message!, [.. seen, field.Message!.FullName]);
+                Write(writer, field.Message!, [.. seen, field.Message!.FullName], budget);
                 break;
             case FieldType.String:
                 writer.WriteStringValue(string.Empty);

@@ -123,6 +123,20 @@ public sealed class JsonPath
     /// <returns>False when the path leads nowhere.</returns>
     public bool TryFind(JsonElement root, out JsonPathValue value)
     {
+        try
+        {
+            return TryFindCore(root, out value);
+        }
+        catch (InvalidOperationException ex) when (JsonErrors.IsInvalidJson(ex))
+        {
+            // A name on the way has a \u escape that isn't valid UTF-16, so the object can't be searched by name.
+            value = default;
+            return false;
+        }
+    }
+
+    private bool TryFindCore(JsonElement root, out JsonPathValue value)
+    {
         value = default;
         var current = root;
         for (var i = 0; i < _segments.Length; i++)
@@ -166,10 +180,23 @@ public sealed class JsonPath
 
         value = current.ValueKind switch
         {
-            JsonValueKind.String => new JsonPathValue(JsonValueKind.String, current.GetString()!),
+            JsonValueKind.String => new JsonPathValue(JsonValueKind.String, ReadString(current)),
             _ => new JsonPathValue(current.ValueKind, current.GetRawText()),
         };
         return true;
+    }
+
+    // A string with a \u escape that isn't valid UTF-16, such as a lone \ud800, comes back as written in the JSON.
+    private static string ReadString(JsonElement element)
+    {
+        try
+        {
+            return element.GetString()!;
+        }
+        catch (InvalidOperationException ex) when (JsonErrors.IsInvalidJson(ex))
+        {
+            return element.GetRawText()[1..^1];
+        }
     }
 
     public override string ToString() => Text;

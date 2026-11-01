@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A dependency-free fuzzer for falcon-load's input parsers and the engine behind them. It is not a test project, so
+    "dotnet test" doesn't run it; CI builds it and runs a short fixed-seed round. See README.md in this folder.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The same fake as the engine tests, so the fuzzer never opens a WebSocket either. -->
+    <Compile Include="..\FalconLoad.Core.Tests\FakeWebSocket.cs" Link="FakeWebSocket.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\FalconLoad.Core\FalconLoad.Core.csproj" />
+    <ProjectReference Include="..\..\src\FalconLoad.Cli\FalconLoad.Cli.csproj" />
+  </ItemGroup>
+
+</Project>

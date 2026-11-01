@@ -16,6 +16,15 @@ jobs:
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release
       - run: dotnet test --no-build -c Release --verbosity normal
+      # A short round with a fixed seed, so it sends the same inputs every time; a finding fails the build.
+      - name: Fuzz the input parsers
+        run: dotnet run --project tests/FalconLoad.Fuzz --no-build -c Release -- --iterations 2000 --seed 1 --out fuzz-findings
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-findings
+          path: fuzz-findings
+          if-no-files-found: ignore
 
   docker:
     runs-on: ubuntu-latest

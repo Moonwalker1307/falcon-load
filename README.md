@@ -32,7 +32,7 @@ Then open http://localhost:5299. The app listens on port 8080 inside the contain
 - **GraphQL**: switch a request to GraphQL and write the query, its variables and the operation name instead of a body. A response that reports errors counts as a failed request, even with status 200. See [Protocols](#protocols).
 - **WebSocket**: send a message on a connection each virtual user keeps open, and time it until the server's reply arrives. Checks and extractions read the reply, so a subscribe message can feed the messages after it.
 - **gRPC**: add the service's `.proto` files, pick a method and write the request message as JSON. Responses are decoded back to JSON for checks and extractions, streaming calls included, and the `grpc-status` decides success. See [Protocols](#protocols).
-- **Dynamic values** in URLs, headers and bodies: `{{$guid}}`, `{{$randomInt}}`, `{{$randomInt:1:100}}`, `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$vu}}`, `{{$iteration}}`.
+- **Dynamic values** in URLs, headers and bodies: `{{$guid}}`, `{{$randomInt}}`, `{{$randomInt:1:100}}` (any 64-bit bounds; bounds that aren't whole numbers leave the placeholder as written), `{{$timestamp}}`, `{{$isoTimestamp}}`, `{{$vu}}`, `{{$iteration}}`.
 - **Parameter lists**: name a list of values, such as `userIds` = 17, 42, 99, and write `{{userIds}}` in a URL, header value or body. Each iteration of a virtual user takes one value from every list, so all requests in that iteration use the same value. A list hands out its values in order, shared by all virtual users and starting over at the end, or picks one at random. "Send once" uses the first value. Placeholders that match no list are sent as written.
 - **Data files**: upload a CSV file or a JSON array of objects, such as a list of test users, and each column becomes a variable (`{{email}}`, `{{password}}`). Every iteration of a virtual user takes one whole row, so an email and its password always belong together. See [Data files](#data-files).
 - **Response extraction and request chaining**: on a request's Extract tab, take a value from its response into a variable, and use it in later requests as `{{name}}`, like a parameter list. A rule reads a JSON path (`$.data.token`, `items[0].id`, `items[-1].id` for the last item, `['odd key']`), a response header by name (such as `Location`), or a regular expression over the body (its first capture group, or the whole match without one). Each virtual user keeps its own variables across its iterations, so with "Once per virtual user" ticked on a login request, every virtual user logs in once and reuses its token; a request sent once is sent again on the next iteration if it fails, until it succeeds. A response with an expected status that lacks a value counts as an error, such as "Couldn't extract 'token': JSON path $.token found nothing", and the variable keeps its previous value; responses with an unexpected status aren't searched. A variable no response has supplied yet is sent as written. Only the first 1 MB of a body is searched, and extraction happens after the request is timed, so it doesn't add to the latency. "Send once" shows what each rule found and passes the values on to "Send once" on later requests.
@@ -69,8 +69,8 @@ It runs every test in the file in order, shows live progress on standard error, 
 | Code | Meaning |
 | --- | --- |
 | `0` | Every test passed |
-| `1` | A test failed: one of its thresholds wasn't met, or, for a test without thresholds, any request failed (or more than `--max-error-rate` allows), or it couldn't run |
-| `2` | The command line or the test file is invalid; nothing was sent |
+| `1` | A test failed: one of its thresholds wasn't met, or, for a test without thresholds, any request failed (or more than `--max-error-rate` allows), or it couldn't run. Also when every test passed but a result file from `--out`, `--html` or `--junit` couldn't be written, so a pipeline never goes on without its results |
+| `2` | The command line or the test file is invalid, including an output path that can't name a file; nothing was sent |
 | `130` | Interrupted with Ctrl+C or `docker stop`; the results so far are still printed and written |
 
 | Option | Purpose |
@@ -185,6 +185,8 @@ Both reports use the same verdict as the CLI's exit code: a test with thresholds
 | `POST` | `/api/agent/runs` | *Agent mode.* Start a share of a test (`plan`, optional `startAt`, `controller`) |
 | `GET` | `/api/agent/runs/{id}` | *Agent mode.* The share's results with histograms, for merging |
 | `POST` | `/api/agent/runs/{id}/stop` | *Agent mode.* Stop the share |
+
+Bodies are read leniently where that is safe, the same way as imported files: a `null` where the model has no room for one counts as left out, so a text value becomes empty, an object or list keeps its default and a `null` item in a list is dropped, and the usual validation then reports anything that is missing. A `null` for a value that has no default (such as a result's `plan`), a number too large for a double (`1e309`) or a JSON escape that isn't valid UTF-16 (a lone `\ud800`) makes the body invalid JSON, answered with `400`.
 
 The agent-mode endpoints only work when `FalconLoad:AgentToken` is set, and every call needs `Authorization: Bearer <that token>`; see below.
 
@@ -487,6 +489,7 @@ src/FalconLoad.Web           ASP.NET Core host, Blazor UI and JSON API
 src/FalconLoad.Cli           Headless command line runner (falcon-load run tests.json)
 tests/FalconLoad.Core.Tests  xUnit tests for the engine and metrics
 tests/FalconLoad.Cli.Tests   xUnit tests for the command line runner
+tests/FalconLoad.Fuzz        A fuzzer for every input parser (plan files, imports, data files, templates, .proto, CLI arguments)
 Dockerfile, Dockerfile.cli   Container images for the web app and the CLI
 docs/monitoring              Grafana dashboard and a Docker Compose stack with Prometheus and Grafana
 ```
@@ -500,4 +503,10 @@ How combining works: an export holds the run's summary plus its latency histogra
 ```bash
 dotnet build
 dotnet test
+```
+
+The parsers that read user input (test and environment files, curl, Postman and OpenAPI imports, YAML, CSV and JSON data files, templates, JSONPath, checks, `.proto` files, protobuf messages, CLI arguments, result exports and monitoring settings) have a fuzzer, which feeds them mutated inputs and reports any exception their callers don't expect. Run it after changing a parser; see [tests/FalconLoad.Fuzz/README.md](tests/FalconLoad.Fuzz/README.md):
+
+```bash
+dotnet run --project tests/FalconLoad.Fuzz -c Release -- --seconds 20
 ```

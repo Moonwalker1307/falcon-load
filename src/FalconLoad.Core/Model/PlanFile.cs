@@ -16,14 +16,14 @@ public sealed class PlanFile
     /// <summary>Bumped only when an older falcon-load could no longer read the file correctly.</summary>
     public const int CurrentVersion = 1;
 
-    public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    public static readonly JsonSerializerOptions JsonOptions = JsonInput.Apply(new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
 
         // The file is meant to be read and edited by people, so keep characters such as æ, ø and å as they are.
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         Converters = { new JsonStringEnumConverter() },
-    };
+    });
 
     public string Format { get; set; } = FormatName;
 
@@ -70,7 +70,7 @@ public sealed class PlanFile
                 return PlanImport.Failed("This doesn't look like a falcon-load test file.");
             }
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (JsonErrors.IsInvalidJson(ex))
         {
             return PlanImport.Failed($"The file isn't valid JSON for a falcon-load test: {ex.Message}");
         }
@@ -134,7 +134,7 @@ public sealed class PlanFile
         foreach (var request in plan.Requests)
         {
             request.Name ??= string.Empty;
-            request.Method ??= "GET";
+            request.Method = string.IsNullOrWhiteSpace(request.Method) ? "GET" : request.Method;
             request.Url ??= string.Empty;
             request.ContentType ??= string.Empty;
             request.Headers = request.Headers?.OfType<HeaderEntry>().ToList() ?? [];

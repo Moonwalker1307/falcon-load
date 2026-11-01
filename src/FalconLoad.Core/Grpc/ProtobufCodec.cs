@@ -36,7 +36,7 @@ public static class ProtobufCodec
             WriteMessage(writer, message, document.RootElement, 0);
             return writer.WrittenSpan.ToArray();
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (Model.JsonErrors.IsInvalidJson(ex))
         {
             throw new ProtobufException($"The message isn't valid JSON: {ex.Message}");
         }
@@ -535,12 +535,14 @@ public static class ProtobufCodec
                 throw new ProtobufException("The response has an invalid field tag.");
             }
 
+            // A field sent with another wire type than its declared type uses is skipped, like an unknown field, so a
+            // server with a different version of the .proto can't make a number turn up where a message belongs.
             var field = message.Find(number);
             switch (wireType)
             {
                 case 0:
                     var varint = ReadVarint(ref bytes);
-                    if (field is not null && !field.LengthDelimited)
+                    if (field is not null && WireTypeOf(field.Type) == 0)
                     {
                         parsed.Add(field, FromVarint(field, varint));
                     }
@@ -548,7 +550,7 @@ public static class ProtobufCodec
                     break;
                 case 1:
                     var fixed64 = BinaryPrimitives.ReadUInt64LittleEndian(Take(ref bytes, 8));
-                    if (field is not null)
+                    if (field is not null && WireTypeOf(field.Type) == 1)
                     {
                         parsed.Add(field, FromFixed64(field, fixed64));
                     }
@@ -556,15 +558,20 @@ public static class ProtobufCodec
                     break;
                 case 5:
                     var fixed32 = BinaryPrimitives.ReadUInt32LittleEndian(Take(ref bytes, 4));
-                    if (field is not null)
+                    if (field is not null && WireTypeOf(field.Type) == 5)
                     {
                         parsed.Add(field, FromFixed32(field, fixed32));
                     }
 
                     break;
                 case 2:
-                    var length = checked((int)ReadVarint(ref bytes));
-                    var record = Take(ref bytes, length);
+                    var length = ReadVarint(ref bytes);
+                    if (length > (ulong)bytes.Length)
+                    {
+                        throw new ProtobufException("The response ends in the middle of a value.");
+                    }
+
+                    var record = Take(ref bytes, (int)length);
                     if (field is null)
                     {
                         break;
@@ -722,6 +729,8 @@ public static class ProtobufCodec
         writer.WriteEndObject();
     }
 
+    private const long MaxDurationSeconds = 315_576_000_000;
+
     // Writes a timestamp, duration or wrapper in its JSON form. A value outside what the form can show stays an object.
     private static bool TryWriteSpecialJson(Utf8JsonWriter writer, MessageDescriptor message, Parsed parsed)
     {
@@ -739,6 +748,12 @@ public static class ProtobufCodec
         var seconds = Number(1);
         var nanos = Number(2);
         if (nanos is <= -NanosPerSecond or >= NanosPerSecond)
+        {
+            return false;
+        }
+
+        // Outside the range protobuf allows (about 10,000 years), a duration stays an object.
+        if (seconds is < -MaxDurationSeconds or > MaxDurationSeconds)
         {
             return false;
         }

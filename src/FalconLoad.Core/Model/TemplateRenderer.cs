@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace FalconLoad.Core.Model;
@@ -166,16 +167,26 @@ public static partial class TemplateRenderer
         };
     }
 
-    private static string RandomBetween(string a, string b)
+    private static string? RandomBetween(string a, string b)
     {
-        var min = int.Parse(a);
-        var max = int.Parse(b);
+        // The pattern takes any digits, including ones from other scripts and numbers too big for 64 bits. Those match
+        // nothing, so the placeholder is sent as written, like any other that doesn't resolve.
+        if (!long.TryParse(a, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var min)
+            || !long.TryParse(b, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var max))
+        {
+            return null;
+        }
+
         if (min > max)
         {
             (min, max) = (max, min);
         }
 
-        return Random.Shared.NextInt64(min, (long)max + 1).ToString();
+        // The upper bound of NextInt64 is exclusive, so shift the range down by one when max + 1 would overflow.
+        var value = max < long.MaxValue ? Random.Shared.NextInt64(min, max + 1)
+            : min > long.MinValue ? Random.Shared.NextInt64(min - 1, max) + 1
+            : Random.Shared.NextInt64(min, max);
+        return value.ToString(CultureInfo.InvariantCulture);
     }
 }
 

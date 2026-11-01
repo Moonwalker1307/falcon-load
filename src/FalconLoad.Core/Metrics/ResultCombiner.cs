@@ -39,6 +39,14 @@ public static class ResultCombiner
             return problems;
         }
 
+        // A JSON array such as [null] binds to a null run, which a caller can't tell from a real one.
+        var empty = runs.Select((run, i) => (run, i)).Where(x => x.run is null).Select(x => x.i + 1).ToList();
+        if (empty.Count > 0)
+        {
+            problems.Add($"Result {string.Join(", ", empty)} is null instead of an exported result.");
+            return problems;
+        }
+
         var names = Names(runs);
         var seen = new HashSet<Guid>();
         for (var i = 0; i < runs.Count; i++)

@@ -241,7 +241,8 @@ public static class HtmlReport
         }
 
         html.Append("<section>\n<h2>Status codes</h2>\n<table class=\"num\">\n<thead><tr><th scope=\"col\">Status</th><th scope=\"col\">Responses</th><th scope=\"col\">Share</th></tr></thead>\n<tbody>\n");
-        var responses = s.StatusCodes.Values.Sum();
+        // Summed as doubles: the counts come from a file, and only their shares are shown.
+        var responses = s.StatusCodes.Values.Sum(count => (double)count);
         foreach (var (code, count) in s.StatusCodes.OrderBy(c => c.Key, StringComparer.Ordinal))
         {
             html.Append($"<tr><td>{E(code)}</td><td>{Count(count)}</td><td>{Percent(responses == 0 ? 0 : (double)count / responses)}</td></tr>\n");

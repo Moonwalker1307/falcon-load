@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using FalconLoad.Core.Distributed;
+using FalconLoad.Core.Model;
 using FalconLoad.Web.Components;
 using FalconLoad.Web.Services;
 
@@ -10,8 +11,12 @@ builder.Services.AddRazorComponents()
     // The import page lets people paste a whole Postman collection or OpenAPI spec, which can be larger than SignalR's 32 KB default.
     .AddHubOptions(options => options.MaximumReceiveMessageSize = 10 * 1024 * 1024);
 
+// API bodies follow the same rules for nulls as imported files, so a null in a posted plan is a 400, never a crash.
 builder.Services.ConfigureHttpJsonOptions(options =>
-    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+{
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    JsonInput.Apply(options.SerializerOptions);
+});
 
 builder.Services.AddSingleton<PlanStore>();
 builder.Services.AddSingleton<EnvironmentStore>();

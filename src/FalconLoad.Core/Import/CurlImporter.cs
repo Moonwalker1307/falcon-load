@@ -498,7 +498,9 @@ public static class CurlImporter
                     if (digits > 0)
                     {
                         var code = int.Parse(text.AsSpan(i, digits), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
-                        word.Append(escape == 'x' ? ((char)code).ToString() : char.ConvertFromUtf32(code));
+                        // A code that isn't a character, such as a lone surrogate or one past U+10FFFF, can't be sent as
+                        // UTF-8, so it becomes the replacement character.
+                        word.Append(escape == 'x' ? ((char)code).ToString() : System.Text.Rune.IsValid(code) ? char.ConvertFromUtf32(code) : "\uFFFD");
                         i += digits;
                     }
 

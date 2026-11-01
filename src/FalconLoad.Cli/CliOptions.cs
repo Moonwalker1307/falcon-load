@@ -289,7 +289,7 @@ internal sealed record CliOptions
             }
         }
 
-        if (file is null)
+        if (string.IsNullOrWhiteSpace(file))
         {
             error = "Missing the test file to run.";
             return null;
@@ -319,7 +319,37 @@ internal sealed record CliOptions
             return null;
         }
 
+        foreach (var (name, path) in new[] { ("--out", options.Out), ("--html", options.Html), ("--junit", options.Junit) })
+        {
+            if (path is not null && !IsValidPath(path, out var problem))
+            {
+                error = $"{name} '{path}' isn't a path a file can be written to: {problem}";
+                return null;
+            }
+        }
+
         return options with { File = file };
+    }
+
+    // Checked before the run, so a typo in an output path fails at once instead of after the test has sent its load.
+    private static bool IsValidPath(string path, out string? problem)
+    {
+        problem = null;
+        try
+        {
+            // An empty path is allowed: it asks for no file, as when a script passes an unset variable.
+            if (path.Trim().Length > 0)
+            {
+                _ = Path.GetFullPath(path);
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            problem = ex.Message;
+            return false;
+        }
     }
 
     private static readonly HashSet<string> ValueOptions =

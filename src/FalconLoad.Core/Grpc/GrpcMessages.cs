@@ -30,8 +30,20 @@ public static class GrpcMessages
                 throw new ProtobufException($"{method.Path} takes one {method.Input.FullName}, so the message has to be a JSON object, not an array.");
             }
 
-            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
-            return Frame([.. document.RootElement.EnumerateArray().Select(e => ProtobufCodec.Encode(method.Input, e.GetRawText()))]);
+            JsonDocument document;
+            try
+            {
+                document = JsonDocument.Parse(json, new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            }
+            catch (JsonException ex)
+            {
+                throw new ProtobufException($"The messages aren't valid JSON: {ex.Message}");
+            }
+
+            using (document)
+            {
+                return Frame([.. document.RootElement.EnumerateArray().Select(e => ProtobufCodec.Encode(method.Input, e.GetRawText()))]);
+            }
         }
 
         return Frame([ProtobufCodec.Encode(method.Input, json)]);

@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="FalconLoad.Core.Tests" />
+    <InternalsVisibleTo Include="FalconLoad.Fuzz" />
   </ItemGroup>
 
 </Project>

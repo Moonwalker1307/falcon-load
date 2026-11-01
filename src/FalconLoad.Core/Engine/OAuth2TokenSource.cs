@@ -23,6 +23,9 @@ internal sealed class OAuth2TokenSource : IDisposable
     private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(30);
 
+    // A token said to last longer than this is treated as one that doesn't expire.
+    private static readonly TimeSpan MaxLifetime = TimeSpan.FromDays(3650);
+
     // A 401 makes the next request fetch a new token, in case the old one was revoked. A server that rejects every
     // token would otherwise make every request fetch one, so a token this young is kept.
     private static readonly TimeSpan MinAgeToInvalidate = TimeSpan.FromSeconds(10);
@@ -277,7 +280,8 @@ internal sealed class OAuth2TokenSource : IDisposable
                     JsonValueKind.String when double.TryParse(expiresIn.GetString(), System.Globalization.CultureInfo.InvariantCulture, out var s) => s,
                     _ => 0,
                 };
-                if (seconds > 0)
+                // A lifetime of years, up to 1e308 seconds, which no TimeSpan holds, is kept like one that isn't given.
+                if (seconds > 0 && seconds < MaxLifetime.TotalSeconds)
                 {
                     lifetime = TimeSpan.FromSeconds(seconds);
                 }
@@ -285,7 +289,7 @@ internal sealed class OAuth2TokenSource : IDisposable
 
             return (value, lifetime);
         }
-        catch (JsonException)
+        catch (Exception ex) when (JsonErrors.IsInvalidJson(ex))
         {
             return null;
         }
@@ -305,7 +309,7 @@ internal sealed class OAuth2TokenSource : IDisposable
                     : $": {error.GetString()}";
             }
         }
-        catch (JsonException)
+        catch (Exception ex) when (JsonErrors.IsInvalidJson(ex))
         {
         }
 

@@ -123,6 +123,12 @@ public sealed partial class DataFile
                 : $"The {label} has no rows.";
         }
 
+        if (table.Columns.Count == 0)
+        {
+            // Only JSON can get here, as [{}]: a CSV header always names at least one column.
+            yield return $"The {label} has no columns: its objects have no keys.";
+        }
+
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < table.Columns.Count; i++)
         {
@@ -337,6 +343,18 @@ public sealed class DataTable
     /// array becomes its JSON text.
     /// </summary>
     public static DataTable ParseJson(string text)
+    {
+        try
+        {
+            return ParseJsonCore(text);
+        }
+        catch (InvalidOperationException ex) when (JsonErrors.IsInvalidJson(ex))
+        {
+            throw new DataFormatException($"not valid JSON ({ex.Message.TrimEnd('.')}).");
+        }
+    }
+
+    private static DataTable ParseJsonCore(string text)
     {
         JsonDocument document;
         try

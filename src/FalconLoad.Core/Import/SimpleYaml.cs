@@ -16,8 +16,13 @@ internal sealed partial class SimpleYaml
     [GeneratedRegex(@"^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?$")]
     private static partial Regex NumberPattern();
 
+    // As deep as System.Text.Json reads JSON by default; deeper nesting would only come from a broken or hostile file,
+    // and the parser recurses, so it stops there instead of running out of stack.
+    private const int MaxDepth = 64;
+
     private readonly List<string> _lines;
     private int _pos;
+    private int _depth;
 
     private SimpleYaml(string text)
     {
@@ -77,6 +82,27 @@ internal sealed partial class SimpleYaml
     }
 
     private JsonNode? ParseNode(int indent)
+    {
+        Enter();
+        try
+        {
+            return ParseNodeCore(indent);
+        }
+        finally
+        {
+            _depth--;
+        }
+    }
+
+    private void Enter()
+    {
+        if (++_depth > MaxDepth)
+        {
+            throw Error($"The document is nested more than {MaxDepth} levels deep.");
+        }
+    }
+
+    private JsonNode? ParseNodeCore(int indent)
     {
         var content = _lines[_pos][indent..];
         if (content == "-" || content.StartsWith("- ", StringComparison.Ordinal))
@@ -260,11 +286,15 @@ internal sealed partial class SimpleYaml
 
         if (NumberPattern().IsMatch(text))
         {
-            return text.Contains('.') || text.Contains('e') || text.Contains('E')
-                ? JsonValue.Create(double.Parse(text, CultureInfo.InvariantCulture))
-                : long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var whole)
-                    ? JsonValue.Create(whole)
-                    : JsonValue.Create(double.Parse(text, CultureInfo.InvariantCulture));
+            if (!text.Contains('.') && !text.Contains('e') && !text.Contains('E')
+                && long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var whole))
+            {
+                return JsonValue.Create(whole);
+            }
+
+            // A number too big for a double, such as 1e999, can't be written as JSON, so it stays text.
+            var number = double.Parse(text, CultureInfo.InvariantCulture);
+            return double.IsFinite(number) ? JsonValue.Create(number) : JsonValue.Create(text);
         }
 
         return JsonValue.Create(text);
@@ -339,6 +369,19 @@ internal sealed partial class SimpleYaml
 
     private JsonNode? ParseFlow(string text, ref int i)
     {
+        Enter();
+        try
+        {
+            return ParseFlowCore(text, ref i);
+        }
+        finally
+        {
+            _depth--;
+        }
+    }
+
+    private JsonNode? ParseFlowCore(string text, ref int i)
+    {
         SkipSpaces(text, ref i);
         if (i >= text.Length)
         {
@@ -382,6 +425,11 @@ internal sealed partial class SimpleYaml
                 {
                     i++;
                     return map;
+                }
+
+                if (i >= text.Length)
+                {
+                    throw Error("Expected ',' or '}'.");
                 }
 
                 var key = text[i] is '"' or '\'' ? ReadQuoted(text, ref i) : ReadPlainFlow(text, ref i, stopAtColon: true);
