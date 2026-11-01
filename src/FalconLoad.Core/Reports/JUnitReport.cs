@@ -107,9 +107,9 @@ public static class JUnitReport
         text.AppendLine(Invariant($"{export.Plan.Name}: {s.State.ToString().ToLowerInvariant()} in {Duration(s.Elapsed)}"));
         text.AppendLine(Invariant($"Requests: {Count(s.TotalRequests)} ({Rate(s.RequestsPerSecond)}/s), {Count(s.FailedRequests)} failed ({Percent(s.ErrorRate)})"));
         text.AppendLine(Invariant($"Latency: mean {Ms(s.Latency.MeanMs)}, p50 {Ms(s.Latency.P50Ms)}, p90 {Ms(s.Latency.P90Ms)}, p95 {Ms(s.Latency.P95Ms)}, p99 {Ms(s.Latency.P99Ms)}, max {Ms(s.Latency.MaxMs)}"));
-        foreach (var error in s.Errors.Take(10))
+        foreach (var (count, error) in ErrorLines(export.Plan, s, 10))
         {
-            text.AppendLine(Invariant($"Error: {Count(error.Count)} x {error.Message}"));
+            text.AppendLine(Invariant($"Error: {Count(count)} x {error}"));
         }
 
         return text.ToString();

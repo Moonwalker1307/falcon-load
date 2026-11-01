@@ -287,6 +287,22 @@ public class GrpcTests
     }
 
     [Fact]
+    public async Task FailedCall_IsSampledWithItsMethodAndTrailers()
+    {
+        await using var runner = new LoadTestRunner(Plan(Call(), requests: 3), new HttpMessageInvoker(Server(status: 5, message: "no product 7")));
+
+        var result = await runner.RunAsync(cancellationToken: CancellationToken.None);
+
+        var sample = result.ErrorSamples[0];
+        Assert.Equal(("gRPC", "/shop.v1.Catalog/GetProduct", "NOT_FOUND"), (sample.Method, sample.Route, sample.Status));
+        Assert.Equal("http://api.test:5000/shop.v1.Catalog/GetProduct", sample.Url);
+        Assert.Contains(sample.ResponseHeaders, h => h.Name == "grpc-status" && h.Value == "5");
+        // The request is protobuf, so only its size is kept.
+        Assert.Null(sample.RequestBody!.Text);
+        Assert.True(sample.RequestBody.Bytes > 0);
+    }
+
+    [Fact]
     public async Task NonGrpcHttpStatus_IsAnUnexpectedStatus()
     {
         await using var runner = new LoadTestRunner(Plan(Call(), requests: 2), new HttpMessageInvoker(FakeHandler.Returning(HttpStatusCode.BadGateway, "proxy error")));

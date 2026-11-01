@@ -69,7 +69,8 @@ engine works. It is the only user-facing documentation, so it has to stay true.
     comment, which escapes every text from a test or a server). Reports show results only,
     never headers, bodies or environment values.
   - `Metrics/`: `MetricsCollector` aggregates `RequestResult`s into a `LoadTestSnapshot`, overall, per request and per
-    second, using `LatencyHistogram`.
+    second, using `LatencyHistogram`. `ErrorSampler` keeps a bounded few failed requests per request (`ErrorSample`, built and masked by
+    `Engine/ErrorSampleBuilder`).
 - `src/FalconLoad.Web/`
   - `Program.cs`: service registration and the middleware pipeline.
   - `Services/`: `RunManager` (in-memory runs, the last 50 finished ones are kept), `PlanStore` (saved plans in JSON),

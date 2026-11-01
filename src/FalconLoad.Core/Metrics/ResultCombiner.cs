@@ -112,6 +112,8 @@ public static class ResultCombiner
         var overall = new LatencyHistogram();
         var statusCodes = new SortedDictionary<string, long>();
         var errors = new Dictionary<string, long>();
+        var requestErrors = new Dictionary<(int Step, string Message), long>();
+        var samples = new List<(int Rank, int Machine, ErrorSample Sample)>();
         var steps = new List<(int Index, string Name, long Failures, LatencyHistogram Latency)>();
         var checks = new List<CheckStats>();
         var timeline = new SortedDictionary<int, (long Failures, LatencyHistogram Latency)>();
@@ -139,6 +141,7 @@ public static class ResultCombiner
 
             // Requests are matched by position and name, so machines running the same test line up and a
             // request that only one machine sent still gets its own row.
+            var positions = new Dictionary<int, int>();
             for (var s = 0; s < results.Steps.Count; s++)
             {
                 var step = results.Steps[s];
@@ -149,6 +152,7 @@ public static class ResultCombiner
                     at = steps.Count - 1;
                 }
 
+                positions.TryAdd(step.StepIndex, at);
                 var existing = steps[at];
                 existing.Latency.Add(LatencyHistogram.FromData(histograms.Steps[s]));
                 steps[at] = existing with { Failures = existing.Failures + step.Failures };
@@ -165,6 +169,27 @@ public static class ResultCombiner
                     {
                         checks[c] = checks[c] with { Passed = checks[c].Passed + check.Passed, Failed = checks[c].Failed + check.Failed };
                     }
+                }
+            }
+
+            // A request's errors and samples move to its combined position; any for a request the results don't have are dropped.
+            foreach (var error in results.RequestErrors)
+            {
+                if (positions.TryGetValue(error.StepIndex, out var at))
+                {
+                    requestErrors[(at, error.Message)] = requestErrors.GetValueOrDefault((at, error.Message)) + error.Count;
+                }
+            }
+
+            // Times move by the machine's offset, like its timeline does.
+            var ranks = new Dictionary<int, int>();
+            foreach (var sample in results.ErrorSamples)
+            {
+                if (sample is not null && positions.TryGetValue(sample.StepIndex, out var at))
+                {
+                    var rank = ranks.GetValueOrDefault(at);
+                    ranks[at] = rank + 1;
+                    samples.Add((rank, i, sample with { StepIndex = at, Machine = sample.Machine ?? names[i], AtSeconds = sample.AtSeconds + offset }));
                 }
             }
 
@@ -209,6 +234,9 @@ public static class ResultCombiner
             Latency = overall.ToStats(),
             StatusCodes = statusCodes,
             Errors = errors.OrderByDescending(e => e.Value).Select(e => new ErrorCount(e.Key, e.Value)).ToList(),
+            RequestErrors = requestErrors.OrderBy(e => e.Key.Step).ThenByDescending(e => e.Value)
+                .Select(e => new RequestErrorCount(e.Key.Step, e.Key.Message, e.Value)).ToList(),
+            ErrorSamples = PickSamples(samples),
             Steps = steps.Select((s, i) => new StepStats(i, s.Name, s.Latency.Count, s.Failures, s.Latency.ToStats())).ToList(),
             Timeline = points,
             Checks = checks.OrderBy(c => c.StepIndex).ToList(),
@@ -220,6 +248,37 @@ public static class ResultCombiner
         combined = ThresholdEvaluator.Apply(runs[0].Plan.Thresholds, combined);
 
         return new CombinedResult(combined, start, machines, Warnings(runs, names, start, live));
+    }
+
+    /// <summary>
+    /// Keeps as many samples per request as one machine would, taking the machines in turn so each of them is shown, and
+    /// no more of one error than one machine would keep.
+    /// </summary>
+    private static List<ErrorSample> PickSamples(List<(int Rank, int Machine, ErrorSample Sample)> samples)
+    {
+        var picked = new List<ErrorSample>();
+        foreach (var request in samples.GroupBy(s => s.Sample.StepIndex).OrderBy(g => g.Key))
+        {
+            var perError = new Dictionary<string, int>();
+            var kept = 0;
+            foreach (var (_, _, sample) in request.OrderBy(s => s.Rank).ThenBy(s => s.Machine))
+            {
+                if (kept == ErrorSampler.MaxPerRequest)
+                {
+                    break;
+                }
+
+                var key = sample.Error ?? string.Empty;
+                if (perError.GetValueOrDefault(key) < ErrorSampler.MaxPerError)
+                {
+                    perError[key] = perError.GetValueOrDefault(key) + 1;
+                    picked.Add(sample);
+                    kept++;
+                }
+            }
+        }
+
+        return picked.OrderBy(s => s.StepIndex).ThenBy(s => s.Machine, StringComparer.Ordinal).ThenBy(s => s.AtSeconds).ToList();
     }
 
     /// <summary>Each machine fetches its own tokens, so their counts add up.</summary>

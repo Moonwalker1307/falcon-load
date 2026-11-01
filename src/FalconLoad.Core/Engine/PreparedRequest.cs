@@ -31,6 +31,12 @@ internal sealed class PreparedRequest
 
     public RequestProtocol Protocol { get; private set; }
 
+    /// <summary>The request's method or protocol, as error samples show it.</summary>
+    public string Label { get; private set; } = "GET";
+
+    /// <summary>The request's <see cref="RequestDefinition.Route"/>.</summary>
+    public string Route { get; private set; } = "/";
+
     /// <summary>For a WebSocket request, whether to wait for the server's next message after sending.</summary>
     public bool WaitForReply { get; private set; } = true;
 
@@ -78,6 +84,8 @@ internal sealed class PreparedRequest
         var prepared = new PreparedRequest
         {
             Protocol = definition.Protocol,
+            Label = definition.Label,
+            Route = definition.Route,
             _method = graphQL || grpc ? HttpMethod.Post : HttpMethod.Parse(definition.Method.ToUpperInvariant()),
             _grpcMethod = grpcMethod,
             _grpcMatcher = grpcMatcher,

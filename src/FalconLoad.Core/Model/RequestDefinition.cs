@@ -69,6 +69,48 @@ public sealed class RequestDefinition
         _ => Method,
     };
 
+    /// <summary>
+    /// Where the request goes without the server's address or the query string, such as <c>/users/{{id}}</c>, so failures
+    /// can be grouped by endpoint. It comes from the URL as written, placeholders and all, so it never holds an
+    /// environment's values. A gRPC request's route is its method, and a GraphQL request adds its operation name.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Route => Protocol switch
+    {
+        RequestProtocol.Grpc => "/" + (Grpc?.Method ?? string.Empty).Trim().TrimStart('/'),
+        RequestProtocol.GraphQL when !string.IsNullOrWhiteSpace(GraphQL?.OperationName) => $"{PathOf(Url)} {GraphQL.OperationName.Trim()}",
+        _ => PathOf(Url),
+    };
+
+    /// <summary>The path of a URL that may hold placeholders, including one that stands for the whole server address.</summary>
+    internal static string PathOf(string? url)
+    {
+        var text = (url ?? string.Empty).Trim();
+        var start = text.IndexOf("://", StringComparison.Ordinal);
+        if (start >= 0)
+        {
+            start += 3;
+        }
+        else if (text.StartsWith("{{", StringComparison.Ordinal) && text.IndexOf("}}", StringComparison.Ordinal) is var close and > 0)
+        {
+            // A URL such as {{baseUrl}}/users: the placeholder is the server's address.
+            start = close + 2;
+        }
+        else
+        {
+            start = 0;
+        }
+
+        var slash = text.IndexOfAny(['/', '?', '#'], start);
+        if (slash < 0 || text[slash] != '/')
+        {
+            return "/";
+        }
+
+        var end = text.IndexOfAny(['?', '#'], slash);
+        return end < 0 ? text[slash..] : text[slash..end];
+    }
+
     /// <param name="parameters">The plan's parameter lists; URLs that use them are checked with their first values.</param>
     /// <param name="variables">The names of the plan's extracted variables, which URLs may use too.</param>
     /// <param name="environment">The selected environment's values, substituted into the URL before it is checked.</param>

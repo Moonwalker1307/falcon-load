@@ -603,3 +603,21 @@ label.btn-primary { color: #1b1300; font-weight: 650; }
 .otlp-header-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) auto; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }
 .push-status { margin-top: var(--space-3); overflow-wrap: anywhere; }
 .metric-name { overflow-wrap: anywhere; }
+
+/* Errors by request: each failing request with its route, its errors and the failures kept as samples. */
+.error-group { padding: var(--space-3) var(--space-5) var(--space-4); border-top: 1px solid var(--border); }
+.error-group-head { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }
+.error-route { font-family: var(--mono); font-size: .88rem; word-break: break-all; }
+.error-group-count { margin-left: auto; font-size: .85rem; font-weight: 600; }
+.card-flush .error-messages td:first-child { padding-left: 0; }
+.card-flush .error-messages td:last-child { padding-right: 0; }
+.error-messages { margin-bottom: var(--space-2); }
+.error-sample { margin-top: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.error-sample > summary { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: baseline; padding: var(--space-2) var(--space-3); cursor: pointer; font-size: .88rem; }
+.error-sample > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+.error-sample-message { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
+.error-sample .probe { margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
+@media (max-width: 640px) {
+    .error-group { padding: var(--space-3) var(--space-4) var(--space-4); }
+    .error-group-count { margin-left: 0; width: 100%; }
+}
