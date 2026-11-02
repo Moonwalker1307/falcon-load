@@ -266,7 +266,7 @@
                             @if (collapsed)
                             {
                                 <span class="@Format.MethodClass(request.Label)">@request.Label</span>
-                                <span class="mono">@request.Url</span>
+                                <span class="mono">@request.FullUrl</span>
                             }
                         </div>
                     </div>
@@ -361,6 +361,12 @@
                     }
 
                     <div class="tabs" role="tablist" aria-label="Request @(index + 1) details">
+                        @if (request.Protocol != RequestProtocol.Grpc)
+                        {
+                            <button role="tab" id="@idp-tab-params" aria-selected="@(tab == "params" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "params"'>
+                                Params<span class="count">@request.QueryParameters.Count(p => p.Enabled && !string.IsNullOrWhiteSpace(p.Name))</span>
+                            </button>
+                        }
                         <button role="tab" id="@idp-tab-headers" aria-selected="@(tab == "headers" ? "true" : "false")" aria-controls="@idp-panel" @onclick='() => _tabs[request] = "headers"'>
                             Headers<span class="count">@request.Headers.Count(h => h.Enabled)</span>
                         </button>
@@ -380,7 +386,36 @@
                     </div>
 
                     <div role="tabpanel" id="@idp-panel" aria-labelledby="@idp-tab-@tab">
-                        @if (tab == "headers")
+                        @if (tab == "params" && request.Protocol != RequestProtocol.Grpc)
+                        {
+                            @if (request.QueryParameters.Count == 0)
+                            {
+                                <div class="hint">No query parameters yet. Each one is added to the URL as <code>?name=value</code>, and its value can use <code>{{variables}}</code>, a parameter list, a data file column or an environment variable.</div>
+                            }
+                            @for (var j = 0; j < request.QueryParameters.Count; j++)
+                            {
+                                var q = request.QueryParameters[j];
+                                var n = j + 1;
+                                <div class="header-row @(q.Enabled ? "" : "off")">
+                                    <input type="checkbox" title="Send this parameter" aria-label="Send parameter @n" @bind="q.Enabled" />
+                                    <input type="text" class="mono" placeholder="Name" aria-label="Parameter @n name" spellcheck="false" @bind="q.Name" @bind:event="oninput" />
+                                    <input type="text" class="mono h-value" placeholder="Value" aria-label="Parameter @n value" spellcheck="false" @bind="q.Value" @bind:event="oninput" />
+                                    <button class="btn-sm btn-icon btn-ghost btn-danger h-remove" title="Remove parameter" aria-label="Remove parameter @n" @onclick="() => request.QueryParameters.Remove(q)"><Icon Name="x" /></button>
+                                </div>
+                            }
+                            <div class="btn-group">
+                                <button class="btn-sm" @onclick="() => request.QueryParameters.Add(new QueryParameter())"><Icon Name="plus" />Add parameter</button>
+                                @if (QueryOf(request.Url) is { Length: > 0 })
+                                {
+                                    <button class="btn-sm btn-ghost" title="Move the query string written in the URL into this table" @onclick="() => MoveQueryToTable(request)">Move query from URL</button>
+                                }
+                            </div>
+                            @if (request.QueryParameters.Any(p => p.Enabled && !string.IsNullOrWhiteSpace(p.Name)))
+                            {
+                                <div class="hint">Sent as <code class="url-preview">@request.FullUrl</code>. Names and values are URL-encoded for you, including the values that fill in their placeholders.</div>
+                            }
+                        }
+                        else if (tab == "headers")
                         {
                             @if (request.Headers.Count == 0 && request.Protocol == RequestProtocol.WebSocket)
                             {
@@ -1335,6 +1370,51 @@
 
     // A request keeps its protocol's own settings only while it uses that protocol, so a plan saved as HTTP has no
     // GraphQL or WebSocket leftovers. The body, headers, checks and extractions stay, since a query or message is a body too.
+    /// <summary>The query string written straight into a URL, without the <c>?</c> and any fragment.</summary>
+    private static string QueryOf(string url)
+    {
+        var start = url.IndexOf('?');
+        if (start < 0)
+        {
+            return string.Empty;
+        }
+
+        var end = url.IndexOf('#', start);
+        return end < 0 ? url[(start + 1)..] : url[(start + 1)..end];
+    }
+
+    /// <summary>Splits the URL's own query string into rows of the table, decoded, so they can be edited one by one.</summary>
+    private void MoveQueryToTable(RequestDefinition request)
+    {
+        var query = QueryOf(request.Url);
+        var start = request.Url.IndexOf('?');
+        var hash = request.Url.IndexOf('#', start);
+        var rows = query.Split('&', StringSplitOptions.RemoveEmptyEntries).Select(pair =>
+        {
+            var equals = pair.IndexOf('=');
+            return new QueryParameter
+            {
+                Name = Decode(equals < 0 ? pair : pair[..equals]),
+                Value = equals < 0 ? string.Empty : Decode(pair[(equals + 1)..]),
+            };
+        });
+        request.QueryParameters.InsertRange(0, rows);
+        request.Url = request.Url[..start] + (hash < 0 ? string.Empty : request.Url[hash..]);
+    }
+
+    // A form-encoded '+' means a space; text that isn't valid percent-encoding is kept as written.
+    private static string Decode(string text)
+    {
+        try
+        {
+            return Uri.UnescapeDataString(text.Replace('+', ' '));
+        }
+        catch (UriFormatException)
+        {
+            return text;
+        }
+    }
+
     private void SetProtocol(RequestDefinition request)
     {
         request.GraphQL = request.Protocol == RequestProtocol.GraphQL ? request.GraphQL ?? new GraphQLOptions() : null;
@@ -1359,6 +1439,12 @@
         else if (request.Protocol != RequestProtocol.WebSocket && request.Url.StartsWith("ws", StringComparison.OrdinalIgnoreCase))
         {
             request.Url = "http" + request.Url[2..];
+        }
+
+        // A gRPC call has no query string, so its Params tab is hidden.
+        if (request.Protocol == RequestProtocol.Grpc && _tabs.GetValueOrDefault(request, "headers") == "params")
+        {
+            _tabs[request] = "headers";
         }
 
         if (request.Protocol != RequestProtocol.Http && _tabs.GetValueOrDefault(request, "headers") == "headers" && string.IsNullOrEmpty(request.Body))

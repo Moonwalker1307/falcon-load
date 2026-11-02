@@ -110,16 +110,5 @@ internal static partial class ImportHelpers
         return char.IsAsciiDigit(name[0]) ? "_" + name : name;
     }
 
-    public static string AppendQuery(string url, string query)
-    {
-        if (query.Length == 0)
-        {
-            return url;
-        }
-
-        var hash = url.IndexOf('#');
-        var fragment = hash < 0 ? string.Empty : url[hash..];
-        var main = hash < 0 ? url : url[..hash];
-        return main + (main.Contains('?') ? (main.EndsWith('?') || main.EndsWith('&') ? string.Empty : "&") : "?") + query + fragment;
-    }
+    public static string AppendQuery(string url, string query) => RequestDefinition.AppendQuery(url, query);
 }

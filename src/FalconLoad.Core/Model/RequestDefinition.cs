@@ -19,6 +19,13 @@ public sealed class RequestDefinition
     public List<HeaderEntry> Headers { get; set; } = [];
 
     /// <summary>
+    /// Query string parameters added to the URL, each name and value URL-encoded after its placeholders are filled in.
+    /// Plans saved before the table existed have none, and keep any query they wrote straight into the URL. A gRPC
+    /// call has no query string, so they are ignored there.
+    /// </summary>
+    public List<QueryParameter> QueryParameters { get; set; } = [];
+
+    /// <summary>
     /// Optional request body, the query of a GraphQL request, or the message of a WebSocket request (empty to only wait
     /// for a message). May contain template variables.
     /// </summary>
@@ -57,7 +64,48 @@ public sealed class RequestDefinition
     public bool OncePerVirtualUser { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
-    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? $"{Label} {Url}" : Name;
+    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? $"{Label} {FullUrl}" : Name;
+
+    /// <summary>
+    /// The URL with the enabled query parameters added, as people read it: their text is encoded, but placeholders are
+    /// left as written, since their values are only known when the request is sent.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string FullUrl => AppendQuery(Url, QueryTemplate());
+
+    /// <summary>
+    /// The enabled query parameters as a query string, with the text around placeholders encoded. The engine encodes
+    /// the placeholders' values when it fills them in, so a value such as <c>a&amp;b</c> can't split a parameter in two.
+    /// </summary>
+    internal string QueryTemplate()
+    {
+        if (Protocol == RequestProtocol.Grpc || QueryParameters.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        return string.Join('&', QueryParameters
+            .Where(p => p.Enabled && !string.IsNullOrWhiteSpace(p.Name))
+            .Select(p => TemplateRenderer.EscapeText(p.Name.Trim(), Uri.EscapeDataString) + "=" + TemplateRenderer.EscapeText(p.Value ?? string.Empty, Uri.EscapeDataString)));
+    }
+
+    /// <summary>Adds a query string to a URL, after any query it already has and before its fragment.</summary>
+    internal static string AppendQuery(string url, string query)
+    {
+        if (query.Length == 0)
+        {
+            return url;
+        }
+
+        var hash = url.IndexOf('#');
+        var fragment = hash < 0 ? string.Empty : url[hash..];
+        var main = hash < 0 ? url : url[..hash];
+        return main + QuerySeparator(main) + query + fragment;
+    }
+
+    /// <summary>What goes between a URL and more query parameters: <c>?</c>, <c>&amp;</c>, or nothing when it already ends in one.</summary>
+    internal static string QuerySeparator(string url) =>
+        !url.Contains('?') ? "?" : url.EndsWith('?') || url.EndsWith('&') ? string.Empty : "&";
 
     /// <summary>What is shown in place of the method: the method itself for HTTP, otherwise the protocol's name.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -217,6 +265,11 @@ public sealed class RequestDefinition
             }
         }
 
+        if (Protocol != RequestProtocol.Grpc && QueryParameters.Any(p => p.Enabled && string.IsNullOrWhiteSpace(p.Name) && !string.IsNullOrEmpty(p.Value)))
+        {
+            yield return "Query parameter names cannot be empty.";
+        }
+
         foreach (var problem in Extractions.SelectMany(e => e.Validate()))
         {
             yield return problem;
@@ -228,6 +281,16 @@ public sealed class RequestDefinition
 }
 
 public sealed class HeaderEntry
+{
+    public string Name { get; set; } = string.Empty;
+
+    public string Value { get; set; } = string.Empty;
+
+    public bool Enabled { get; set; } = true;
+}
+
+/// <summary>One <c>name=value</c> pair of a request's query string. Both may contain template variables.</summary>
+public sealed class QueryParameter
 {
     public string Name { get; set; } = string.Empty;
 

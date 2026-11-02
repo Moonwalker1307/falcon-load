@@ -25,7 +25,7 @@ internal static class Targets
     private static readonly string[] ModelWords =
     [
         "name", "requests", "profile", "parameters", "dataFiles", "thresholds", "environment", "protoFiles", "auth",
-        "protocol", "method", "url", "headers", "body", "graphQL", "webSocket", "grpc", "contentType",
+        "protocol", "method", "url", "headers", "queryParameters", "body", "graphQL", "webSocket", "grpc", "contentType",
         "expectedStatusCodes", "assertions", "extractions", "oncePerVirtualUser", "enabled", "value", "values",
         "selection", "format", "content", "omittedRows", "concurrency", "stopCondition", "durationSeconds",
         "totalRequests", "rampUpSeconds", "maxRequestsPerSecond", "timeoutSeconds", "ignoreTlsErrors",

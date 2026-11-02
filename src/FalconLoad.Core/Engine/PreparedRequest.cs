@@ -18,6 +18,8 @@ internal sealed class PreparedRequest
     private HttpMethod _method = HttpMethod.Get;
     private string _url = string.Empty;
     private bool _urlHasVariables;
+    /// <summary>The query table's part of the URL when it has placeholders to fill in for each request, separator and all.</summary>
+    private string? _query;
     private Uri? _staticUri;
     private string? _body;
     private byte[]? _staticBody;
@@ -76,7 +78,24 @@ internal sealed class PreparedRequest
         GrpcStatusMatcher.TryParse(grpc ? definition.ExpectedStatusCodes : null, out var grpcMatcher);
 
         // A gRPC call goes to the method's path on the server's address, and always has a message, even an empty one.
-        var url = TemplateRenderer.ResolveVariables(grpc ? definition.Url.Trim().TrimEnd('/') + "/" + grpcMethod!.Path : definition.Url, variables);
+        var url = TemplateRenderer.ResolveVariables(grpc ? definition.Url.Trim().TrimEnd('/') + "/" + grpcMethod!.Path : definition.Url, variables).Trim();
+
+        // The query table's text is encoded here, once; the values of its placeholders are encoded as they are filled in.
+        // A fragment is never sent, so it is dropped rather than kept after the added parameters.
+        var queryTemplate = definition.QueryTemplate();
+        string? query = null;
+        if (queryTemplate.Length > 0)
+        {
+            var hash = url.IndexOf('#');
+            url = hash < 0 ? url : url[..hash];
+            query = TemplateRenderer.ResolveVariables(queryTemplate, variables, Uri.EscapeDataString);
+            if (!TemplateRenderer.HasVariables(query))
+            {
+                url += RequestDefinition.QuerySeparator(url) + query;
+                query = null;
+            }
+        }
+
         var body = string.IsNullOrEmpty(definition.Body) ? grpc ? "{}" : null : TemplateRenderer.ResolveVariables(definition.Body, variables);
         var graphQLVariables = graphQL && !string.IsNullOrWhiteSpace(definition.GraphQL?.Variables)
             ? TemplateRenderer.ResolveVariables(definition.GraphQL.Variables, variables)
@@ -89,8 +108,9 @@ internal sealed class PreparedRequest
             _method = graphQL || grpc ? HttpMethod.Post : HttpMethod.Parse(definition.Method.ToUpperInvariant()),
             _grpcMethod = grpcMethod,
             _grpcMatcher = grpcMatcher,
-            _url = url.Trim(),
-            _urlHasVariables = TemplateRenderer.HasVariables(url),
+            _url = url,
+            _urlHasVariables = TemplateRenderer.HasVariables(url) || query is not null,
+            _query = query is null ? null : RequestDefinition.QuerySeparator(url) + query,
             _body = body,
             _bodyHasVariables = (body is not null && TemplateRenderer.HasVariables(body)) || TemplateRenderer.HasVariables(graphQLVariables),
             _graphQLVariables = graphQLVariables,
@@ -201,7 +221,11 @@ internal sealed class PreparedRequest
         $"Response body over {Assertion.MaxBodyBytes / (1024 * 1024)} MB is too large to check";
 
     /// <summary>The address a WebSocket request connects to, with its placeholders filled in.</summary>
-    public Uri ResolveUri(TemplateContext context) => _staticUri ?? new Uri(TemplateRenderer.Render(_url, context), UriKind.Absolute);
+    public Uri ResolveUri(TemplateContext context) => _staticUri ?? new Uri(RenderUrl(context), UriKind.Absolute);
+
+    /// <summary>The URL with its placeholders filled in, and the query table's values encoded.</summary>
+    private string RenderUrl(TemplateContext context) =>
+        _query is null ? TemplateRenderer.Render(_url, context) : TemplateRenderer.Render(_url, context) + TemplateRenderer.Render(_query, context, Uri.EscapeDataString);
 
     /// <summary>The message a WebSocket request sends, or empty when it only waits for one.</summary>
     public ReadOnlyMemory<byte> Message(TemplateContext context) =>
@@ -240,7 +264,7 @@ internal sealed class PreparedRequest
     /// <param name="authorization">The <c>Authorization</c> header value to send when <see cref="UsesAuth"/>, such as <c>Bearer …</c>.</param>
     public HttpRequestMessage Build(TemplateContext context, out long bytesSent, string? authorization = null)
     {
-        var uri = _staticUri ?? new Uri(TemplateRenderer.Render(_url, context), UriKind.Absolute);
+        var uri = _staticUri ?? new Uri(RenderUrl(context), UriKind.Absolute);
         var request = new HttpRequestMessage(_method, uri);
         bytesSent = 0;
         if (Protocol == RequestProtocol.Grpc)

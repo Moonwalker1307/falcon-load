@@ -297,9 +297,9 @@ public static class RunComparer
         {
             var before = baseline.Requests[i];
             var after = current.Requests[i];
-            if (!string.Equals(before.Label, after.Label, StringComparison.OrdinalIgnoreCase) || before.Url != after.Url)
+            if (!string.Equals(before.Label, after.Label, StringComparison.OrdinalIgnoreCase) || before.FullUrl != after.FullUrl)
             {
-                yield return $"Request {i + 1} changed from {before.Label} {before.Url} to {after.Label} {after.Url}.";
+                yield return $"Request {i + 1} changed from {before.Label} {before.FullUrl} to {after.Label} {after.FullUrl}.";
             }
         }
     }
