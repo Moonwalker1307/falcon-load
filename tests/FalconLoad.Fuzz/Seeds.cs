@@ -84,6 +84,7 @@ internal static class Seeds
                     Method = "POST",
                     Url = "https://api.test/login?user={{users}}&r={{$randomInt:1:9}}",
                     Headers = [new HeaderEntry { Name = "Authorization", Value = "Bearer {{token}}" }, new HeaderEntry { Name = "X-Off", Value = "1", Enabled = false }],
+                    QueryParameters = [new QueryParameter { Name = "q", Value = "a & {{email}}" }, new QueryParameter { Name = "off", Value = "1", Enabled = false }],
                     Body = """{ "email": "{{email}}", "vu": {{$vu}}, "it": {{$iteration}}, "id": "{{$guid}}", "at": "{{$isoTimestamp}}", "t": {{$timestamp}} }""",
                     ExpectedStatusCodes = "200-299,404",
                     OncePerVirtualUser = true,

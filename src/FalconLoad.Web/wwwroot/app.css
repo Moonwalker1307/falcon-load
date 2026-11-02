@@ -187,6 +187,7 @@ textarea.short { min-height: 4.5rem; }
 .header-row { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.6fr) auto; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }
 .header-row input[type=checkbox] { width: 1rem; height: 1rem; margin: 0 .25rem; }
 .header-row.off input[type=text] { opacity: .5; }
+.url-preview { word-break: break-all; }
 .extract-row { display: grid; grid-template-columns: minmax(0, .8fr) 124px minmax(0, 1.6fr) auto; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }
 .parameter-list { border-top: 1px solid var(--border); padding-top: var(--space-4); margin-top: var(--space-4); }
 .parameter-list-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2); }

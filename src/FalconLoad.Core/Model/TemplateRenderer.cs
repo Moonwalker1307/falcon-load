@@ -38,11 +38,45 @@ public static partial class TemplateRenderer
     }
 
     /// <summary>
+    /// Renders text whose own characters were already encoded by <see cref="EscapeText"/>, encoding each value that is
+    /// filled in with <paramref name="escape"/>, as a query string needs. A placeholder that matches nothing is sent as written.
+    /// </summary>
+    public static string Render(string text, TemplateContext context, Func<string, string> escape)
+    {
+        if (!HasVariables(text))
+        {
+            return text;
+        }
+
+        return VariablePattern().Replace(text, match => Evaluate(match, context, null) is { } value ? escape(value) : match.Value);
+    }
+
+    /// <summary>Encodes the text around placeholders with <paramref name="escape"/>, leaving the placeholders to be filled in later.</summary>
+    public static string EscapeText(string text, Func<string, string> escape)
+    {
+        if (!HasVariables(text))
+        {
+            return escape(text);
+        }
+
+        var result = new System.Text.StringBuilder(text.Length + 16);
+        var last = 0;
+        foreach (Match match in VariablePattern().Matches(text))
+        {
+            result.Append(escape(text[last..match.Index])).Append(match.Value);
+            last = match.Index + match.Length;
+        }
+
+        return result.Append(escape(text[last..])).ToString();
+    }
+
+    /// <summary>
     /// Substitutes the environment's variables, which never change during a run, so a request is prepared once
     /// instead of rendered for every send. The caller leaves out the names a parameter list or an extracted variable
     /// supplies, because those win and change from request to request.
     /// </summary>
-    public static string ResolveVariables(string text, IReadOnlyDictionary<string, string>? variables)
+    /// <param name="escape">Encodes each substituted value, for text prepared with <see cref="EscapeText"/>.</param>
+    public static string ResolveVariables(string text, IReadOnlyDictionary<string, string>? variables, Func<string, string>? escape = null)
     {
         if (variables is not { Count: > 0 } || !HasVariables(text))
         {
@@ -51,7 +85,7 @@ public static partial class TemplateRenderer
 
         return VariablePattern().Replace(text, match =>
         {
-            return IsUserVariable(match) && variables.TryGetValue(match.Groups["name"].Value, out var value) ? value : match.Value;
+            return IsUserVariable(match) && variables.TryGetValue(match.Groups["name"].Value, out var value) ? escape is null ? value : escape(value) : match.Value;
         });
     }
 

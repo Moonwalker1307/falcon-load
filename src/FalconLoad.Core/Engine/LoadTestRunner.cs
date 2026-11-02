@@ -569,7 +569,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
                     : null;
                 _metrics.Sampler.Add(ErrorSampleBuilder.Build(
                     prepared, step, startedAt, latency, statusLabel ?? code.ToString(System.Globalization.CultureInfo.InvariantCulture), masked, MaskText,
-                    request.RequestUri?.ToString(), ErrorSampleBuilder.RequestHeaders(request), SentBody(request, bytesSent), response, responseBody));
+                    request.RequestUri?.AbsoluteUri, ErrorSampleBuilder.RequestHeaders(request), SentBody(request, bytesSent), response, responseBody));
             }
 
             return new RequestResult(
@@ -619,7 +619,7 @@ public sealed class LoadTestRunner : IAsyncDisposable
             {
                 _metrics.Sampler.Add(ErrorSampleBuilder.Build(
                     prepared, step, startedAt, latency, RequestResult.NoResponseStatus, masked, MaskText,
-                    request?.RequestUri?.ToString(), request is null ? null : ErrorSampleBuilder.RequestHeaders(request), SentBody(request, bytesSent)));
+                    request?.RequestUri?.AbsoluteUri, request is null ? null : ErrorSampleBuilder.RequestHeaders(request), SentBody(request, bytesSent)));
             }
 
             return new(step, startedAt, latency, null, false, masked, bytesSent, 0);

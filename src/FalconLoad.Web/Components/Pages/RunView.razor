@@ -248,7 +248,7 @@
                             {
                                 <div class="row-title">@def.Name</div>
                             }
-                            <div class="request-line"><span class="@Format.MethodClass(def.Label)">@def.Label</span><span class="mono muted" title="@def.Url">@def.Url</span></div>
+                            <div class="request-line"><span class="@Format.MethodClass(def.Label)">@def.Label</span><span class="mono muted" title="@def.FullUrl">@def.FullUrl</span></div>
                         </td>
                         <td class="num">@step.Requests.ToString("#,0")</td>
                         <td class="num @(step.Failures > 0 ? "status-err" : "")">@step.Failures.ToString("#,0")</td>

@@ -144,6 +144,13 @@ public sealed class PlanFile
                 header.Value ??= string.Empty;
             }
 
+            request.QueryParameters = request.QueryParameters?.OfType<QueryParameter>().ToList() ?? [];
+            foreach (var parameter in request.QueryParameters)
+            {
+                parameter.Name ??= string.Empty;
+                parameter.Value ??= string.Empty;
+            }
+
             request.Extractions = request.Extractions?.OfType<ExtractionRule>().ToList() ?? [];
             foreach (var rule in request.Extractions)
             {
