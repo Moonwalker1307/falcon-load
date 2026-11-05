@@ -116,6 +116,13 @@ internal sealed class PreparedRequest
 
         prepared.UsesAuth = auth && !prepared._headers.Any(h => string.Equals(h.Name, "Authorization", StringComparison.OrdinalIgnoreCase));
 
+        // Name the tool to the server, so whoever runs the target can tell where the traffic comes from and block it if
+        // it isn't welcome. A test that sets its own User-Agent keeps it.
+        if (!prepared._headers.Any(h => string.Equals(h.Name, "User-Agent", StringComparison.OrdinalIgnoreCase)))
+        {
+            prepared._headers = [.. prepared._headers, ("User-Agent", FalconLoadUserAgent.Value, false)];
+        }
+
         if (!prepared._urlHasVariables)
         {
             prepared._staticUri = new Uri(prepared._url, UriKind.Absolute);
