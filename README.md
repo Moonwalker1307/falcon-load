@@ -1,5 +1,7 @@
 # falcon-load
 
+[![CI](https://github.com/Moonwalker1307/falcon-load/actions/workflows/ci.yml/badge.svg)](https://github.com/Moonwalker1307/falcon-load/actions/workflows/ci.yml)
+
 ![falcon-load](docs/logo/falcon-load-logo.png)
 
 An API load tester with a web UI. Configure the HTTP, GraphQL, WebSocket or gRPC requests you want to hammer, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update live.
@@ -23,7 +25,19 @@ docker run --rm -p 127.0.0.1:5299:8080 -v falcon-load-data:/data falcon-load
 
 Then open http://localhost:5299. The app listens on port 8080 inside the container and keeps saved tests in `/data`, so the volume keeps them when the container is replaced. Publishing the port on `127.0.0.1` keeps the app reachable only from your own machine. From inside a container, `localhost` is the container itself: to test an API running on your machine, use `host.docker.internal` (add `--add-host=host.docker.internal:host-gateway` on Linux), or put both containers on the same Docker network and use the API container's name.
 
-> Only load test APIs you own or have permission to test. falcon-load sends real traffic and is meant to run on your own machine or a private network. Don't expose it publicly: it will send requests to any URL it's given.
+## Responsible use
+
+falcon-load sends real traffic, as much as you ask it to. Use it with care:
+
+- **Only test systems you own or have written permission to test.** Load testing someone else's service without
+  permission can take it down for its users, breach your hosting provider's terms and be illegal under computer misuse
+  laws.
+- **Start small.** Begin with a few virtual users, a rate cap and a stop condition, and agree on a time
+  window with whoever runs the target, especially for anything in production.
+- **Keep falcon-load private.** It is meant to run on your own machine or a private network. Anyone who can reach it
+  can send traffic from your machine, so don't expose it, or an [agent](#run-a-test-from-several-machines-agents), to
+  the internet.
+
 
 ## Features
 
@@ -588,3 +602,7 @@ The parsers that read user input (test and environment files, curl, Postman and 
 ```bash
 dotnet run --project tests/FalconLoad.Fuzz -c Release -- --seconds 20
 ```
+
+## License
+
+falcon-load is released under the [MIT License](LICENSE). To report a security problem, see [SECURITY.md](SECURITY.md).
