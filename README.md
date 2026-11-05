@@ -38,7 +38,6 @@ falcon-load sends real traffic, as much as you ask it to. Use it with care:
   can send traffic from your machine, so don't expose it, or an [agent](#run-a-test-from-several-machines-agents), to
   the internet.
 
-
 ## Features
 
 - **Request editor**: method, URL, headers, body and content type, with a "Send once" button to check the response before you load test. Problems are shown next to the request or setting they belong to, and the editor warns before you leave with unsaved changes.
