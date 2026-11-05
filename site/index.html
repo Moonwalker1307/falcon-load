@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>falcon-load: an API load tester with a live web UI</title>
+<meta name="description" content="falcon-load is an open source API load tester with a web UI. Configure HTTP, GraphQL, WebSocket or gRPC requests, choose how hard and how long, and watch throughput, latency percentiles and errors live.">
+<meta property="og:title" content="falcon-load">
+<meta property="og:description" content="An API load tester with a live web UI, a command line runner and CI integrations. Built on .NET 10.">
+<meta property="og:image" content="https://moonwalker1307.github.io/falcon-load/images/live-run.png">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#101116">
+<link rel="icon" type="image/svg+xml" href="images/favicon.svg">
+<style>
+  /* RT's palette, the same tokens the app itself uses. */
+  :root {
+    --bg: #101116;
+    --surface: #252936;
+    --text: #F3F0E5;
+    --muted: #A8B0C4;
+    --accent: #FFD52A;
+    --link: #747B96;
+    --border: #343846;
+    --success: #78C99A;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; height: auto; display: block; }
+  code { font-family: var(--mono); font-size: .9em; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+
+  header.top { border-bottom: 1px solid var(--border); }
+  header.top .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 60px; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 700; font-size: 1.1rem; }
+  .brand:hover { text-decoration: none; }
+  .brand img { width: 40px; }
+  .brand em { color: var(--accent); font-style: normal; }
+  nav.links { display: flex; gap: 20px; font-size: .95rem; }
+  nav.links a { color: var(--muted); white-space: nowrap; }
+  nav.links a:hover { color: var(--text); text-decoration: none; }
+
+  .hero { padding: 72px 0 40px; text-align: center; }
+  .hero .logo { width: min(420px, 80%); margin: 0 auto 28px; image-rendering: pixelated; }
+  .hero h1 { font-size: clamp(1.9rem, 4.5vw, 3rem); line-height: 1.15; margin: 0 auto 16px; max-width: 18em; letter-spacing: -.01em; }
+  .hero p.lead { color: var(--muted); font-size: clamp(1.02rem, 2vw, 1.2rem); max-width: 40em; margin: 0 auto 32px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: 8px; font-weight: 600; border: 1px solid var(--border); color: var(--text); background: var(--surface); }
+  .btn:hover { text-decoration: none; border-color: var(--link); }
+  .btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn svg { width: 18px; height: 18px; }
+
+  .shot { margin: 48px auto 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: 0 24px 60px rgba(0, 0, 0, .45); }
+  .caption { color: var(--muted); font-size: .9rem; text-align: center; margin: 12px 0 0; }
+
+  section { padding: 64px 0; }
+  section + section { border-top: 1px solid var(--border); }
+  h2 { font-size: clamp(1.5rem, 3vw, 2rem); margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 32px; max-width: 44em; }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 16px; }
+  .feature { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; }
+  .feature h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .feature p { margin: 0; color: var(--muted); font-size: .95rem; }
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+  .split .shot { margin: 0; }
+  @media (max-width: 860px) { .split { grid-template-columns: 1fr; } }
+
+  .steps { display: grid; gap: 24px; }
+  .steps > *, .split > * { min-width: 0; }
+  .step h3 { margin: 0 0 8px; font-size: 1.05rem; }
+  .step p { margin: 0 0 10px; color: var(--muted); }
+  .step p.after { margin: 10px 0 0; }
+  pre { margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; font-family: var(--mono); font-size: .88rem; line-height: 1.55; }
+  pre .c { color: var(--link); }
+
+  .note { margin-top: 32px; padding: 16px 20px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 8px; color: var(--muted); }
+  .note strong { color: var(--text); }
+
+  footer { border-top: 1px solid var(--border); padding: 28px 0 40px; color: var(--muted); font-size: .9rem; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+  footer a { color: var(--muted); }
+  footer a:hover { color: var(--text); }
+
+  @media (max-width: 560px) {
+    nav.links { gap: 14px; font-size: .9rem; }
+    nav.links .wide { display: none; }
+    .hero { padding-top: 48px; }
+    section { padding: 48px 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./"><img src="images/favicon.svg" alt="" width="40" height="22"><span>falcon-<em>load</em></span></a>
+    <nav class="links">
+      <a class="wide" href="#features">Features</a>
+      <a href="#quick-start">Quick start</a>
+      <a href="https://github.com/Moonwalker1307/falcon-load#readme">Docs</a>
+      <a href="https://github.com/Moonwalker1307/falcon-load">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="wrap">
+      <img class="logo" src="images/logo.png" alt="falcon-load: a pixel-art falcon in flight" width="1480" height="808">
+      <h1>Load test your API and watch it hold up, live</h1>
+      <p class="lead">falcon-load is an open source load tester with a web UI. Configure the HTTP, GraphQL, WebSocket or gRPC requests to send, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update every second.</p>
+      <div class="actions">
+        <a class="btn primary" href="#quick-start">Get started</a>
+        <a class="btn" href="https://github.com/Moonwalker1307/falcon-load">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+      <div class="shot">
+        <img src="images/live-run.png" alt="The run page of falcon-load during a test: thresholds passing, 600 requests per second, p95 latency under a millisecond, and throughput and latency charts" width="1600" height="1419">
+      </div>
+      <p class="caption">A test running at its 600 req/s cap, checked against its pass/fail thresholds as it goes.</p>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Everything a load test needs</h2>
+      <p class="sub">One tool for the quick "can it take 500 requests a second?" check and the nightly soak test in CI. The <a href="https://github.com/Moonwalker1307/falcon-load#features">README</a> has the full list.</p>
+      <div class="features">
+        <div class="feature">
+          <h3>Live results</h3>
+          <p>Throughput, error rate and latency (mean, p50, p90, p95, p99, max) per second and per request, with status codes and errors as they happen.</p>
+        </div>
+        <div class="feature">
+          <h3>HTTP, GraphQL, WebSocket and gRPC</h3>
+          <p>Write a request, press "Send once" to check the response, then load test it. gRPC methods come straight from your <code>.proto</code> files.</p>
+        </div>
+        <div class="feature">
+          <h3>Realistic scenarios</h3>
+          <p>Multi-step requests, dynamic values like <code>{{$guid}}</code>, CSV or JSON data files, and values extracted from one response into the next, such as a login token.</p>
+        </div>
+        <div class="feature">
+          <h3>Load shapes</h3>
+          <p>Constant virtual users with ramp-up and a requests-per-second cap, or stages: step, spike and soak templates, or your own.</p>
+        </div>
+        <div class="feature">
+          <h3>Checks and thresholds</h3>
+          <p>Expected status codes, body and JSON checks per request, and pass/fail thresholds for the run such as <code>p95 &lt; 500 ms</code> or <code>error rate &lt; 1%</code>.</p>
+        </div>
+        <div class="feature">
+          <h3>Environments and secrets</h3>
+          <p>Run the same test against staging and production. Secret values stay hidden in the app, in error samples and in exports. OAuth2 client credentials built in.</p>
+        </div>
+        <div class="feature">
+          <h3>History and baselines</h3>
+          <p>Every run of a saved test is kept with trend charts. Mark a baseline and see regressions in red, or compare any two runs side by side.</p>
+        </div>
+        <div class="feature">
+          <h3>More load from more machines</h3>
+          <p>Drive several falcon-load agents from one controller, or combine exported results, and watch live metrics in Grafana via Prometheus, InfluxDB or OpenTelemetry.</p>
+        </div>
+        <div class="feature">
+          <h3>Built for CI</h3>
+          <p>A command line runner with clear exit codes, HTML, JUnit and Markdown reports, a GitHub Action and an Azure Pipelines template that comment on pull requests.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap split">
+      <div>
+        <h2>Build a test in the browser</h2>
+        <p class="sub">The editor checks every request and setting as you type and tells you what is wrong next to it. Import requests from a curl command, a Postman collection or an OpenAPI spec, and export a test as JSON to run it from the command line or share it.</p>
+        <a class="btn" href="https://github.com/Moonwalker1307/falcon-load#features">Read the full documentation</a>
+      </div>
+      <div class="shot">
+        <img src="images/editor.png" alt="The test editor with an environment picker, authentication options, a GET request and the load profile" width="1600" height="1125" loading="lazy">
+      </div>
+    </div>
+  </section>
+
+  <section id="quick-start">
+    <div class="wrap">
+      <h2>Quick start</h2>
+      <p class="sub">falcon-load runs on your own machine. Build it with Docker, or with the .NET 10 SDK.</p>
+      <div class="steps">
+        <div class="step">
+          <h3>Run the web app with Docker</h3>
+<pre><code>git clone https://github.com/Moonwalker1307/falcon-load.git
+cd falcon-load
+docker build -t falcon-load .
+docker run --rm -p 127.0.0.1:5299:8080 -v falcon-load-data:/data falcon-load</code></pre>
+          <p class="after">Then open <code>http://localhost:5299</code>. Saved tests live in the <code>falcon-load-data</code> volume. To test an API on your own machine from inside the container, use <code>host.docker.internal</code>.</p>
+        </div>
+        <div class="step">
+          <h3>Or with the .NET 10 SDK</h3>
+<pre><code>dotnet run --project src/FalconLoad.Web</code></pre>
+        </div>
+        <div class="step">
+          <h3>Run an exported test in CI</h3>
+<pre><code><span class="c"># Fails the build (exit code 1) when a threshold isn't met.</span>
+dotnet run --project src/FalconLoad.Cli -- run tests.json --html report.html --junit results.xml</code></pre>
+          <p class="after">Or use the <a href="https://github.com/Moonwalker1307/falcon-load#ci-integrations">GitHub Action and Azure Pipelines template</a>.</p>
+        </div>
+      </div>
+      <div class="note">
+        <strong>Only load test APIs you own or have permission to test.</strong> falcon-load sends real traffic to any URL it is given, so run it on your own machine or a private network and don't expose it publicly.
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>falcon-load is open source and built with .NET 10.</span>
+    <span><a href="https://github.com/Moonwalker1307/falcon-load#readme">Documentation</a> · <a href="https://github.com/Moonwalker1307/falcon-load/issues">Issues</a> · <a href="https://github.com/Moonwalker1307/falcon-load">Source</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

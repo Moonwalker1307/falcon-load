@@ -94,6 +94,9 @@ engine works. It is the only user-facing documentation, so it has to stay true.
   server, so a change to them is tested there.
 - `Dockerfile` (web app) and `Dockerfile.cli`: multi-stage images built from the repository root. A new project the
   web app or the CLI references must also be copied in its Dockerfile.
+- `site/`: the GitHub Pages website, one plain HTML page with its images and no build step, published by
+  `.github/workflows/pages.yml` on every push to `main` that changes it. It links to the README for the full docs, so
+  keep feature details there and only the headline features on the site.
 - `.github/workflows/ci.yml`: restore, build and test in Release on Ubuntu for every push to `main` and every PR, and
   build both Docker images.
 
