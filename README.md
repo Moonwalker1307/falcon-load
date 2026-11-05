@@ -4,6 +4,8 @@
 
 ![falcon-load](docs/logo/falcon-load-logo.png)
 
+Website: https://moonwalker1307.github.io/falcon-load
+
 An API load tester with a web UI. Configure the HTTP, GraphQL, WebSocket or gRPC requests you want to hammer, choose how hard and for how long, then watch throughput, latency percentiles, status codes and errors update live.
 
 Built with .NET 10: an ASP.NET Core host with an interactive Blazor Server UI, and a standalone load engine library.
