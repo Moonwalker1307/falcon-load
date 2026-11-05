@@ -40,7 +40,7 @@ falcon-load sends real traffic, as much as you ask it to. Use it with care:
 
 ## Features
 
-- **Request editor**: method, URL, headers, body and content type, with a "Send once" button to check the response before you load test. Problems are shown next to the request or setting they belong to, and the editor warns before you leave with unsaved changes.
+- **Request editor**: method, URL, headers, body and content type, with a "Send once" button to check the response before you load test. Problems are shown next to the request or setting they belong to, and the editor warns before you leave with unsaved changes. Requests carry a `User-Agent: falcon-load/<version>` header unless the test sets its own, so the people who run a target can tell where the traffic comes from.
 - **Multi-step scenarios**: add several requests; each virtual user runs them in order and loops.
 - **GraphQL**: switch a request to GraphQL and write the query, its variables and the operation name instead of a body. A response that reports errors counts as a failed request, even with status 200. See [Protocols](#protocols).
 - **WebSocket**: send a message on a connection each virtual user keeps open, and time it until the server's reply arrives. Checks and extractions read the reply, so a subscribe message can feed the messages after it.

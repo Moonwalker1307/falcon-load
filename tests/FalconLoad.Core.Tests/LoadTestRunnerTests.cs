@@ -36,6 +36,34 @@ public class LoadTestRunnerTests
     }
 
     [Fact]
+    public async Task Requests_NameFalconLoadAsTheUserAgent()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        await using var runner = new LoadTestRunner(Plan(p => p.Profile.TotalRequests = 3), new HttpMessageInvoker(handler));
+
+        await runner.RunAsync(cancellationToken: CancellationToken.None);
+
+        Assert.StartsWith("falcon-load/", FalconLoadUserAgent.Value);
+        Assert.All(handler.Received, r => Assert.Equal(FalconLoadUserAgent.Value, r.Request.Headers.UserAgent.ToString()));
+    }
+
+    [Fact]
+    public async Task Requests_KeepAUserAgentTheTestSets()
+    {
+        var handler = FakeHandler.Returning(HttpStatusCode.OK);
+        var plan = Plan(p =>
+        {
+            p.Profile.TotalRequests = 3;
+            p.Requests[0].Headers = [new HeaderEntry { Name = "user-agent", Value = "MyApp/2.0" }];
+        });
+        await using var runner = new LoadTestRunner(plan, new HttpMessageInvoker(handler));
+
+        await runner.RunAsync(cancellationToken: CancellationToken.None);
+
+        Assert.All(handler.Received, r => Assert.Equal("MyApp/2.0", Assert.Single(r.Request.Headers.GetValues("User-Agent"))));
+    }
+
+    [Fact]
     public async Task UnexpectedStatus_IsCountedAsFailure()
     {
         var handler = FakeHandler.Returning(HttpStatusCode.InternalServerError);
