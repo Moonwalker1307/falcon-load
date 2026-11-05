@@ -45,6 +45,9 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
+// Before anything else answers, so an agent reachable from other machines serves only its controller.
+app.UseAgentModeGate();
+
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
 

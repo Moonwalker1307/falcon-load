@@ -84,6 +84,7 @@ engine works. It is the only user-facing documentation, so it has to stay true.
   interrupted.
 - `tests/FalconLoad.Core.Tests/`: xUnit tests of the runner and metrics. `FakeHandler` stands in for the network.
 - `tests/FalconLoad.Cli.Tests/`: xUnit tests of the CLI, sharing `FakeHandler` with the engine tests.
+- `tests/FalconLoad.Web.Tests/`: xUnit tests of the web host's own logic, such as the agent-mode gate in `AgentMode`.
 - `tests/FalconLoad.Fuzz/`: a dependency-free fuzzer for every input parser, run with `dotnet run --project
   tests/FalconLoad.Fuzz -c Release`. A change to a parser should survive a round of it; each bug it finds gets a test in
   `FuzzRegressionTests`. See its README.
