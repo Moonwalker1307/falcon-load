@@ -276,7 +276,7 @@ With two checkouts, Azure Pipelines puts your repository in a folder named after
 
 Bodies are read leniently where that is safe, the same way as imported files: a `null` where the model has no room for one counts as left out, so a text value becomes empty, an object or list keeps its default and a `null` item in a list is dropped, and the usual validation then reports anything that is missing. A `null` for a value that has no default (such as a result's `plan`), a number too large for a double (`1e309`) or a JSON escape that isn't valid UTF-16 (a lone `\ud800`) makes the body invalid JSON, answered with `400`.
 
-The agent-mode endpoints only work when `FalconLoad:AgentToken` is set, and every call needs `Authorization: Bearer <that token>`; see below.
+The agent-mode endpoints only work when `FalconLoad:AgentToken` is set, and every call needs `Authorization: Bearer <that token>`. While agent mode is on, every other endpoint needs the token too when it is called from another machine; see below.
 
 Example:
 
@@ -483,7 +483,7 @@ When one machine can't send enough load, falcon-load can run a test from several
    FalconLoad__AgentToken=<a long random token> dotnet run --project src/FalconLoad.Web --urls http://0.0.0.0:5299
    ```
 
-   Agent mode is off until a token is set, and every request from a controller must carry it as a bearer token (`FalconLoad:AgentToken` in `appsettings.json` works too). Use the plain `http://` address or a certificate the controller trusts, and only do this on a private network: anyone with the token can send load from that machine. The agent's own UI still works, and the shares it runs show up on its Runs page, marked with the controller's name.
+   Agent mode is off until a token is set, and every request from a controller must carry it as a bearer token (`FalconLoad:AgentToken` in `appsettings.json` works too). While agent mode is on, the whole app answers other machines only with the token: the UI, the JSON API and `/metrics` of an agent open only on the agent machine itself (`http://localhost:5299`), so someone who can merely reach it can't start tests or read results from it. A Prometheus that scrapes an agent from elsewhere needs the token as a bearer token too. Use the plain `http://` address or a certificate the controller trusts, and only do this on a private network: the token travels in the clear over `http://`, and anyone with it can send load from that machine. The shares an agent runs show up on its Runs page, marked with the controller's name.
 
    A test that uses an environment runs with the controller's environment: its variables, secrets included, are sent to the agents along with their shares, so the agents need no environments of their own. The agents keep only the environment's name with the run.
 

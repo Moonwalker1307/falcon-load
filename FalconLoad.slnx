@@ -8,5 +8,6 @@
     <Project Path="tests/FalconLoad.Cli.Tests/FalconLoad.Cli.Tests.csproj" />
     <Project Path="tests/FalconLoad.Core.Tests/FalconLoad.Core.Tests.csproj" />
     <Project Path="tests/FalconLoad.Fuzz/FalconLoad.Fuzz.csproj" />
+    <Project Path="tests/FalconLoad.Web.Tests/FalconLoad.Web.Tests.csproj" />
   </Folder>
 </Solution>
